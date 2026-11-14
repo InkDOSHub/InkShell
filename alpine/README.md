@@ -4,7 +4,7 @@ A complete Alpine Linux 3.21 (x86-64) terminal in the browser, WSL 1 style: the 
 engine plays the part of the Linux kernel (system calls in WebAssembly) and runs Alpine's
 real programs, with their shared libraries (`/lib/ld-musl-x86_64.so.1`).
 
-- Engine: Windows first, Linux follows. The Windows engine (`apps/inksoc/src/engine`) never
+- Engine: Windows first, Linux follows. The Windows engine (`src/engine` in InkDOSHub/InkSoC) never
   gets Linux changes. This app keeps them as `linux.patch` (today: `src/mmu.rs`, swap for
   every process, and `src/linux.rs`) on top of the Windows engine commit in `engine-base.txt`.
   - `tools/sync-engine.sh <commit or version tag>`: takes that Windows engine, re-applies

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Moves the Linux engine to a newer Windows engine, without touching the Windows engine:
 #   tools/sync-engine.sh <commit or tag of the Windows engine>   (run from alpine/)
-# 1. takes apps/inksoc/src/engine at that commit, 2. re-applies linux.patch (the Linux-only
+# 1. takes the engine (src/engine of InkDOSHub/InkSoC) at that commit, 2. re-applies linux.patch (the Linux-only
 # changes), 3. builds, 4. runs tests/linux-test.mjs. Only if all of it passes does it replace
 # engine-src, engine.wasm and engine-base.txt. If the patch no longer fits, nothing changes and
 # the conflicts are listed: fix them in the new tree, then run make-patch.sh.
