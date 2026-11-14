@@ -1,0 +1,24 @@
+name: Linux test
+# Builds the engine from engine-src and runs tests/linux-test.mjs (boots Alpine, 20+ checks)
+# against both the fresh build and the published engine.wasm.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the engine
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cd engine-src && cargo build --release --target wasm32-unknown-unknown
+      - name: Test the fresh build
+        run: node tests/linux-test.mjs engine-src/target/wasm32-unknown-unknown/release/inksoc.wasm
+      - name: Test the published engine.wasm
+        run: node tests/linux-test.mjs engine.wasm
