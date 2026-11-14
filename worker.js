@@ -108,7 +108,7 @@ async function run({ rows, cols, network, poolMb, targetMb }) {
   };
   const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(u + ': ' + r.status); return r; });
   const [wasm, busybox, overlay, saved] = await Promise.all([
-    get('engine.wasm?v=10').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
+    get('engine.wasm?v=11').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
     get('overlay.tar?v=4').then((r) => r.arrayBuffer()), loadSaved()]);
   let rootfs = saved;
   if (!rootfs) {
@@ -140,7 +140,10 @@ async function run({ rows, cols, network, poolMb, targetMb }) {
     while (keys.length) {
       const s = keys.shift();
       const lf = x.linux_lflag(), canon = lf & 2, echo = lf & 8;
-      if (!canon) { send(s); continue; }
+      if (!canon) { // raw mode: Ctrl+C still interrupts while the program keeps ISIG on (shells, python, readline)
+        if ((lf & 1) && s.includes('\x03')) { const parts = s.split('\x03'); parts.forEach((p, i) => { if (p) send(p); if (i < parts.length - 1) x.linux_interrupt(); }); } else send(s);
+        continue;
+      }
       if (s.startsWith('\x1b[') && /R$/.test(s)) continue; // a cursor-position answer nobody asked for in line mode
       for (const ch of s) {
         const afterCr = lastCr; lastCr = ch === '\r';

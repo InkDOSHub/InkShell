@@ -34,6 +34,7 @@ x.init(POOL, 8192);
 add('busybox', fs.readFileSync('busybox'));
 add('rootfs.tar', zlib.gunzipSync(fs.readFileSync('alpine-rootfs.tar.gz')));
 add('zoverlay.tar', fs.readFileSync('overlay.tar'));
+add('stage1', fs.readFileSync(new URL('./stage1', import.meta.url))); // tests/src/stage1.c, built static
 put(enc.encode('busybox\0sh /etc/inksoc/start'));
 if (x.start() !== 0) { console.log('FAIL start:', dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()))); process.exit(1); }
 x.linux_winsize(30, 100);
@@ -44,7 +45,8 @@ async function settle(maxMs = 120000) {
   for (let idle = 0; Date.now() - t0 < maxMs;) {
     const st = x.run(2000000);
     if (st === 1 || st === 2) return st;
-    if (st === 3) { if (++idle > 20) return 3; await new Promise((r) => setTimeout(r, 2)); } else idle = 0;
+    // waiting: a timer due soon (sleep, a timeout) is not idle; only waiting for the terminal is
+    if (st === 3) { const ms = x.stat(17); if (ms >= 30 && ++idle > 20) return 3; await new Promise((r) => setTimeout(r, Math.min(ms, 30) || 2)); } else idle = 0;
   }
   return 0;
 }
@@ -75,6 +77,20 @@ await step('free -m | grep Mem\n', /Mem:\s+8192/, '/proc and sysinfo: programs s
 await step('awk \'BEGIN{for(i=0;i<400000;i++)a[i]="item number " i; print length(a)}\'\n', /400000/, 'a program using more than the real RAM');
 results.push(swap.size > 0); console.log((swap.size > 0 ? 'PASS' : 'FAIL') + ' pages went to swap (' + swap.size + ')');
 await step('sh -c \'awk "BEGIN{for(i=0;i<200000;i++)a[i]=i; print 1}" & awk "BEGIN{for(i=0;i<200000;i++)b[i]=i; print 2}"; wait\' | sort | tr "\\n" " "; echo\n', /1 2/, 'two processes swapping at once');
+await step('/root/stage1 threads\n', /threads 200000/, 'threads, mutex and condition variable (futex)');
+await step('/root/stage1 signals\n', /signals 10 7 15/, 'signal handlers, pause, kill');
+await step('/root/stage1 sockets\n', /sockets ping pong 0 tcp-ok/, 'socketpair, unix server, TCP on 127.0.0.1');
+await step('/root/stage1 epoll\n', /epoll 0 1 22 1 11 5 select 0 1/, 'epoll, eventfd, select');
+await step('trap "echo caught-usr1" USR1; kill -USR1 $$\n', /caught-usr1/, 'shell trap');
+await step('(nc -l -p 8098 > /tmp/nc.txt &) ; sleep 0.3; echo over-nc | nc 127.0.0.1 8098; sleep 0.3; cat /tmp/nc.txt\n', /^over-nc/m, 'nc server and client on this machine');
+{ // Ctrl+C stops a running program and the shell comes back
+  const before = out.length;
+  send('sleep 30; echo after-sleep\n'); await settle(1500);
+  x.linux_interrupt(); const t1 = Date.now(); await settle(10000);
+  send('echo back-$((1+1))\n'); await settle(10000);
+  const got = out.slice(before), ok = /back-2/.test(got) && Date.now() - t1 < 10000;
+  results.push(ok); console.log((ok ? 'PASS' : 'FAIL') + ' Ctrl+C stops sleep' + (ok ? '' : '\n' + got.slice(-400)));
+}
 const pass = results.filter(Boolean).length;
 console.log(`\n${pass}/${results.length} passed in ${((Date.now() - t0) / 1000).toFixed(1)} s · swap slots used: ${swap.size}`);
 process.exit(pass === results.length ? 0 : 1);

@@ -6,13 +6,23 @@ real programs, with their shared libraries (`/lib/ld-musl-x86_64.so.1`).
 
 - Engine: Windows first, Linux follows. The Windows engine (`src/engine` in InkDOSHub/InkSoC) never
   gets Linux changes. This app keeps them as `linux.patch` (today: `src/mmu.rs`, swap for
-  every process, and `src/linux.rs`) on top of the Windows engine commit in `engine-base.txt`.
+  every process; `src/sched.rs`, small helpers for Linux threads and waits; and `src/linux.rs`) on top of the Windows engine commit in `engine-base.txt`.
   - `tools/sync-engine.sh <commit or version tag>`: takes that Windows engine, re-applies
     `linux.patch`, builds, runs `tests/linux-test.mjs`, and only then replaces `engine-src/`,
     `engine.wasm` and `engine-base.txt`. Speed work on the CPU and JIT comes along as is.
   - `tools/make-patch.sh`: after changing Linux parts in `engine-src/`, rebuilds `linux.patch`.
   - `tests/linux-test.mjs [engine.wasm]`: boots Alpine with 24 MB of real RAM and checks the
-    first start, sudo, files, fork/exec, apk, /proc and the swap (node, no network).
+    first start, sudo, files, fork/exec, apk, /proc, the swap, threads (futex), signal handlers,
+    local sockets (unix and TCP on 127.0.0.1), epoll/eventfd/select and Ctrl+C (node, no network).
+    `tests/stage1` is built from `tests/src/stage1.c` (`gcc -O1 -static -pthread`).
+  - When syncing, merge `src/mmu.rs`, `src/sched.rs` and `src/linux.rs` with `git merge-file`
+    (mine = `engine-src`, base = the old `engine-base.txt` version, theirs = the new engine) if the
+    patch does not apply cleanly.
+- Linux layer: processes (fork/exec/wait), threads (clone with CLONE_VM, futex), signals (handlers
+  run at the next system call; a second Ctrl+C stops a program that never makes one), process
+  groups and the terminal's foreground group, pipes, local sockets (AF_UNIX stream, socketpair,
+  TCP listen/connect on 127.0.0.1), internet sockets through the page (wisp), poll/select/epoll,
+  eventfd.
 - `engine-src/`: the Windows engine at `engine-base.txt` plus `linux.patch`.
 - `engine.wasm`: the build of `engine-src`.
 - Memory: the same budget as InkSoC. Programs see 8 GB; real RAM = half of the lowest tab

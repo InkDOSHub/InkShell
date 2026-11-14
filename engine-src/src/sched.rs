@@ -511,8 +511,33 @@ impl Engine {
         crate::lock::kick();
         id
     }
-    /// A new Linux thread (fork's child), ready to run.
-    pub fn spawn_linux(&mut self, cpu: Cpu, pid: u32) {
+    /// Wakes Linux threads whose wait `f` accepts (Some(return value)); `f` may also change a wait.
+    pub fn wake_linux(&mut self, f: &mut dyn FnMut(u32, &mut crate::linux::Cond) -> Option<u64>) {
+        for t in self.s.sched.th.iter_mut() {
+            if t.st != St::Wait { continue; }
+            let Some(W::Lx(c)) = t.wait.as_mut() else { continue };
+            if let Some(v) = f(t.pid, c) {
+                t.st = St::Ready;
+                t.wait = None;
+                t.pending = Some(v);
+            }
+        }
+        crate::lock::kick();
+    }
+    /// Only the running Linux thread ends (a thread of a process, not the process).
+    pub fn end_linux_thread(&mut self) {
+        if let Some(t) = self.s.sched.th.get_mut(self.cur) {
+            t.st = St::Done;
+            t.wait = None;
+        }
+        self.want_switch = true;
+    }
+    /// Live Linux threads of process `pid`.
+    pub fn linux_threads(&self, pid: u32) -> Vec<u32> {
+        self.s.sched.th.iter().filter(|t| t.pid == pid && t.st != St::Done).map(|t| t.id).collect()
+    }
+    /// A new Linux thread (fork's child, or a thread of the same process), ready to run; its id.
+    pub fn spawn_linux(&mut self, cpu: Cpu, pid: u32) -> u32 {
         let id = MAIN_TID + 4 * self.s.sched.th.len() as u32;
         self.s.sched.th.push(Thread {
             id,
@@ -536,6 +561,7 @@ impl Engine {
         if self.s.sched.th.len() == 2 {
             self.slice = SLICE;
         }
+        id
     }
     /// The current Linux thread waits (its rip is back on the syscall instruction).
     pub fn block_linux(&mut self, c: crate::linux::Cond, ms: Option<f64>) {
@@ -626,15 +652,16 @@ impl Engine {
                 St::Wait if matches!(t.wait, Some(W::Lx(_))) => {
                     let Some(W::Lx(c)) = t.wait.clone() else { unreachable!() };
                     let dl = t.deadline;
-                    let ready = crate::linux::ready(self, &c);
+                    let (pid, tid) = (t.pid, t.id);
+                    let ready = crate::linux::ready(self, &c, pid, tid);
                     if ready || t_now >= dl {
                         let t = &mut self.s.sched.th[i];
                         t.st = St::Ready;
                         t.wait = None;
-                        t.pending = if ready { None } else { Some(0) };
+                        t.pending = if ready { None } else { Some(crate::linux::timed_out(&c)) };
                         return self.switch_to(i);
                     }
-                    soonest = soonest.min(if matches!(c, crate::linux::Cond::Stdin) { t_now + 30.0 } else { dl });
+                    soonest = soonest.min(if dl.is_finite() { dl } else { t_now + 30.0 }); // the page may type or press Ctrl+C at any time
                 }
                 St::Wait => {
                     let w = t.wait.clone().unwrap();
