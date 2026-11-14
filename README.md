@@ -17,6 +17,12 @@ Alpine Linux 3.21 (x86-64) runs on [InkSoC](https://github.com/InkDOSHub/InkSoC)
 - Programs see 8 GB; real RAM follows this device's calibrated limit and the rest goes to swap in the browser storage.
 - Your files stay in this browser between visits; ⇡ and ⇣ send and download files.
 
+## Limitations
+
+- **No incoming connections from outside.** Servers you start (`nc -l`, a web server, `sshd`) can only be reached from inside this terminal (`127.0.0.1`), because a browser page can't accept connections from the network. So `sshd` is not set up: only `ssh localhost` would reach it.
+- Timer signals (`alarm`, `setitimer`, `timer_create`) arrive at the program's next system call; a loop that never makes one doesn't get them.
+- No desktop or 3D graphics: it is a terminal.
+
 ## Files
 
 | Path | What |
