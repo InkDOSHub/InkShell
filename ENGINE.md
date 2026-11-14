@@ -1,4 +1,4 @@
-# Alpine Linux (InkSoC)
+# InkShell engine notes
 
 A complete Alpine Linux 3.21 (x86-64) terminal in the browser, WSL 1 style: the InkSoC
 engine plays the part of the Linux kernel (system calls in WebAssembly) and runs Alpine's

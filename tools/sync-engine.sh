@@ -1,14 +1,14 @@
 #!/bin/sh
 # Moves the Linux engine to a newer Windows engine, without touching the Windows engine:
-#   tools/sync-engine.sh <commit or tag of the Windows engine>   (run from alpine/)
+#   tools/sync-engine.sh <commit or tag of the Windows engine>   (run from the repository root)
 # 1. takes the engine (src/engine of InkDOSHub/InkSoC) at that commit, 2. re-applies linux.patch (the Linux-only
 # changes), 3. builds, 4. runs tests/linux-test.mjs. Only if all of it passes does it replace
 # engine-src, engine.wasm and engine-base.txt. If the patch no longer fits, nothing changes and
 # the conflicts are listed: fix them in the new tree, then run make-patch.sh.
 set -e
-# INKSOC: a clone of the InkSoC engine repository (default ../../InkSoC next to this repo);
+# INKSOC: a clone of the InkSoC engine repository (default ../InkSoC next to this repo);
 # ENGINE: the engine folder inside it (default src/engine; apps/inksoc/src/engine in the old Hub repo).
-export INKSOC=${INKSOC:-$(cd ../.. && pwd)/InkSoC}
+export INKSOC=${INKSOC:-$(cd .. && pwd)/InkSoC}
 export ENGINE=${ENGINE:-src/engine}
 ref=${1:?usage: tools/sync-engine.sh <commit or tag>}
 new=$(git -C "$INKSOC" rev-parse --short "$ref^{commit}")

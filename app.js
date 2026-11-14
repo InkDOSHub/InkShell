@@ -1,455 +1,169 @@
-import { V86 } from "./vendor/v86/libv86.mjs?v=5";
-import { Terminal } from "./vendor/xterm/xterm.mjs";
-import { FitAddon } from "./vendor/xterm/addon-fit.mjs";
-
-const params = new URLSearchParams(location.search);
-const t = window.InkIdioma ? InkIdioma.t : (s, p) => s.replace(/\{(\w+)\}/g, (m, k) => (p && k in p ? String(p[k]) : m));
-const local = window.InkIdioma ? InkIdioma.atual : undefined;
-if (params.has("embed")) document.body.classList.add("embed");
-
-const statusEl = document.getElementById("status");
-const setStatus = (s) => { statusEl.textContent = s; };
-
-// ---------- Terminal (xterm.js) ----------
+/* Alpine Linux terminal page: xterm.js in front, the engine (worker.js) behind. */
+'use strict';
+const $ = (id) => document.getElementById(id);
 const term = new Terminal({
-  // Apple Terminal look ("Basic" profile): SF Mono/Menlo, gray block cursor, Terminal.app ANSI colors
-  cursorBlink: false,
-  cursorStyle: "block",
-  fontFamily: '"SF Mono", Menlo, ui-monospace, monospace',
-  fontSize: Number(params.get("font")) || (Math.min(screen.width, screen.height) < 500 ? 12 : 14),
-  lineHeight: 1.12,
-  // Cores seguem o tema do InkDOS Hub (/assets/tema.js)
-  theme: Object.assign({
-    black: "#000000", red: "#990000", green: "#00a600", yellow: "#999900", blue: "#0000b2", magenta: "#b200b2", cyan: "#00a6b2", white: "#bfbfbf",
-    brightBlack: "#666666", brightRed: "#e50000", brightGreen: "#00d900", brightYellow: "#e5e500", brightBlue: "#0000ff", brightMagenta: "#e500e5", brightCyan: "#00e5e5", brightWhite: "#e5e5e5",
-  }, document.documentElement.dataset.theme === "dark"
-    ? { background: "#1e1e1e", foreground: "#f2f2f2", cursor: "#a6a6a6", cursorAccent: "#1e1e1e", selectionBackground: "#3f638b", blue: "#4f7dff", brightBlue: "#6f95ff" }
-    : { background: "#ffffff", foreground: "#000000", cursor: "#7f7f7f", cursorAccent: "#ffffff", selectionBackground: "#b4d5fe" }),
-  scrollback: 5000,
+  convertEol: true, cursorBlink: true, fontSize: 14, scrollback: 5000,
+  fontFamily: 'ui-monospace, Menlo, "SF Mono", Consolas, monospace',
+  theme: { background: '#0b0b0d' },
 });
-const fit = new FitAddon();
-term.loadAddon(fit);
-term.open(document.getElementById("term"));
-fit.fit();
-term.focus();
-document.getElementById("term").addEventListener("click", () => term.focus());
+term.open($('term'));
 
-// ---------- Saved state (IndexedDB) ----------
-// KEY changes when the machine changes (kernel/devices), because an old state no longer works.
-const DB = "inkdoshub", STORE = "state", KEY = "vm-v4";
-function idb() {
-  return new Promise((ok, fail) => {
-    const r = indexedDB.open(DB, 1);
-    r.onupgradeneeded = () => r.result.createObjectStore(STORE);
-    r.onsuccess = () => ok(r.result);
-    r.onerror = () => fail(r.error);
-  });
+// size the terminal to its box (no fit add-on: measure one character)
+function fit() {
+  const box = $('term').getBoundingClientRect();
+  const probe = document.createElement('span');
+  probe.style.cssText = 'position:absolute;visibility:hidden;font-family:' + term.options.fontFamily + ';font-size:' + term.options.fontSize + 'px;line-height:normal';
+  probe.textContent = 'W'.repeat(50);
+  document.body.appendChild(probe);
+  let cw = probe.getBoundingClientRect().width / 50, ch = term.options.fontSize * 1.2;
+  probe.remove();
+  // xterm's own cell size when it has one (Safari's line height differs from the estimate, and too many rows covered the key bar)
+  try { const c = term._core._renderService.dimensions.css.cell; if (c.width > 0 && c.height > 0) { cw = c.width; ch = c.height; } } catch (e) {}
+  const cols = Math.max(20, Math.floor(box.width / cw)), rows = Math.max(5, Math.floor(box.height / ch));
+  if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
+  if (w) w.postMessage({ type: 'resize', rows: term.rows, cols: term.cols });
 }
-async function idbOp(mode, fn) {
-  const db = await idb();
-  return new Promise((ok, fail) => {
-    const tx = db.transaction(STORE, mode);
-    const req = fn(tx.objectStore(STORE));
-    tx.oncomplete = () => ok(req && req.result);
-    tx.onerror = () => fail(tx.error);
-  });
+
+/* ---- start panel: system, network, memory (same budget as InkSoC), saved data ---- */
+const NETS = ['wisp', 'off'];
+const pref = { get(k, d) { try { return localStorage.getItem(k) || d; } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
+let network = pref.get('alpine-net', 'wisp');
+if (!NETS.includes(network)) network = 'wisp';
+document.querySelector('input[name=net][value=' + network + ']').checked = true;
+for (const r of document.querySelectorAll('input[name=net]')) r.onchange = () => { network = r.value; pref.set('alpine-net', network); };
+
+// InkSoC's memory limits (same site, same storage): the lowest tab limit seen on this device
+const LS = 'inksoc-limits';
+const limits = { get() { try { return JSON.parse(localStorage.getItem(LS)) || {}; } catch (e) { return {}; } }, set(v) { try { localStorage.setItem(LS, JSON.stringify(v)); } catch (e) {} } };
+{ // a calibration that was still running when the tab reloaded: the last step saved is the limit
+  const s = limits.get();
+  if (s.calib && s.calib.running && s.calib.mb) { s.calib.running = false; s.calib.note = 'the tab reloaded'; s.minLimit = Math.min(s.minLimit || Infinity, s.calib.mb); limits.set(s); }
 }
-const loadState = () => idbOp("readonly", (s) => s.get(KEY)).catch(() => undefined);
-const saveStateDb = (buf) => idbOp("readwrite", (s) => s.put(buf, KEY));
-const clearStateDb = () => idbOp("readwrite", (s) => s.delete(KEY));
-
-// ---------- Memory ----------
-// "normal": 256 MB, as before, and the session can be saved.
-// "maxima": 1.5 GB of RAM for Linux, plus zram (compressed memory) and a 2 GB
-// swap disk in the site storage (OPFS), where Linux sends what
-// is rarely used. In this mode the session is not saved, because swap is rebuilt on every boot.
-let savedMem;
-try { savedMem = localStorage.getItem("inkdoshub-memoria"); } catch {}
-const MEM = params.get("memoria") || savedMem || "normal";
-// ?ram=<MB> (pilot): bigger RAM, same rules as the limited mode (swap, no saved session)
-const RAM_MB = Math.min(Math.max(+params.get("ram") || 0, 0), 2048) || (MEM === "maxima" || MEM === "limitada" ? 1536 : 0);
-const LIMITADA = RAM_MB > 0;
-const SWAP_BYTES = 2000 * 1024 * 1024;
-
-function abrirSwap() {
-  const w = new Worker("swap-worker.js?v=1");
-  let seq = 0;
-  const espera = new Map();
-  w.onmessage = ({ data }) => { const f = espera.get(data.id); espera.delete(data.id); f && f(data); };
-  const pedir = (m, transf) => new Promise((ok) => { m.id = ++seq; espera.set(m.id, ok); w.postMessage(m, transf || []); });
-  const disco = {
-    byteLength: SWAP_BYTES,
-    onload: null, onprogress: null,
-    lidos: 0, gravados: 0,
-    load() { this.onload && this.onload({}); },
-    get(start, len, fn) {
-      pedir({ op: "read", at: start, len }).then((r) => { this.lidos += len; fn(r.ok ? r.buf : new Uint8Array(len)); });
-    },
-    set(start, slice, fn) {
-      const buf = slice.slice();
-      pedir({ op: "write", at: start, buf }, [buf.buffer]).then(() => { this.gravados += buf.length; fn && fn(); });
-    },
-    get_and_cache(start, len, fn) { this.get(start, len, fn); },
-    get_from_cache() { return undefined; },
-    get_buffer(fn) { fn(undefined); },
-    get_state() { return []; },
-    set_state() {},
-    tamanho: () => pedir({ op: "size" }).then((r) => r.size),
+function budget() {
+  const s = limits.get();
+  const lim = s.minLimit || (s.calib && !s.calib.running && s.calib.mb) || 0;
+  if (!lim) return { pool: 256, text: 'Programs see 8 GB. Real RAM: a safe 256 MB, because this device was not calibrated yet; the rest goes to a swap file in this browser. Calibrate once to use more.' };
+  const pool = Math.max(128, Math.min(2048, Math.floor(lim * 0.5 / 64) * 64));
+  return { pool, text: `Programs see 8 GB. Real RAM: ${pool} MB (half of this device's limit, ${lim} MB); the rest goes to a swap file in this browser.` };
+}
+const showMem = () => { $('mem-text').textContent = budget().text; };
+showMem();
+$('calib').onclick = () => {
+  if (!confirm('Calibrating fills memory until the browser says no. The tab may reload once; that is expected and gives the limit. Continue?')) return;
+  $('calib').disabled = true;
+  limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
+  const c = new Worker('worker.js?v=9');
+  c.onmessage = (ev) => {
+    const d = ev.data; if (d.type !== 'calib') return;
+    const s = limits.get();
+    s.calib = { mb: d.mb, running: !d.done };
+    if (d.done) s.minLimit = Math.min(s.minLimit || Infinity, d.mb);
+    limits.set(s);
+    $('mem-text').textContent = d.done ? '' : 'Calibrating… ' + d.mb + ' MB';
+    if (d.done) { c.terminate(); $('calib').disabled = false; showMem(); }
   };
-  return pedir({ op: "open", name: "inkdoshub-swap.img" }).then((r) => {
-    if (!r.ok) { w.terminate(); throw new Error(r.error); }
-    return disco;
-  });
-}
-
-// ---------- Emulator (v86) ----------
-const saved = params.has("fresh") || LIMITADA ? undefined : await loadState();
-let swap = null;
-if (LIMITADA) {
-  try { swap = await abrirSwap(); } catch (err) { console.warn("storage swap unavailable:", err); }
-}
-// Network: Linux reaches the internet through a network server.
-//   "hub"   -> the Hub's own tunnel on Cloudflare (worker.js, wisp protocol; default)
-//   "wisp"  -> wisps://wisp.mercurywork.shop/v86/ (public server copy.sh/v86 offers)
-//   "relay" -> wss://relay.widgetry.org/ (ethernet completa)
-//   "off"   -> no network
-// Only the known names are accepted (see below).
-const REDES = { hub: "wisps://hub.inkdos.workers.dev/net/wisp/", wisp: "wisps://wisp.mercurywork.shop/v86/", relay: "wss://relay.widgetry.org/", off: undefined };
-let savedRede;
-try { savedRede = localStorage.getItem("inkdoshub-rede3"); } catch {}
-// Only known names: a link with ?rede=<address> cannot send Linux traffic to another server.
-const REDE = [params.get("rede"), savedRede].find((r) => Object.hasOwn(REDES, r)) || "hub";
-const relayUrl = REDES[REDE];
-const config = {
-  wasm_path: "vendor/v86/v86.wasm",
-  memory_size: (RAM_MB || 256) * 1024 * 1024,
-  vga_memory_size: 2 * 1024 * 1024,
-  bios: { url: "bios/seabios.bin" },
-  vga_bios: { url: "bios/vgabios.bin" },
-  bzimage: { url: "images/inkdoshub-bzImage.bin?v=9" },
-  cmdline: "console=ttyS0 quiet tsc=reliable mitigations=off random.trust_cpu=on" +
-    (LIMITADA ? " inkzram=192M" + (swap ? " inkswap=1" : "") : ""),
-  hda: swap || undefined,
-  filesystem: {},
-  net_device: relayUrl ? { type: "virtio", relay_url: relayUrl } : undefined,
-  disable_keyboard: true,
-  disable_mouse: true,
-  disable_speaker: true,
-  autostart: true,
+  c.postMessage({ type: 'calibrate' });
 };
-if (saved) config.initial_state = { buffer: saved };
 
-setStatus(saved ? t("Restoring saved session…") : LIMITADA && !swap ? t("Starting (no swap in storage, zram only)…") : t("Starting Linux…"));
-// one Linux at a time: stop here if another tab already runs it
-if (navigator.locks) {
-  await new Promise((ok) => navigator.locks.request("inkdoshub-emulador", { ifAvailable: true }, (lock) => {
-    if (!lock) {
-      document.body.insertAdjacentHTML("afterbegin", '<p style="padding:16px;text-align:center">Another emulator is open in another tab or window. Close it first, then reload this page.</p>');
-      return;
-    }
-    ok();
-    return new Promise(() => {});
-  }));
+const fmtMb = (b) => (b / 1048576).toFixed(b < 10485760 ? 1 : 0) + ' MB';
+async function showData() {
+  let size = 0;
+  try { const root = await navigator.storage.getDirectory(); size = (await (await root.getFileHandle('alpine-fs.tar')).getFile()).size; } catch (e) {}
+  const user = pref.get('alpine-user', '');
+  $('data-text').textContent = size ? (user ? 'User ' + user + ' · ' : '') + fmtMb(size) + ' of files and programs saved in this browser.' : 'Nothing saved yet. The first start asks you to create a user and a password (like WSL).';
+  $('erase').disabled = !size;
 }
-const emulator = new V86(config);
+showData();
+$('erase').onclick = () => {
+  if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
+  const r = new Worker('worker.js?v=9');
+  r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
+  r.postMessage({ type: 'reset' });
+};
+fetch('engine-version.txt?x=' + Date.now()).then((r) => r.text()).then((v) => { $('engine-text').textContent = 'Engine: InkSoC ' + v.trim() + ' (the Windows engine version, plus the Linux part)'; }).catch(() => {});
+$('start').onclick = () => { $('panel').hidden = true; document.body.classList.remove('panel'); fit(); term.reset(); start(); term.focus(); };
 
-// Serial output -> terminal, batched per frame so it stays fast.
-let pending = [];
-let scheduled = false;
-let booted = !!saved;
-emulator.add_listener("serial0-output-byte", (byte) => {
-  pending.push(byte);
-  if (!booted) { booted = true; setStatus(t("Ready")); }
-  if (!scheduled) {
-    scheduled = true;
-    requestAnimationFrame(() => {
-      term.write(new Uint8Array(pending));
-      pending = [];
-      scheduled = false;
-    });
-  }
-});
-emulator.add_listener("emulator-ready", () => {
-  if (saved) { setStatus(t("Ready (session restored)")); emulator.serial0_send("\n"); }
-});
-
-// ---------- Input ----------
+let w = null, starting = false;
 let ctrl = false;
-const ctrlBtn = document.getElementById("key-ctrl");
-const setCtrl = (v) => { ctrl = v; ctrlBtn.classList.toggle("on", v); };
+const send = (t) => { if (w) w.postMessage({ type: 'key', data: t }); };
 
-// The v86 serial port has a small queue: a large pasted text loses letters if sent at once.
-// So everything goes through a queue that sends 256 characters every 15 ms.
-let fila = "";
-let enviando = false;
-function send(data) {
-  fila += data;
-  if (enviando) return;
-  enviando = true;
-  (function drenar() {
-    const parte = fila.slice(0, 256);
-    fila = fila.slice(256);
-    emulator.serial0_send(parte);
-    if (fila) setTimeout(drenar, 15); else enviando = false;
-  })();
-}
-
-// Paste: xterm.js turns \n into Enter and uses "bracketed paste" when the shell asks.
-function colar(texto) {
-  if (!texto) return;
-  setCtrl(false);
-  term.paste(texto);
-  term.focus();
-}
-document.getElementById("key-colar").addEventListener("click", async () => {
-  try {
-    // In Safari the "Paste" bubble appears to confirm; it is how iOS releases the clipboard.
-    colar(await navigator.clipboard.readText());
-  } catch (_) {
-    const colado = prompt(t("The browser did not allow reading the clipboard. Paste the text here:"));
-    colar(colado);
-  }
-});
-// Paste from the long-press menu or Cmd+V anywhere in the terminal.
-document.getElementById("term").addEventListener("paste", (e) => {
-  if (e.defaultPrevented) return; // xterm.js already handled it
-  const txt = e.clipboardData && e.clipboardData.getData("text/plain");
-  if (txt) { e.preventDefault(); colar(txt); }
-});
-
-term.onData((data) => {
-  if (ctrl && data.length === 1) {
-    const c = data.toUpperCase().charCodeAt(0);
-    if (c >= 64 && c <= 95) data = String.fromCharCode(c - 64);
-    setCtrl(false);
-  }
-  send(data);
-});
-
-const KEYS = {
-  esc: "\x1b", tab: "\t", up: "\x1b[A", down: "\x1b[B",
-  right: "\x1b[C", left: "\x1b[D", "ctrl-c": "\x03",
-};
-document.getElementById("keys").addEventListener("click", (e) => {
-  const b = e.target.closest("button");
-  if (!b) return;
-  if (b.dataset.key === "ctrl") setCtrl(!ctrl);
-  else if (b.dataset.key) send(KEYS[b.dataset.key]);
-  else if (b.dataset.text) send(b.dataset.text);
-  term.focus();
-});
-// Keep the soft keyboard open when tapping the extra keys.
-document.getElementById("keys").addEventListener("mousedown", (e) => e.preventDefault());
-
-// ---------- Resize ----------
-// On iOS the soft keyboard covers the page instead of shrinking it, so size
-// the layout to the visible area. That keeps the extra-keys bar above the keyboard.
-const vv = window.visualViewport;
-function refit() {
-  if (vv) {
-    document.body.style.height = vv.height + "px";
-    window.scrollTo(0, 0);
-  }
-  fit.fit();
-}
-window.addEventListener("resize", refit);
-if (vv) { vv.addEventListener("resize", refit); vv.addEventListener("scroll", () => window.scrollTo(0, 0)); }
-refit();
-// The guest runs `resize` at login (see /etc/profile); after a layout change,
-// typing `resize` updates the size inside Linux.
-
-// ---------- Buttons ----------
-document.getElementById("btn-save").addEventListener("click", async () => {
-  if (LIMITADA) { setStatus(t("The session is not saved in limited memory mode")); term.focus(); return; }
-  try {
-    setStatus(t("Saving…"));
-    const buf = await emulator.save_state();
-    await saveStateDb(buf);
-    setStatus(t("Saved ({size} MB)", { size: (buf.byteLength / 1048576).toLocaleString(local, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) }));
-  } catch (err) {
-    console.error(err);
-    setStatus(t("Could not save"));
-  }
-  term.focus();
-});
-document.getElementById("btn-reset").addEventListener("click", async () => {
-  await clearStateDb().catch(() => {});
-  location.search = params.has("embed") ? "?embed=1&fresh=1" : "?fresh=1";
-});
-
-// ---------- Arquivos do dispositivo (pasta /mnt/ipad, atalho ~/files) ----------
-const picker = document.getElementById("file-picker");
-document.getElementById("btn-upload").addEventListener("click", () => picker.click());
-picker.addEventListener("change", async () => {
-  for (const file of picker.files) {
-    const data = new Uint8Array(await file.arrayBuffer());
-    await emulator.create_file("/" + file.name, data);
-  }
-  setStatus(picker.files.length === 1 ? t("Uploaded: ~/files/{name}", { name: picker.files[0].name }) : t("Uploaded {n} files to ~/files", { n: picker.files.length.toLocaleString(local) }));
-  picker.value = "";
-  term.focus();
-});
-
-const dialog = document.getElementById("download-dialog");
-const list = document.getElementById("download-list");
-function listFiles(dir) {
-  const fs = emulator.fs9p;
-  const out = [];
-  for (const name of fs.read_dir(dir) || []) {
-    const path = (dir === "/" ? "" : dir) + "/" + name;
-    const p = fs.SearchPath(path);
-    if (p.id === -1 || path === "/.inkdoshub") continue; // Session button folder
-    if (fs.IsDirectory(p.id)) out.push(...listFiles(path));
-    else out.push(path);
-  }
-  return out;
-}
-document.getElementById("btn-download").addEventListener("click", () => {
-  const files = listFiles("/");
-  list.innerHTML = "";
-  if (!files.length) {
-    const p = document.createElement("p");
-    p.textContent = t("The ~/files folder is empty. In the terminal, copy a file there, for example:");
-    p.insertAdjacentHTML("beforeend", "<br><code>cp notes.txt ~/files/</code>");
-    list.appendChild(p);
-  }
-  for (const path of files) {
-    const b = document.createElement("button");
-    b.className = "ink-btn";
-    b.textContent = path.slice(1);
-    b.addEventListener("click", async () => {
-      const data = await emulator.read_file(path);
-      const url = URL.createObjectURL(new Blob([data]));
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = path.split("/").pop();
-      document.body.appendChild(a);
+function start() {
+  if (starting || w) return;
+  starting = true;
+  term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
+  w = new Worker('worker.js?v=9');
+  starting = false;
+  w.onmessage = (ev) => {
+    const m = ev.data;
+    if (m.type === 'out') term.write(m.text);
+    else if (m.type === 'file') {
+      if (!m.data) { term.write('\r\n\x1b[31m' + m.path + ': not found\x1b[0m\r\n'); return; }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([m.data]));
+      a.download = m.path.split('/').pop() || 'file';
       a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
-      dialog.close();
-    });
-    list.appendChild(b);
-  }
-  dialog.showModal();
-});
-document.getElementById("download-close").addEventListener("click", () => dialog.close());
-
-// ---------- Escolha da rede ----------
-// One button (XeOS redraws <select>s): each tap moves to the next option and boots again.
-const redeBtn = document.getElementById("rede");
-const NOMES = { hub: t("Network: {name}", { name: "Hub" }), wisp: t("Network: {name}", { name: "wisp" }), relay: t("Network: {name}", { name: "relay" }), off: t("No network") };
-redeBtn.textContent = NOMES[REDE];
-redeBtn.addEventListener("click", () => {
-  const ordem = ["hub", "wisp", "relay", "off"];
-  const prox = ordem[(ordem.indexOf(REDE) + 1) % ordem.length];
-  try { localStorage.setItem("inkdoshub-rede3", prox); } catch {}
-  const q = new URLSearchParams(location.search);
-  q.delete("rede");
-  location.search = q.toString();
-});
-
-// ---------- Memory choice ----------
-const memBtn = document.getElementById("memoria");
-memBtn.textContent = t("Memory: {size}", { size: RAM_MB ? (RAM_MB === 1536 ? "1.5 GB + 2 GB swap" : RAM_MB + " MB + swap") : "256 MB" });
-memBtn.addEventListener("click", () => {
-  // two modes: 256 MB <-> 1.5 GB + 2 GB swap
-  const next = RAM_MB ? "normal" : "maxima";
-  try { localStorage.setItem("inkdoshub-memoria", next); } catch {}
-  const q = new URLSearchParams(location.search);
-  q.delete("memoria"); q.delete("ram");
-  location.search = q.toString();
-});
-if (LIMITADA) document.getElementById("btn-save").title = t("The session is not saved in this mode (swap is rebuilt on every boot)");
-
-// ---------- Session file (assets/sessao.js) ----------
-// Linux runs /usr/local/sbin/inksessao (tools/linux/), which talks through the /mnt/ipad/.inkdoshub folder:
-// the page writes "pedido" (save or restore) and reads "estado" ("trabalhando ...", "ok ...",
-// "aviso ..." or "erro ..."). The recipe is a .tar.gz with the apk package list, /root, /home and /usr/local.
-const SESSAO = "/.inkdoshub";
-const fs9 = () => emulator.fs9p;
-function pastaSessao() {
-  if (fs9().SearchPath(SESSAO).id === -1) fs9().CreateDirectory(SESSAO.slice(1), 0);
-}
-async function gravar9p(caminho, dados) {
-  pastaSessao();
-  const p = fs9().SearchPath(caminho);
-  if (p.id !== -1) fs9().Unlink(p.parentid, caminho.split("/").pop());
-  await emulator.create_file(caminho, dados);
-}
-async function ler9p(caminho) {
-  if (fs9().SearchPath(caminho).id === -1) return null;
-  // file empty or deleted by Linux in the middle of the read
-  return emulator.read_file(caminho).catch(() => null);
-}
-const texto9p = async (c) => { const b = await ler9p(c); return b ? new TextDecoder().decode(b).trim() : null; };
-const espera = (ms) => new Promise((ok) => setTimeout(ok, ms));
-
-// A Linux restored from an old "Save" (before this feature) does not have inksessao running.
-// In that case the page sends the same program through the folder and types the command that starts it.
-async function pedirAoLinux(pedido, aviso) {
-  await gravar9p(SESSAO + "/estado", new TextEncoder().encode("esperando"));
-  await gravar9p(SESSAO + "/pedido", new TextEncoder().encode(pedido));
-  let ligou = false;
-  for (let i = 0; ; i++) {
-    await espera(1000);
-    const e = await texto9p(SESSAO + "/estado");
-    if (e && e !== "esperando") {
-      if (!e.startsWith("trabalhando")) return e;
-      const log = pedido === "restaurar" ? await texto9p(SESSAO + "/apk.log") : null;
-      const ultima = log ? log.split("\n").pop() : "";
-      aviso.texto(e.replace(/^trabalhando /, "").replace(/^./, (c) => c.toUpperCase()) + "…" + (ultima ? "\n" + ultima : ""));
-      continue;
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    } else if (m.type === 'saved') term.write('\r\n\x1b[2m[files saved]\x1b[0m\r\n');
+    else if (m.type === 'info') { pref.set('alpine-user', m.user || ''); }
+    else if (m.type === 'done') {
+      term.write('\r\n\x1b[2m[' + (m.error ? 'stopped: ' + m.error : 'Linux ended') + ']\x1b[0m\r\n');
+      if (w) w.terminate();
+      w = null;
+      setTimeout(() => { $('panel').hidden = false; document.body.classList.add('panel'); showData(); }, 1500);
     }
-    if (i === 6 && !ligou && await texto9p(SESSAO + "/pedido")) {
-      ligou = true;
-      if (!await InkSessao.perguntar(t("Turn on session saving"), t("This Linux was saved before the Session button existed. To continue, a command will be typed in the terminal. Quit any open programs (such as nano or vi) first."), t("Type the command"))) {
-        throw new Error(t("Canceled."));
-      }
-      const r = await fetch("tools/linux/alpine-overlay/usr/local/sbin/inksessao?v=4");
-      if (!r.ok) throw new Error(t("could not download inksessao ({status})", { status: r.status }));
-      await gravar9p(SESSAO + "/inksessao", new Uint8Array(await r.arrayBuffer()));
-      send("(sh /mnt/ipad/.inkdoshub/inksessao </dev/null >/dev/null 2>&1 &)\n");
-    }
-    if (i > 40 && !ligou) throw new Error(t("Linux did not respond. Wait for it to finish starting and try again."));
-    if (i > 60) throw new Error(t("Linux did not respond."));
-  }
+  };
+  fit();
+  w.postMessage({ type: 'start', rows: term.rows, cols: term.cols, network, poolMb: budget().pool, targetMb: 8192 });
 }
 
-const sessaoDialog = document.getElementById("sessao-dialog");
-document.getElementById("btn-sessao").addEventListener("click", () => sessaoDialog.showModal());
-document.getElementById("sessao-fechar").addEventListener("click", () => sessaoDialog.close());
-document.getElementById("sessao-salvar").addEventListener("click", () => {
-  sessaoDialog.close();
-  InkSessao.salvar("linux", "Linux", async (aviso) => {
-    aviso.texto(t("Asking Linux for the package list and the home folder…"));
-    const e = await pedirAoLinux("salvar", aviso);
-    if (!e.startsWith("ok")) throw new Error(e.replace(/^erro ?/, "") || t("error in Linux"));
-    const receita = await ler9p(SESSAO + "/receita.tar.gz");
-    if (!receita) throw new Error(t("Linux did not create the file"));
-    const pacotes = Number(e.split(" ")[2]) || 0;
-    gravar9p(SESSAO + "/receita.tar.gz", new Uint8Array(0)).catch(() => {});
-    return { meta: { versao: 1, pacotes }, partes: { "receita.tar.gz": receita } };
-  }).finally(() => term.focus());
-});
-document.getElementById("sessao-abrir").addEventListener("click", async () => {
-  sessaoDialog.close();
-  const r = await InkSessao.abrir("linux", "Linux");
-  if (!r) { term.focus(); return; }
-  const receita = r.partes["receita.tar.gz"];
-  const aviso = InkSessao.aviso(t("Opening the session"), t("Sending the file to Linux…"));
-  try {
-    if (!receita) throw new Error(t("the file does not contain the Linux recipe"));
-    await gravar9p(SESSAO + "/receita.tar.gz", receita);
-    const e = await pedirAoLinux("restaurar", aviso);
-    if (e.startsWith("ok")) aviso.fim(t("Done: packages installed and files restored. Tap Save to keep this Linux in the browser."));
-    else if (e.startsWith("aviso")) aviso.fim(t("Your files were restored, but the packages could not be installed (no internet?). The list was saved to {file}. With the network on, run: {command}", { file: "~/session-packages.txt", command: "apk add $(cat ~/session-packages.txt)" }), true);
-    else throw new Error(e.replace(/^erro ?/, ""));
-  } catch (err) {
-    console.error("session:", err);
-    aviso.fim(t("Could not open the session: {error}", { error: err && err.message || err }), true);
+term.onData((d) => {
+  if (!w) return;
+  if (ctrl && d.length === 1) {
+    const c = d.toUpperCase().charCodeAt(0);
+    if (c >= 64 && c < 96) d = String.fromCharCode(c - 64);
+    ctrl = false; $('ctrl').classList.remove('on');
   }
+  send(d);
+});
+
+const K = { esc: '\x1b', tab: '\t', '^C': '\x03', '^D': '\x04', up: '\x1b[A', down: '\x1b[B', right: '\x1b[C', left: '\x1b[D' };
+$('keys').addEventListener('click', (ev) => {
+  const b = ev.target.closest('button');
+  if (!b) return;
+  const k = b.dataset.k;
+  if (k === 'ctrl') { ctrl = !ctrl; b.classList.toggle('on', ctrl); }
+  else send(K[k] || k);
   term.focus();
 });
 
-window.inkdoshub = { emulator, term, swap };
+$('i').onclick = () => $('info').classList.toggle('show');
+$('menu').onclick = () => $('menubox').classList.toggle('show');
+$('save').onclick = () => { $('menubox').classList.remove('show'); if (w) w.postMessage({ type: 'save' }); };
+$('up').onclick = () => $('file').click();
+$('file').onchange = async () => {
+  for (const f of $('file').files) {
+    const data = await f.arrayBuffer();
+    if (w) w.postMessage({ type: 'put', name: f.name, data }, [data]);
+    term.write('\r\n\x1b[2m[' + f.name + ' → your home folder]\x1b[0m\r\n');
+  }
+  $('file').value = '';
+  send('');
+};
+$('down').onclick = () => {
+  const p = prompt('File to download (path, e.g. /home/you/notes.txt):', '/home/');
+  if (p && w) w.postMessage({ type: 'get', path: p });
+};
+
+addEventListener('resize', () => fit());
+// iPhone/iPad: the on-screen keyboard covers the page; shrink it to the visible area so the key bar stays above the keyboard
+const vv = window.visualViewport;
+if (vv) {
+  const fitView = () => { document.body.style.height = vv.height + 'px'; window.scrollTo(0, 0); fit(); };
+  vv.addEventListener('resize', fitView);
+  vv.addEventListener('scroll', () => window.scrollTo(0, 0));
+  fitView();
+}
+// no auto-capitals or auto-correct in the terminal
+const ta = document.querySelector('.xterm-helper-textarea');
+if (ta) { ta.setAttribute('autocapitalize', 'off'); ta.setAttribute('autocorrect', 'off'); ta.setAttribute('spellcheck', 'false'); ta.setAttribute('autocomplete', 'off'); }
+// nothing runs before Start (like the Wine app)

@@ -6,34 +6,33 @@
 
 <p align="center"><b><a href="https://hub.inkdos.workers.dev/InkShell/">Open InkShell</a></b> · part of <a href="https://github.com/InkDOSHub/inkdoshub.github.io">InkDOS Hub</a> · MIT license</p>
 
-<p align="center"><img src=".github/prints/InkShell-iphone.png" width="28%" alt="Linux terminal on iPhone"> <img src=".github/prints/InkShell-alpine-iphone.png" width="28%" alt="Alpine on InkSoC, start screen"></p>
-<p align="center"><img src=".github/prints/InkShell-ipad.png" width="80%" alt="Linux terminal on a larger screen"></p>
+<p align="center"><img src=".github/prints/InkShell-alpine-iphone.png" width="28%" alt="InkShell start screen on iPhone"></p>
 
-## Two terminals
+## How it works
 
-| | Linux terminal (root) | Alpine on InkSoC (`alpine/`) |
-|---|---|---|
-| Engine | [v86](https://github.com/copy/v86): a whole x86 PC emulated in WebAssembly, with a real Linux kernel | Our [InkSoC](https://github.com/InkDOSHub/InkSoC) engine playing the part of the Linux kernel (system calls in WebAssembly, WSL 1 style) running real x86-64 Alpine programs |
-| Speed | Stable, slower | Experimental, much faster (JIT) |
-| Extras | Session saving, the `~/files` folder shared with the device, keyboard bar for touch screens | 8 GB for programs with swap in the browser storage, user account like WSL |
+Alpine Linux 3.21 (x86-64) runs on [InkSoC](https://github.com/InkDOSHub/InkSoC), our own engine, which plays the part of the Linux kernel (system calls in WebAssembly, WSL 1 style) and runs Alpine's real programs with a JIT.
 
-Both have `apk` and internet through a WebSocket tunnel (wisp).
+- First start creates your user and password (`sudo` works); type `help` for the guide.
+- `apk` and internet through a public WebSocket tunnel (wisp), or no network.
+- Programs see 8 GB; real RAM follows this device's calibrated limit and the rest goes to swap in the browser storage.
+- Your files stay in this browser between visits; ⇡ and ⇣ send and download files.
 
 ## Files
 
 | Path | What |
 |---|---|
-| `index.html`, `app.js`, `swap-worker.js` | The v86 terminal |
-| `images/`, `bios/`, `vendor/` | Linux image, SeaBIOS/VGABIOS, v86 and xterm.js |
-| `tools/linux/` | Builds the kernel and the Alpine overlay (`build.sh`) |
-| `alpine/` | Alpine on InkSoC; its engine is the InkSoC engine plus `alpine/linux.patch` ([alpine/README.md](alpine/README.md)) |
+| `index.html`, `app.js`, `worker.js` | The page and the engine worker |
+| `engine.wasm`, `engine-src/`, `linux.patch`, `engine-base.txt` | The InkSoC engine plus the Linux changes ([ENGINE.md](ENGINE.md)) |
+| `alpine-rootfs.tar.gz`, `busybox`, `overlay/` | Alpine root file system and what InkShell adds on top (`overlay/build.sh` packs `overlay.tar`) |
+| `tools/`, `tests/` | Engine sync and the Linux test (node) |
+| `vendor/` | xterm.js |
 
 ## Part of InkDOS Hub
 
-InkShell is one of the apps of [InkDOS Hub](https://hub.inkdos.workers.dev/), a free, open-source home screen of tools for iPad, iPhone and PC. It is published by GitHub Pages at `inkdoshub.github.io/InkShell/`, on the same site as the Hub, so it shares the Hub's top bar, theme and language files (`/assets/`). The public address `hub.inkdos.workers.dev/InkShell/` is the Hub's Cloudflare Worker, which serves these files with cross-origin isolation (multithreaded WebAssembly).
+InkShell is one of the apps of [InkDOS Hub](https://hub.inkdos.workers.dev/), a free, open-source home screen of tools for iPad, iPhone and PC. It is published by GitHub Pages at `inkdoshub.github.io/InkShell/`, on the same site as the Hub. The public address `hub.inkdos.workers.dev/InkShell/` is the Hub's Cloudflare Worker, which serves these files with cross-origin isolation.
 
 Other InkDOS Hub repositories: [Hub](https://github.com/InkDOSHub/inkdoshub.github.io) · [InkSoC](https://github.com/InkDOSHub/InkSoC) · [InkShell](https://github.com/InkDOSHub/InkShell) · [InkCam](https://github.com/InkDOSHub/InkCam) · [InkMind](https://github.com/InkDOSHub/InkMind) · [InkArcade](https://github.com/InkDOSHub/InkArcade) · [InkBench](https://github.com/InkDOSHub/InkBench)
 
 ## License
 
-Code made here: [MIT](LICENSE). Third party: v86 (BSD-2-Clause), SeaBIOS/VGABIOS (LGPL-3.0, `bios/COPYING.LESSER`), xterm.js (MIT), the Linux kernel (GPL-2.0) and Alpine Linux packages (each under its own license).
+Code made here: [MIT](LICENSE). Third party: xterm.js (MIT), BusyBox (GPL-2.0) and Alpine Linux packages (each under its own license).
