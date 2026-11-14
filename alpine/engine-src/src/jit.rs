@@ -80,7 +80,7 @@ impl Jit {
         *h += 1;
         if *h < HOT { return None; }
         e.jit.hits.remove(&rip);
-        let t0 = unsafe { crate::host_now_ms() };
+        let t0 = crate::now_ms();
         let f = match compile(e, rip) {
             Some(code) => {
                 e.jit.bytes += code.len() as u64;
@@ -89,10 +89,18 @@ impl Jit {
             }
             None => NONE,
         };
-        e.jit.ms += unsafe { crate::host_now_ms() } - t0;
+        e.jit.ms += crate::now_ms() - t0;
         e.jit.map.insert(rip, f);
         e.jit.l1[k] = (rip, f);
         if f == NONE { None } else { Some(f) }
+    }
+
+    /// Forgets the blocks that start in [start, end) (new code is mapped there).
+    pub fn forget(&mut self, start: u64, end: u64) {
+        if self.map.is_empty() && self.hits.is_empty() { return; }
+        self.map.retain(|k, _| *k < start || *k >= end);
+        self.hits.retain(|k, _| *k < start || *k >= end);
+        for x in self.l1.iter_mut() { if x.0 >= start && x.0 < end { *x = (u64::MAX, NONE); } }
     }
 
     /// Forgets every block (code was overwritten).
@@ -309,7 +317,7 @@ const LGET: u8 = 0x20; const LSET: u8 = 0x21; const LTEE: u8 = 0x22;
 const I32LOAD: u8 = 0x28; const I64LOAD: u8 = 0x29; const I32LOAD8U: u8 = 0x2D;
 const I32STORE: u8 = 0x36; const I64STORE: u8 = 0x37;
 const I32C: u8 = 0x41; const I64C: u8 = 0x42;
-const I32EQZ: u8 = 0x45; const I32NE: u8 = 0x47; const I32LEU: u8 = 0x4D;
+const I32EQZ: u8 = 0x45; const I32LEU: u8 = 0x4D;
 const I64EQZ: u8 = 0x50; const I64EQ: u8 = 0x51; const I64LTS: u8 = 0x53; const I64LTU: u8 = 0x54; const I64LES: u8 = 0x57; const I64LEU: u8 = 0x58; const I64GEU: u8 = 0x5A;
 const I32POPCNT: u8 = 0x69; const I32ADD: u8 = 0x6A; const I32AND: u8 = 0x71; const I32OR: u8 = 0x72; const I32XOR: u8 = 0x73; const I32SHL: u8 = 0x74;
 const I64ADD: u8 = 0x7C; const I64SUB: u8 = 0x7D; const I64MUL: u8 = 0x7E; const I64AND: u8 = 0x83; const I64OR: u8 = 0x84; const I64XOR: u8 = 0x85;

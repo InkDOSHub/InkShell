@@ -1,6 +1,6 @@
 diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
---- a/src/linux.rs	2026-11-13 12:40:38.000000000 +0000
-+++ b/src/linux.rs	2026-11-13 12:51:51.986569910 +0000
+--- a/src/linux.rs	2026-11-14 16:19:45.000000000 +0000
++++ b/src/linux.rs	2026-11-14 16:36:51.044591264 +0000
 @@ -239,7 +239,7 @@
              }
          }
@@ -45,7 +45,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          if flags & 3 != 0 { return -EISDIR; }
 @@ -716,7 +739,16 @@
          }
-         97 | 302 => { if nr == 302 && a3 != 0 { let _ = e.mmu.write64(a3, u64::MAX); let _ = e.mmu.write64(a3 + 8, u64::MAX); } 0 } // getrlimit / prlimit64
+         97 | 302 => { if nr == 302 && a3 != 0 { e.w64(a3, u64::MAX); e.w64(a3 + 8, u64::MAX); } 0 } // getrlimit / prlimit64
          98 => { let _ = e.mmu.write_bytes(a1, &[0u8; 144]); 0 } // getrusage
 -        99 => { let mut b = [0u8; 112]; b[32..40].copy_from_slice(&(1u64 << 33).to_le_bytes()); b[40..48].copy_from_slice(&(1u64 << 32).to_le_bytes()); b[104..108].copy_from_slice(&1u32.to_le_bytes()); let _ = e.mmu.write_bytes(a0, &b); 0 } // sysinfo
 +        99 => { // sysinfo: the memory programs see (target) and how much of it is in use
@@ -62,9 +62,9 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          137 | 138 => { let mut b = [0u8; 120]; b[0..8].copy_from_slice(&0xEF53u64.to_le_bytes()); b[8..16].copy_from_slice(&4096u64.to_le_bytes()); b[16..24].copy_from_slice(&(1u64 << 20).to_le_bytes()); b[24..32].copy_from_slice(&(1u64 << 19).to_le_bytes()); b[32..40].copy_from_slice(&(1u64 << 19).to_le_bytes()); b[56..64].copy_from_slice(&255u64.to_le_bytes()); let _ = e.mmu.write_bytes(a1, &b); 0 } // statfs
          158 => { // arch_prctl
 diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
---- a/src/mmu.rs	2026-11-13 12:40:38.000000000 +0000
-+++ b/src/mmu.rs	2026-11-13 12:51:51.986213414 +0000
-@@ -66,7 +66,6 @@
+--- a/src/mmu.rs	2026-11-14 16:19:45.000000000 +0000
++++ b/src/mmu.rs	2026-11-14 16:36:51.044635780 +0000
+@@ -67,7 +67,6 @@
  
  /// What every core shares: the frames of real RAM and the page table.
  pub struct MmuShared {
@@ -72,7 +72,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
      pool: Vec<u8>,
      frames: Vec<Frame>,
      free: Vec<u32>,
-@@ -83,11 +82,19 @@
+@@ -84,11 +83,19 @@
      pub swap_slots: u32,
      /// several address spaces (Linux processes): frames of the others must not be evicted
      pub no_evict: bool,
@@ -94,7 +94,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
  
  /// One core's view: its own TLB over the shared page table.
  pub struct Mmu {
-@@ -116,7 +123,6 @@
+@@ -117,7 +124,6 @@
      pub fn new(pool_mb: usize, target_mb: u64) -> Mmu {
          let n = pool_mb * 256;
          let sh = Box::leak(Box::new(MmuShared {
@@ -102,7 +102,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
              pool: vec![0u8; n * PAGE as usize],
              frames: vec![Frame { vpn: 0, used: false, referenced: false, dirty: false, asid: 0 }; n],
              free: (0..n as u32).rev().collect(), limbo: Vec::new(),
-@@ -126,6 +132,7 @@
+@@ -127,6 +133,7 @@
              committed: 0,
              target_bytes: target_mb << 20,
              faults: 0, swap_ins: 0, swap_outs: 0, swap_slots: 0, no_evict: false,
@@ -110,7 +110,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
          }));
          let m = Mmu { tlb: vec![TlbEntry { tag: u64::MAX, add: 0, writable: false }; TLB_SIZE], core: 0, sh, lk: 0, lk_at: (0, 0, 0), lk_snap: None };
          TLBS[0].store(m.tlb.as_ptr() as u32, Release);
-@@ -207,6 +214,7 @@
+@@ -212,6 +219,7 @@
              let pte = self.sh.table.remove(&vpn).unwrap();
              self.shoot(vpn);
              if pte.frame != NONE { freed.push(pte.frame); }
@@ -118,7 +118,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
          }
          if freed.is_empty() { return; }
          if !crate::lock::MT {
-@@ -229,48 +237,78 @@
+@@ -234,48 +242,78 @@
          } else { false }
      }
  
@@ -216,7 +216,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
      }
  
      fn evict_one(&mut self) -> u32 {
-@@ -279,8 +317,6 @@
+@@ -284,8 +322,6 @@
              self.sh.hand = (self.sh.hand + 1) % self.sh.frames.len();
              let f = self.sh.frames[i];
              if !f.used { return i as u32; }
@@ -225,7 +225,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
              let t = (f.vpn as usize) & (TLB_SIZE - 1);
              if f.referenced {
                  // second chance; drop the TLB entry so the next access marks it again
-@@ -288,14 +324,23 @@
+@@ -293,14 +329,23 @@
                  if self.tlb[t].tag == f.vpn { self.tlb[t].tag = u64::MAX; }
                  continue;
              }
@@ -255,7 +255,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
              pte.frame = NONE;
              self.sh.frames[i].used = false;
              return i as u32;
-@@ -354,7 +399,7 @@
+@@ -359,7 +404,7 @@
              } else {
                  self.sh.pool[off..off + PAGE as usize].fill(0);
              }

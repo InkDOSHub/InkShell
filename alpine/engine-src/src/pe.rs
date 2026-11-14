@@ -70,7 +70,7 @@ pub fn load_by_name(e: &mut Engine, name: &str) -> Result<usize, String> {
     if !NATIVE_DLLS.contains(&n.as_str()) {
         if let Some(bytes) = e.s.files.get(&format!("wine-{}", n)).cloned() {
             // window-system DLLs: their DllMain needs the graphics kernel, which console programs never use
-            let gui = ["shell32.dll", "ole32.dll", "combase.dll", "imm32.dll", "comctl32.dll", "winmm.dll", "setupapi.dll", "shcore.dll"].contains(&n.as_str());
+            let gui = ["shell32.dll", "ole32.dll", "combase.dll", "imm32.dll", "winmm.dll", "setupapi.dll", "shcore.dll"].contains(&n.as_str());
             let r = load_image(e, &n, &bytes, false)?;
             // only the window DLL itself skips DllMain: the DLLs it pulled in still start normally
             if gui { let b = e.s.modules[r].base; e.s.init_queue.retain(|&(_, base)| base != b); }
@@ -109,6 +109,7 @@ pub fn proc_address(e: &mut Engine, idx: usize, func: &str) -> Option<u64> {
     if e.s.modules[idx].native {
         let dll = e.s.modules[idx].name.clone();
         if let Some(a) = crate::msvcrt::data_export(e, &dll, func) { return Some(a); }
+        if let Some(a) = crate::unixlib::data_export(e, &dll, func) { return Some(a); }
         return Some(e.thunk(&dll, func));
     }
     let a = *e.s.modules[idx].exports.get(func)?;
@@ -231,6 +232,20 @@ pub fn load_image(e: &mut Engine, name: &str, b: &[u8], is_exe: bool) -> Result<
     let idx = e.s.modules.len();
     e.s.modules.push(Module { name: name.to_string(), base, size: image_size, entry: if entry_rva != 0 { base + entry_rva } else { 0 }, exports, native: false, fwd });
 
+    // Static TLS (__declspec(thread)): one slot per image in the TEB's TLS array.
+    // Taken before the imports load, so the exe gets slot 0 as on Windows (optimized
+    // exe code reads slot 0 directly instead of _tls_index).
+    let (tls_rva, _) = dir(9)?;
+    if tls_rva != 0 {
+        let t = base + tls_rva;
+        let (start, end, index_at) = (rd64(e, t)?, rd64(e, t + 8)?, rd64(e, t + 16)?);
+        let zero = rd32(e, t + 32)? as u64;
+        let i = e.s.tls_tmpl.len();
+        e.s.tls_tmpl.push((start, end.saturating_sub(start), zero));
+        if index_at != 0 { e.mmu.write32(index_at, i as u32).map_err(|_| "tls")?; }
+        e.tls_block(crate::TEB, i);
+    }
+
     // Imports (load dependencies first, then bind)
     let (imp_rva, _) = dir(1)?;
     if imp_rva != 0 {
@@ -257,17 +272,6 @@ pub fn load_image(e: &mut Engine, name: &str, b: &[u8], is_exe: bool) -> Result<
             }
             d += 20;
         }
-    }
-    // Static TLS (__declspec(thread)): one slot per image in the TEB's TLS array
-    let (tls_rva, _) = dir(9)?;
-    if tls_rva != 0 {
-        let t = base + tls_rva;
-        let (start, end, index_at) = (rd64(e, t)?, rd64(e, t + 8)?, rd64(e, t + 16)?);
-        let zero = rd32(e, t + 32)? as u64;
-        let i = e.s.tls_tmpl.len();
-        e.s.tls_tmpl.push((start, end.saturating_sub(start), zero));
-        if index_at != 0 { e.mmu.write32(index_at, i as u32).map_err(|_| "tls")?; }
-        e.tls_block(crate::TEB, i);
     }
     if !is_exe && !e.s.no_init && e.s.modules[idx].entry != 0 { e.s.init_queue.push((e.s.modules[idx].entry, base)); }
     Ok(idx)
@@ -300,7 +304,9 @@ pub fn entry_rva(b: &[u8]) -> Option<u64> { let (pe, _) = hdr(b).ok()?; Some(u32
 
 /// Maps headers and sections at the preferred base when it is free (else below
 /// 2 GB for 32-bit images), applying relocations. Returns (base, size, moved).
-pub fn map_image(e: &mut Engine, b: &[u8]) -> Result<(u64, u64, bool), String> {
+/// Maps a PE image: at its preferred base when free, else at `slot` (where the same file
+/// sat before it was unmapped, as Windows tends to reuse) when free, else anywhere.
+pub fn map_image(e: &mut Engine, b: &[u8], slot: Option<u64>) -> Result<(u64, u64, bool), String> {
     let (pe, is32) = hdr(b)?;
     let opt = pe + 24;
     let nsec = u16_at(b, pe + 6)? as usize;
@@ -310,10 +316,17 @@ pub fn map_image(e: &mut Engine, b: &[u8]) -> Result<(u64, u64, bool), String> {
     let hsize = u32_at(b, opt + 60)? as usize;
     let dirs = opt + if is32 { 96 } else { 112 };
     let (rel_rva, rel_size) = (u32_at(b, dirs + 40)? as u64, u32_at(b, dirs + 44)? as u64);
+    let mut same_place = false;
     let base = if pref != 0 && !e.mmu.overlaps(pref, pref + size) { e.mmu.add_region(pref, size); pref } else {
         if rel_rva == 0 { return Err("image cannot be moved (no relocations)".into()); }
-        e.alloc(size).ok_or("out of memory")?
+        match slot {
+            Some(s) if s != 0 && !e.mmu.overlaps(s, s + size) => { e.mmu.add_region(s, size); same_place = true; s }
+            _ => e.alloc(size).ok_or("out of memory")?,
+        }
     };
+    // compiled code of whatever ran here before is stale (the same file back at the same
+    // place compiles to the same blocks, so those stay)
+    if !same_place { e.jit.forget(base, base + size); }
     let err = |_| "mapping failed".to_string();
     e.mmu.write_bytes(base, &b[..hsize.min(b.len())]).map_err(err)?;
     let sec0 = opt + opt_size;
