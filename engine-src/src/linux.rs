@@ -104,6 +104,8 @@ pub struct Lx {
     pread: BTreeMap<u32, u64>, // bytes read so far from a local socket's buffer (by pipe id)
     us_got: Option<Vec<Fd>>, // descriptors the last local socket read reached
     pipe_nb: BTreeSet<(u32, bool)>, // pipe ends opened O_NONBLOCK
+    // MAP_SHARED file mappings (pid, address, length, file, offset): written back at munmap/msync
+    shared: Vec<(u32, u64, u64, String, u64)>,
 }
 
 /// A pseudo-terminal: what the master writes goes through the line discipline to the slave's input;
@@ -700,8 +702,9 @@ pub fn syscall(e: &mut Engine) {
             }
         }
         9 => mmap(e, a0, a1, a2, a3, r[8] as i32, r[9]),
-        10 | 26 | 28 => 0, // mprotect, msync, madvise
-        11 => { e.mmu.drop_pages(a0, a0 + align(a1)); 0 }
+        26 => { sync_shared(e, a0, align(a1), false); 0 } // msync
+        10 | 28 => 0, // mprotect, madvise
+        11 => { sync_shared(e, a0, align(a1), true); e.mmu.drop_pages(a0, a0 + align(a1)); 0 }
         25 => -ENOMEM, // mremap: callers fall back to mmap + copy
         12 => { // brk
             let l = lx(e);
@@ -1215,9 +1218,35 @@ fn mmap(e: &mut Engine, addr: u64, len: u64, _prot: u64, flags: u64, fd: i32, of
         let s = (off as usize).min(d.len());
         let k = (len as usize).min(d.len() - s);
         let chunk = d[s..s + k].to_vec();
+        if flags & 1 != 0 { let pid = l.pid; l.shared.push((pid, a, len, path, off)); } // MAP_SHARED
         if e.mmu.write_bytes(a, &chunk).is_err() { return -ENOMEM; }
     }
     a as i64
+}
+
+/// Copies what the process wrote into its MAP_SHARED file mappings in [a, a+n) back to the files
+/// (only up to each file's length, as on Linux); `unmap` also forgets those ranges.
+fn sync_shared(e: &mut Engine, a: u64, n: u64, unmap: bool) {
+    let pid = lx(e).pid;
+    let all = std::mem::take(&mut lx(e).shared);
+    let mut keep = Vec::new();
+    for (p, ma, ml, path, off) in all {
+        let (s, t) = (a.max(ma), (a + n).min(ma + ml));
+        if p != pid || s >= t { keep.push((p, ma, ml, path, off)); continue; }
+        let flen = match lx(e).fs.get(&path) { Some(Node::File(d)) => d.len() as u64, _ => 0 };
+        let (fs, ft) = (off + (s - ma), (off + (t - ma)).min(flen));
+        if fs < ft {
+            let mut buf = vec![0u8; (ft - fs) as usize];
+            if e.mmu.read_bytes(s, &mut buf).is_ok() {
+                let l = lx(e);
+                if let Some(Node::File(d)) = l.fs.get_mut(&path) { d[fs as usize..ft as usize].copy_from_slice(&buf); l.written.insert(path.clone()); }
+            }
+        }
+        if !unmap { keep.push((p, ma, ml, path, off)); continue; }
+        if ma < s { keep.push((p, ma, s - ma, path.clone(), off)); }
+        if t < ma + ml { keep.push((p, t, ma + ml - t, path, off + (t - ma))); }
+    }
+    lx(e).shared.extend(keep);
 }
 
 /// Text typed in the terminal, for programs reading stdin.
