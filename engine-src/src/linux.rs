@@ -98,6 +98,12 @@ pub struct Lx {
     // owners and permissions (path -> mode bits, uid, gid); paths not listed: root, 755/644
     meta: BTreeMap<String, (u32, u32, u32)>,
     umask: u32,
+    // descriptors passed with SCM_RIGHTS, waiting in a local socket's buffer (by pipe id)
+    // (stream position, descriptors); reads stop where descriptors are attached, as on Linux
+    passed: BTreeMap<u32, std::collections::VecDeque<(u64, Vec<Fd>)>>,
+    pread: BTreeMap<u32, u64>, // bytes read so far from a local socket's buffer (by pipe id)
+    us_got: Option<Vec<Fd>>, // descriptors the last local socket read reached
+    pipe_nb: BTreeSet<(u32, bool)>, // pipe ends opened O_NONBLOCK
 }
 
 /// A pseudo-terminal: what the master writes goes through the line discipline to the slave's input;
@@ -517,7 +523,7 @@ fn do_read(e: &mut Engine, fd: i32, buf: u64, n: u64) -> i64 {
         Some(Fd::Pipe { id, .. }) => {
             let id = *id;
             if l.pipes.get(&id).map_or(true, |b| b.is_empty()) {
-                if has_end(l, id, true) { l.want = Some(Cond::PipeRead(id)); return BLOCKED; }
+                if has_end(l, id, true) { if l.pipe_nb.contains(&(id, false)) { return -EAGAIN; } l.want = Some(Cond::PipeRead(id)); return BLOCKED; }
                 return 0;
             }
             let b = l.pipes.get_mut(&id).unwrap();
@@ -641,6 +647,7 @@ pub fn syscall(e: &mut Engine) {
             let r = l.new_fd(Fd::Pipe { id, w: false });
             let w = l.new_fd(Fd::Pipe { id, w: true });
             if nr == 293 && a1 & 0x80000 != 0 { l.cloexec.insert(r); l.cloexec.insert(w); }
+            if nr == 293 && a1 & 0x800 != 0 { l.pipe_nb.insert((id, false)); l.pipe_nb.insert((id, true)); }
             e.w32(a0, r as u32); e.w32(a0 + 4, w as u32);
             0
         }
@@ -866,10 +873,11 @@ pub fn syscall(e: &mut Engine) {
             for (k, s) in ["Linux", "inksoc", "6.1.0-inksoc", "#1 SMP InkSoC", "x86_64", "(none)"].iter().enumerate() { b[65 * k..65 * k + s.len()].copy_from_slice(s.as_bytes()); }
             if e.mmu.write_bytes(a0, &b).is_err() { -14 } else { 0 }
         }
-        72 if (a1 == 3 || a1 == 4) && matches!(lx(e).fds.get(&(a0 as i32)), Some(Fd::Sock { .. } | Fd::Unix { .. } | Fd::Event { .. } | Fd::Pty { .. })) => { // F_GETFL / F_SETFL: O_NONBLOCK
+        72 if (a1 == 3 || a1 == 4) && matches!(lx(e).fds.get(&(a0 as i32)), Some(Fd::Sock { .. } | Fd::Unix { .. } | Fd::Event { .. } | Fd::Pty { .. } | Fd::Pipe { .. })) => { // F_GETFL / F_SETFL: O_NONBLOCK
             let l = lx(e);
             let f = l.fds.get(&(a0 as i32)).cloned().unwrap();
-            if a1 == 4 { set_nb(l, &f, a2 & 0x800 != 0); 0 } else { 2 | if get_nb(l, &f) { 0x800 } else { 0 } }
+            let acc = match f { Fd::Pipe { w, .. } => if w { 1 } else { 0 }, _ => 2 };
+            if a1 == 4 { set_nb(l, &f, a2 & 0x800 != 0); 0 } else { acc | if get_nb(l, &f) { 0x800 } else { 0 } }
         }
         72 => { // fcntl
             let l = lx(e);
@@ -885,6 +893,7 @@ pub fn syscall(e: &mut Engine) {
             }
         }
         74 | 75 | 162 => 0, // fsync / fdatasync / sync
+        157 => { if a0 == 16 { let _ = e.mmu.write_bytes(a1, b"inksoc\0"); } 0 } // prctl: names and flags accepted (PR_GET_NAME answers)
         285 => { // fallocate: grows the file (mode 0)
             let l = lx(e);
             if let Some(Fd::File { path, .. }) = l.fds.get(&(a0 as i32)) { let p = path.clone(); if a1 & 1 == 0 { if let Some(Node::File(d)) = l.fs.get_mut(&p) { let end = (a2 + a3) as usize; if d.len() < end { d.resize(end, 0); } } } 0 } else { -ESPIPE }
@@ -1509,6 +1518,7 @@ fn pty_signal(e: &mut Engine, id: u32, fg: u32, sig: u32) {
 
 fn pty_ioctl(e: &mut Engine, id: u32, master: bool, req: u64, a: u64) -> i64 {
     let me = lx(e).pid;
+    let req = req & 0xFFFF_FFFF; // an int: some callers sign-extend it
     match req {
         0x5401 => { let t = lx(e).ptys.get(&id).map(|t| t.termios.clone()).unwrap_or_else(default_termios); if e.mmu.write_bytes(a, &t).is_err() { -14 } else { 0 } } // TCGETS
         0x5402..=0x5404 => { // TCSETS / TCSETSW / TCSETSF
@@ -1683,6 +1693,8 @@ fn deliver(e: &mut Engine, sig: u32, rax: u64, rip: u64) {
     let pid = l.pid;
     if let Some(p) = l.pend.get_mut(&pid) { *p &= !bit(sig); }
     let [h, flags, restorer, amask] = act(l, pid, sig);
+    #[cfg(feature = "prof")]
+    crate::console(&format!("[signal {} to pid {} handler {:x}]\n", sig, pid, h));
     if h <= 1 { return; }
     let cur = l.masks.get(&tid).copied().unwrap_or(0);
     let saved = l.susp.remove(&tid).unwrap_or(cur);
@@ -1974,7 +1986,7 @@ fn ev_read(e: &mut Engine, id: u32, buf: u64, n: u64) -> i64 {
 }
 
 fn get_nb(l: &Lx, f: &Fd) -> bool {
-    match f { Fd::Sock { id } => l.socks.get(id).map_or(false, |s| s.nb), Fd::Unix { id } => l.us.get(id).map_or(false, |u| u.nb), Fd::Event { id } => l.evs.get(id).map_or(false, |v| v.2), Fd::Pty { id, master } => l.ptys.get(id).map_or(false, |t| if *master { t.nb.0 } else { t.nb.1 }), _ => false }
+    match f { Fd::Sock { id } => l.socks.get(id).map_or(false, |s| s.nb), Fd::Unix { id } => l.us.get(id).map_or(false, |u| u.nb), Fd::Event { id } => l.evs.get(id).map_or(false, |v| v.2), Fd::Pty { id, master } => l.ptys.get(id).map_or(false, |t| if *master { t.nb.0 } else { t.nb.1 }), Fd::Pipe { id, w } => l.pipe_nb.contains(&(*id, *w)), _ => false }
 }
 fn set_nb(l: &mut Lx, f: &Fd, on: bool) {
     match f {
@@ -1982,6 +1994,7 @@ fn set_nb(l: &mut Lx, f: &Fd, on: bool) {
         Fd::Unix { id } => if let Some(u) = l.us.get_mut(id) { u.nb = on },
         Fd::Event { id } => if let Some(v) = l.evs.get_mut(id) { v.2 = on },
         Fd::Pty { id, master } => if let Some(t) = l.ptys.get_mut(id) { if *master { t.nb.0 = on } else { t.nb.1 = on } },
+        Fd::Pipe { id, w } => { if on { l.pipe_nb.insert((*id, *w)); } else { l.pipe_nb.remove(&(*id, *w)); } }
         _ => {}
     }
 }
@@ -2006,9 +2019,17 @@ fn us_read(e: &mut Engine, id: u32, buf: u64, n: u64, dontwait: bool) -> i64 {
         l.want = Some(Cond::Fds(vec![(Fd::Unix { id }, 1)]));
         return BLOCKED;
     }
+    let pos = l.pread.get(&rx).copied().unwrap_or(0);
+    let mut k = (n as usize).min(l.pipes[&rx].len());
+    l.us_got = None;
+    if let Some(q) = l.passed.get_mut(&rx) {
+        while q.front().map_or(false, |x| x.0 < pos) { q.pop_front(); } // read without a control buffer: dropped
+        if let Some(x) = q.front() { if x.0 == pos { l.us_got = q.pop_front().map(|x| x.1); } }
+        if let Some(x) = q.front() { k = k.min((x.0 - pos) as usize); }
+    }
     let b = l.pipes.get_mut(&rx).unwrap();
-    let k = (n as usize).min(b.len());
     let d: Vec<u8> = b.drain(..k).collect();
+    *l.pread.entry(rx).or_default() += k as u64;
     if e.mmu.write_bytes(buf, &d).is_err() { return -14; }
     k as i64
 }
@@ -2154,7 +2175,26 @@ fn unix_call(e: &mut Engine, nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u6
             if let Some(pu) = pu { write_unix_addr(e, a1, a2, &pu); }
             n as i64
         }
-        44 | 46 => { // sendto / sendmsg
+        44 | 46 => { // sendto / sendmsg (with SCM_RIGHTS: the descriptors travel too)
+            if nr == 46 {
+                let (ctl, clen) = (e.r64(a1 + 32), e.r64(a1 + 40));
+                let mut o = 0u64;
+                while ctl != 0 && o + 16 <= clen {
+                    let (len, lvl, ty) = (e.r64(ctl + o), e.r32(ctl + o + 8), e.r32(ctl + o + 12));
+                    if len < 16 { break; }
+                    if lvl == 1 && ty == 1 {
+                        let fds: Vec<i32> = (0..(len - 16) / 4).map(|k| e.r32(ctl + o + 16 + 4 * k) as i32).collect();
+                        let l = lx(e);
+                        let v: Vec<Fd> = fds.iter().filter_map(|f| l.fds.get(f).cloned()).collect();
+                        if let Some(UsSt::Conn { tx, .. }) = l.us.get(&id).map(|u| &u.st) {
+                            let tx = *tx;
+                            let at = l.pread.get(&tx).copied().unwrap_or(0) + l.pipes.get(&tx).map_or(0, |b| b.len() as u64);
+                            l.passed.entry(tx).or_default().push_back((at, v));
+                        }
+                    }
+                    o += (len + 7) & !7;
+                }
+            }
             let d = if nr == 44 {
                 let mut d = vec![0u8; a2.min(1 << 24) as usize];
                 let _ = e.mmu.read_bytes(a1, &mut d);
@@ -2175,7 +2215,23 @@ fn unix_call(e: &mut Engine, nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u6
                 let (iov, iovn) = (e.r64(a1 + 16), e.r64(a1 + 24));
                 let (b, n) = (e.r64(iov), if iovn > 0 { e.r64(iov + 8) } else { 0 });
                 let v = us_read(e, id, b, n, a2 & 0x40 != 0);
-                if v >= 0 { e.w32(a1 + 8, 0); e.w64(a1 + 40, 0); e.w32(a1 + 48, 0); }
+                if v >= 0 {
+                    e.w32(a1 + 8, 0); e.w32(a1 + 48, 0);
+                    let (ctl, clen) = (e.r64(a1 + 32), e.r64(a1 + 40));
+                    let l = lx(e);
+                    let got = if v > 0 && ctl != 0 { l.us_got.take() } else { l.us_got = None; None };
+                    match got {
+                        Some(fds) if clen >= 16 + 4 * fds.len() as u64 => {
+                            let nums: Vec<i32> = fds.into_iter().map(|f| { let n = l.new_fd(f); if a2 & 0x4000_0000 != 0 { l.cloexec.insert(n); } n }).collect();
+                            let len = 16 + 4 * nums.len() as u64;
+                            e.w64(ctl, len); e.w32(ctl + 8, 1); e.w32(ctl + 12, 1);
+                            for (k, n) in nums.iter().enumerate() { e.w32(ctl + 16 + 4 * k as u64, *n as u32); }
+                            e.w64(a1 + 40, (len + 7) & !7);
+                        }
+                        Some(_) => { e.w64(a1 + 40, 0); e.w32(a1 + 48, 8); } // MSG_CTRUNC
+                        None => e.w64(a1 + 40, 0),
+                    }
+                }
                 v
             }
         }

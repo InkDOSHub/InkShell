@@ -1,6 +1,6 @@
 diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 --- a/src/linux.rs	2026-11-14 16:19:45.000000000 +0000
-+++ b/src/linux.rs	2026-11-14 17:47:34.116529671 +0000
++++ b/src/linux.rs	2026-11-14 17:57:30.976666669 +0000
 @@ -28,11 +28,15 @@
      Pipe { id: u32, w: bool },
      Sock { id: u32 },
@@ -27,7 +27,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  
  #[derive(Default)]
  pub struct Lx {
-@@ -74,12 +78,50 @@
+@@ -74,12 +78,56 @@
      pub next_sock: u32,
      pub net_out: Vec<u8>,
      pub dns: Vec<String>,
@@ -52,6 +52,12 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +    // owners and permissions (path -> mode bits, uid, gid); paths not listed: root, 755/644
 +    meta: BTreeMap<String, (u32, u32, u32)>,
 +    umask: u32,
++    // descriptors passed with SCM_RIGHTS, waiting in a local socket's buffer (by pipe id)
++    // (stream position, descriptors); reads stop where descriptors are attached, as on Linux
++    passed: BTreeMap<u32, std::collections::VecDeque<(u64, Vec<Fd>)>>,
++    pread: BTreeMap<u32, u64>, // bytes read so far from a local socket's buffer (by pipe id)
++    us_got: Option<Vec<Fd>>, // descriptors the last local socket read reached
++    pipe_nb: BTreeSet<(u32, bool)>, // pipe ends opened O_NONBLOCK
 +}
 +
 +/// A pseudo-terminal: what the master writes goes through the line discipline to the slave's input;
@@ -80,7 +86,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  const EAGAIN: i64 = 11; const ENOTCONN: i64 = 107; const ECONNREFUSED: i64 = 111; const EOPNOTSUPP: i64 = 95; const EAFNOSUPPORT: i64 = 97; const ENETUNREACH: i64 = 101;
  
  
-@@ -188,6 +230,11 @@
+@@ -188,6 +236,11 @@
              if let Some(n) = longlink.take() { link = n; }
              let path = self.abs(&format!("/{}", name));
              if path == "/" { continue; }
@@ -92,7 +98,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
              if let Some((dir, _)) = path.rsplit_once('/') { self.mkdirs(dir); }
              match ty {
                  b'5' => { self.mkdirs(&path); }
-@@ -211,14 +258,14 @@
+@@ -211,14 +264,14 @@
  impl Engine {
      /// Loads a static ELF and builds the Linux start stack.
      pub fn linux_boot(&mut self, name: &str, cmd: &str) -> Result<(), String> {
@@ -111,7 +117,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          // the page's files go to /root; an ELF also goes to /bin (busybox: every applet links to it)
          let nm = |e: &Engine, k: &str| e.s.names.get(k).cloned().unwrap_or_else(|| k.to_string());
          let files: Vec<(String, Vec<u8>)> = self.s.files.iter().map(|(k, v)| (nm(self, k), v.clone())).collect();
-@@ -239,7 +286,7 @@
+@@ -239,7 +292,7 @@
              }
          }
          self.s.lx = Some(Box::new(l));
@@ -120,7 +126,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          self.sched_init();
          self.s.sched.th[0].pid = 1;
          let mut args = split_args(cmd);
-@@ -343,8 +390,17 @@
+@@ -343,8 +396,17 @@
  
  fn ret(e: &mut Engine, v: i64) { e.cpu.regs[0] = v as u64; }
  
@@ -139,7 +145,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      b[0..8].copy_from_slice(&1u64.to_le_bytes());
      b[8..16].copy_from_slice(&ino.to_le_bytes());
      b[16..24].copy_from_slice(&1u64.to_le_bytes());
-@@ -361,20 +417,45 @@
+@@ -361,20 +423,45 @@
  fn stat_path(e: &mut Engine, path: &str, a: u64, follow: bool) -> i64 {
      let l = lx(e);
      let p = l.resolve(path, follow);
@@ -191,7 +197,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      let exists = p == "/" || l.fs.contains_key(&p);
      if l.is_dir(&p) {
          if flags & 3 != 0 { return -EISDIR; }
-@@ -383,13 +464,37 @@
+@@ -383,13 +470,37 @@
          return fd as i64;
      }
      if flags & 0x10000 != 0 { return if exists { -ENOTDIR } else { -ENOENT }; }
@@ -230,7 +236,16 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      } else if flags & 0xC0 == 0xC0 {
          return -EEXIST;
      }
-@@ -422,6 +527,10 @@
+@@ -412,7 +523,7 @@
+         Some(Fd::Pipe { id, .. }) => {
+             let id = *id;
+             if l.pipes.get(&id).map_or(true, |b| b.is_empty()) {
+-                if has_end(l, id, true) { l.want = Some(Cond::PipeRead(id)); return BLOCKED; }
++                if has_end(l, id, true) { if l.pipe_nb.contains(&(id, false)) { return -EAGAIN; } l.want = Some(Cond::PipeRead(id)); return BLOCKED; }
+                 return 0;
+             }
+             let b = l.pipes.get_mut(&id).unwrap();
+@@ -422,6 +533,10 @@
              k as i64
          }
          Some(Fd::Sock { id }) => { let id = *id; sock_recv(e, id, buf, n, false).0 }
@@ -241,7 +256,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          Some(Fd::Dev(k)) => {
              let k = *k; let n = n.min(1 << 20) as usize;
              let mut d = vec![0u8; n];
-@@ -467,6 +576,18 @@
+@@ -467,6 +582,18 @@
      match l.fds.get_mut(&fd) {
          Some(Fd::Tty) => { crate::console(&String::from_utf8_lossy(&d)); n as i64 }
          Some(Fd::Sock { id }) => { let id = *id; sock_send(l, id, d, None) }
@@ -260,7 +275,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          Some(Fd::Dev(_)) => n as i64,
          Some(Fd::Pipe { id, .. }) => {
              let id = *id;
-@@ -499,6 +620,17 @@
+@@ -499,6 +626,17 @@
      e.cpu.regs[11] = 0x202;
      #[cfg(feature = "prof")]
      crate::console(&format!("[sys pid {} {} {:x} {:x} {:x}]\n", lx(e).pid, nr, a0, a1, a2));
@@ -278,7 +293,11 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      if matches!(nr, 2 | 257 | 76 | 77 | 82 | 264 | 316 | 83 | 258 | 84 | 87 | 263 | 86 | 88 | 265 | 266) || (matches!(nr, 1 | 18 | 20) && matches!(lx(e).fds.get(&(a0 as i32)), Some(Fd::File { .. }))) { lx(e).dirty = true; }
      let v: i64 = match nr {
          0 => do_read(e, a0 as i32, a1, a2),
-@@ -512,7 +644,7 @@
+@@ -509,10 +647,11 @@
+             let r = l.new_fd(Fd::Pipe { id, w: false });
+             let w = l.new_fd(Fd::Pipe { id, w: true });
+             if nr == 293 && a1 & 0x80000 != 0 { l.cloexec.insert(r); l.cloexec.insert(w); }
++            if nr == 293 && a1 & 0x800 != 0 { l.pipe_nb.insert((id, false)); l.pipe_nb.insert((id, true)); }
              e.w32(a0, r as u32); e.w32(a0 + 4, w as u32);
              0
          }
@@ -287,7 +306,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          56 | 57 | 58 => fork(e),
          59 | 322 => {
              let path = if nr == 59 { e.read_cstr(a0, 4096) } else { path_at(e, a0, a1) };
-@@ -522,18 +654,25 @@
+@@ -522,18 +661,25 @@
              execve(e, &path, args, env)
          }
          61 => { if a3 != 0 { let _ = e.mmu.write_bytes(a3, &[0u8; 144]); } wait4(e, a0 as i32 as i64, a1, a2) }
@@ -320,7 +339,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          3 => { let l = lx(e); l.cloexec.remove(&(a0 as i32)); if l.fds.remove(&(a0 as i32)).is_some() { 0 } else { -EBADF } }
          4 | 6 => { let p = e.read_cstr(a0, 4096); stat_path(e, &p, a1, nr == 4) }
          262 => { // newfstatat
-@@ -543,7 +682,7 @@
+@@ -543,7 +689,7 @@
          5 => fstat(e, a0 as i32, a1),
          8 => { // lseek
              let l = lx(e);
@@ -329,7 +348,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
              match l.fds.get_mut(&(a0 as i32)) {
                  Some(Fd::File { pos, .. }) => {
                      let np = match a2 { 0 => a1 as i64, 1 => *pos as i64 + a1 as i64, 2 => size + a1 as i64, _ => -1 };
-@@ -567,7 +706,59 @@
+@@ -567,7 +713,59 @@
                  a0 as i64
              } else if a0 >= start && a0 <= cur { lx(e).brk = a0; a0 as i64 } else { cur as i64 }
          }
@@ -390,7 +409,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          16 => ioctl(e, a0 as i32, a1, a2),
          40 => { // sendfile
              let (out, inp, offp, n) = (a0 as i32, a1 as i32, a2, a3.min(1 << 20));
-@@ -601,11 +792,32 @@
+@@ -601,11 +799,32 @@
              let l = lx(e); let q = l.resolve(&p, true);
              if q == "/" || l.fs.contains_key(&q) { 0 } else { -ENOENT }
          }
@@ -412,7 +431,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +        232 | 281 | 441 => {
 +            let ms = if nr == 441 { if a3 == 0 { -1 } else { (e.r64(a3) * 1000 + e.r64(a3 + 8) / 1_000_000) as i64 } } else { a3 as i32 as i64 };
 +            epoll_wait(e, a0 as i32, a1, a2, ms)
-+        }
+         }
 +        284 | 290 => { // eventfd / eventfd2
 +            let l = lx(e);
 +            l.next_ev += 1; let id = l.next_ev;
@@ -421,13 +440,13 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +            let fd = l.new_fd(Fd::Event { id });
 +            if fl & 0x80000 != 0 { l.cloexec.insert(fd); }
 +            fd as i64
-         }
++        }
 +        41..=55 | 288 => net_call(e, nr, a0, a1, a2, a3, a4, r[9]),
 +        7 | 271 => { for k in 0..a1.min(64) { let ev = e.r16(a0 + 8 * k + 4); e.w16(a0 + 8 * k + 6, ev & 5); } a1 as i64 } // a huge poll: everything is ready
          24 => 0, // sched_yield
          165 | 166 => -1, // mount / umount2: EPERM, as for a program without the right to mount
          73 => 0, // flock: one machine, nobody else holds the lock
-@@ -631,23 +843,33 @@
+@@ -631,23 +850,34 @@
          118 | 120 => { let i = lx(e).ids; let v = if nr == 118 { [i.0, i.2, i.2] } else { [i.1; 3] }; for (p, x) in [a0, a1, a2].into_iter().zip(v) { if p != 0 { e.w32(p, x); } } 0 }
          116 | 115 => 0, // setgroups / getgroups (none)
          122 | 123 => lx(e).ids.0 as i64, // setfsuid / setfsgid
@@ -459,20 +478,22 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
              if e.mmu.write_bytes(a0, &b).is_err() { -14 } else { 0 }
          }
 -        72 if (a1 == 3 || a1 == 4) && matches!(lx(e).fds.get(&(a0 as i32)), Some(Fd::Sock { .. })) => { // F_GETFL / F_SETFL on a socket: O_NONBLOCK
-+        72 if (a1 == 3 || a1 == 4) && matches!(lx(e).fds.get(&(a0 as i32)), Some(Fd::Sock { .. } | Fd::Unix { .. } | Fd::Event { .. } | Fd::Pty { .. })) => { // F_GETFL / F_SETFL: O_NONBLOCK
++        72 if (a1 == 3 || a1 == 4) && matches!(lx(e).fds.get(&(a0 as i32)), Some(Fd::Sock { .. } | Fd::Unix { .. } | Fd::Event { .. } | Fd::Pty { .. } | Fd::Pipe { .. })) => { // F_GETFL / F_SETFL: O_NONBLOCK
              let l = lx(e);
 -            let Some(Fd::Sock { id }) = l.fds.get(&(a0 as i32)).cloned() else { unreachable!() };
 -            let s = l.socks.get_mut(&id).unwrap();
 -            if a1 == 4 { s.nb = a2 & 0x800 != 0; 0 } else { 2 | if s.nb { 0x800 } else { 0 } }
 +            let f = l.fds.get(&(a0 as i32)).cloned().unwrap();
-+            if a1 == 4 { set_nb(l, &f, a2 & 0x800 != 0); 0 } else { 2 | if get_nb(l, &f) { 0x800 } else { 0 } }
++            let acc = match f { Fd::Pipe { w, .. } => if w { 1 } else { 0 }, _ => 2 };
++            if a1 == 4 { set_nb(l, &f, a2 & 0x800 != 0); 0 } else { acc | if get_nb(l, &f) { 0x800 } else { 0 } }
          }
          72 => { // fcntl
              let l = lx(e);
-@@ -663,6 +885,10 @@
+@@ -663,6 +893,11 @@
              }
          }
          74 | 75 | 162 => 0, // fsync / fdatasync / sync
++        157 => { if a0 == 16 { let _ = e.mmu.write_bytes(a1, b"inksoc\0"); } 0 } // prctl: names and flags accepted (PR_GET_NAME answers)
 +        285 => { // fallocate: grows the file (mode 0)
 +            let l = lx(e);
 +            if let Some(Fd::File { path, .. }) = l.fds.get(&(a0 as i32)) { let p = path.clone(); if a1 & 1 == 0 { if let Some(Node::File(d)) = l.fs.get_mut(&p) { let end = (a2 + a3) as usize; if d.len() < end { d.resize(end, 0); } } } 0 } else { -ESPIPE }
@@ -480,7 +501,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          77 => { let l = lx(e); if let Some(Fd::File { path, .. }) = l.fds.get(&(a0 as i32)) { let p = path.clone(); if let Some(Node::File(d)) = l.fs.get_mut(&p) { d.resize(a1 as usize, 0); } } 0 }
          76 => { let p = e.read_cstr(a0, 4096); let l = lx(e); let q = l.resolve(&p, true); if let Some(Node::File(d)) = l.fs.get_mut(&q) { d.resize(a1 as usize, 0); 0 } else { -ENOENT } }
          78 | 217 => getdents(e, a0 as i32, a1, a2),
-@@ -676,12 +902,12 @@
+@@ -676,12 +911,12 @@
              let (f, t) = if nr == 82 { (e.read_cstr(a0, 4096), e.read_cstr(a1, 4096)) } else { (path_at(e, a0, a1), path_at(e, a2, a3)) };
              let l = lx(e); let (f, t) = (l.resolve(&f, false), l.resolve(&t, false));
              let keys: Vec<String> = l.fs.keys().filter(|k| **k == f || k.starts_with(&format!("{}/", f))).cloned().collect();
@@ -496,7 +517,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          }
          84 | 87 | 263 => { // rmdir / unlink / unlinkat
              let (p, dir) = if nr == 263 { (path_at(e, a0, a1), a2 & 0x200 != 0) } else { (e.read_cstr(a0, 4096), nr == 84) };
-@@ -692,7 +918,7 @@
+@@ -692,7 +927,7 @@
                  Some(Node::Dir) if !l.children(&q).is_empty() => -ENOTEMPTY,
                  Some(Node::Dir) => { l.fs.remove(&q); 0 }
                  Some(_) if dir => -ENOTDIR,
@@ -505,7 +526,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
              }
          }
          86 | 88 | 265 | 266 => { // link / symlink / linkat / symlinkat
-@@ -705,10 +931,53 @@
+@@ -705,10 +940,53 @@
          }
          89 | 267 => { // readlink / readlinkat
              let (p, b, n) = if nr == 89 { (e.read_cstr(a0, 4096), a1, a2) } else { (path_at(e, a0, a1), a2, a3) };
@@ -560,7 +581,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          96 => { // gettimeofday
              let ms = crate::epoch_ms();
              if a0 != 0 { e.w64(a0, (ms / 1000.0) as u64); e.w64(a0 + 8, ((ms % 1000.0) * 1000.0) as u64); }
-@@ -716,16 +985,25 @@
+@@ -716,16 +994,25 @@
          }
          97 | 302 => { if nr == 302 && a3 != 0 { e.w64(a3, u64::MAX); e.w64(a3 + 8, u64::MAX); } 0 } // getrlimit / prlimit64
          98 => { let _ = e.mmu.write_bytes(a1, &[0u8; 144]); 0 } // getrusage
@@ -589,7 +610,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          228 => { // clock_gettime
              let ms = if a0 == 0 || a0 == 5 || a0 == 8 { crate::epoch_ms() } else { crate::now_ms() };
              e.w64(a1, (ms / 1000.0) as u64); e.w64(a1 + 8, ((ms % 1000.0) * 1e6) as u64);
-@@ -761,7 +1039,15 @@
+@@ -761,7 +1048,15 @@
          return;
      }
      lx(e).want = None;
@@ -606,7 +627,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  }
  
  impl Lx {
-@@ -789,7 +1075,9 @@
+@@ -789,7 +1084,9 @@
      match l.fds.get(&fd) {
          Some(Fd::Pipe { id, .. }) => { let id = *id as u64; stat_buf(e, a, 0o010600, 0, 1000 + id) }
          Some(Fd::Tty) => stat_buf(e, a, 0o020620, 0, 5),
@@ -617,7 +638,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          Some(Fd::Dev(k)) => { let k = *k as u64; stat_buf(e, a, 0o020666, 0, 7 + k) }
          Some(Fd::File { path, .. }) | Some(Fd::Dir { path, .. }) => { let p = path.clone(); stat_path(e, &p, a, true) }
          None => -EBADF,
-@@ -809,6 +1097,7 @@
+@@ -809,6 +1106,7 @@
      b[4..8].copy_from_slice(&4096u32.to_le_bytes());
      b[16..20].copy_from_slice(&1u32.to_le_bytes());
      b[28..30].copy_from_slice(&(u32::from_le_bytes(st[24..28].try_into().unwrap()) as u16).to_le_bytes());
@@ -625,7 +646,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      b[32..40].copy_from_slice(&g(8).to_le_bytes());
      b[40..48].copy_from_slice(&g(48).to_le_bytes());
      b[48..56].copy_from_slice(&g(64).to_le_bytes());
-@@ -819,6 +1108,22 @@
+@@ -819,6 +1117,22 @@
  fn ioctl(e: &mut Engine, fd: i32, req: u64, a: u64) -> i64 {
      let tty = matches!(lx(e).fds.get(&fd), Some(Fd::Tty));
      if !lx(e).fds.contains_key(&fd) { return -EBADF; }
@@ -648,7 +669,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      if !tty { return -ENOTTY; }
      match req {
          0x5401 => { // TCGETS: what the program set last (a cooked terminal at first)
-@@ -843,9 +1148,10 @@
+@@ -843,9 +1157,10 @@
              0
          }
          0x5413 => { let (rows, cols) = lx(e).winsize; let w: [u16; 4] = [rows, cols, 0, 0]; for (k, v) in w.iter().enumerate() { e.w16(a + 2 * k as u64, *v); } 0 }
@@ -662,7 +683,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          _ => -EINVAL,
      }
  }
-@@ -921,13 +1227,54 @@
+@@ -921,13 +1236,54 @@
  
  /// Is there an open read end (`w` false) or write end (`w` true) of pipe `id` in any process?
  fn has_end(l: &Lx, id: u32, w: bool) -> bool {
@@ -720,7 +741,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      match c {
          Cond::PipeRead(id) => l.pipes.get(id).map_or(true, |b| !b.is_empty()) || !has_end(l, *id, true),
          Cond::Child { parent, pid } => {
-@@ -937,12 +1284,17 @@
+@@ -937,12 +1293,17 @@
          Cond::Stdin => !l.stdin.is_empty() || l.stdin_eof,
          Cond::Until => false,
          Cond::Socks(ids) => ids.iter().any(|i| l.socks.get(i).map_or(true, |s| !s.rx.is_empty() || !s.dgrams.is_empty() || s.closed)),
@@ -741,7 +762,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  /// Makes process `pid` the running one (its memory, files and compiled code).
  pub fn enter(e: &mut Engine, pid: u32) {
      if pid == 0 || lx(e).pid == pid { return; }
-@@ -977,10 +1329,15 @@
+@@ -977,10 +1338,15 @@
          brk_start: l.brk_start, brk: l.brk, mmap_next: l.mmap_next, exe: l.exe.clone(), ids: l.ids, space, jit,
      };
      let me = l.pid;
@@ -759,7 +780,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      pid as i64
  }
  
-@@ -996,6 +1353,7 @@
+@@ -996,6 +1362,7 @@
      l.fds.clear(); l.cloexec.clear();
      for p in l.procs.values_mut() { if p.ppid == pid { p.ppid = 1; } }
      if let Some(p) = l.procs.get_mut(&pid) { p.zombie = Some(status); }
@@ -767,7 +788,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      e.mmu.free_space();
      { let on = e.jit.on; e.jit = Default::default(); e.jit.on = on; }
      e.end_linux(pid);
-@@ -1008,9 +1366,20 @@
+@@ -1008,9 +1375,20 @@
      let saved = p.saved.take();
      for q in l.procs.values_mut() { if q.ppid == pid { q.ppid = 1; } }
      if let Some(s) = saved { e.mmu.free_saved(s.space); }
@@ -788,7 +809,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  fn wait4(e: &mut Engine, pid: i64, status: u64, opts: u64) -> i64 {
      let l = lx(e);
      let me = l.pid;
-@@ -1053,6 +1422,8 @@
+@@ -1053,6 +1431,8 @@
      let cx: Vec<i32> = l.cloexec.iter().copied().collect();
      for fd in cx { l.fds.remove(&fd); }
      l.cloexec.clear();
@@ -797,7 +818,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      e.mmu.free_space();
      { let on = e.jit.on; e.jit = Default::default(); e.jit.on = on; }
      match e.load_elf(&data, &p, &args, &env) {
-@@ -1061,6 +1432,296 @@
+@@ -1061,6 +1441,299 @@
      }
  }
  
@@ -878,6 +899,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +
 +fn pty_ioctl(e: &mut Engine, id: u32, master: bool, req: u64, a: u64) -> i64 {
 +    let me = lx(e).pid;
++    let req = req & 0xFFFF_FFFF; // an int: some callers sign-extend it
 +    match req {
 +        0x5401 => { let t = lx(e).ptys.get(&id).map(|t| t.termios.clone()).unwrap_or_else(default_termios); if e.mmu.write_bytes(a, &t).is_err() { -14 } else { 0 } } // TCGETS
 +        0x5402..=0x5404 => { // TCSETS / TCSETSW / TCSETSF
@@ -1052,6 +1074,8 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +    let pid = l.pid;
 +    if let Some(p) = l.pend.get_mut(&pid) { *p &= !bit(sig); }
 +    let [h, flags, restorer, amask] = act(l, pid, sig);
++    #[cfg(feature = "prof")]
++    crate::console(&format!("[signal {} to pid {} handler {:x}]\n", sig, pid, h));
 +    if h <= 1 { return; }
 +    let cur = l.masks.get(&tid).copied().unwrap_or(0);
 +    let saved = l.susp.remove(&tid).unwrap_or(cur);
@@ -1094,7 +1118,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  /// A child process hit a fatal error: it ends with a signal and the others go on.
  /// false = it is the first process (the whole run stops with the error).
  pub fn crash(e: &mut Engine, m: &str) -> bool {
-@@ -1080,7 +1741,14 @@
+@@ -1080,7 +1753,14 @@
  
  #[no_mangle]
  pub extern "C" fn linux_winsize(rows: u32, cols: u32) {
@@ -1110,7 +1134,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  }
  
  /// Ctrl+D: the next read of the terminal returns 0 (end of input).
-@@ -1093,10 +1761,13 @@
+@@ -1093,10 +1773,13 @@
      let e = crate::eng();
      let Some(l) = e.s.lx.as_mut() else { return };
      l.stdin.clear();
@@ -1127,7 +1151,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      }
      crate::lock::kick();
  }
-@@ -1190,42 +1861,359 @@
+@@ -1190,42 +1873,403 @@
      Some(r)
  }
  
@@ -1266,7 +1290,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +}
 +
 +fn get_nb(l: &Lx, f: &Fd) -> bool {
-+    match f { Fd::Sock { id } => l.socks.get(id).map_or(false, |s| s.nb), Fd::Unix { id } => l.us.get(id).map_or(false, |u| u.nb), Fd::Event { id } => l.evs.get(id).map_or(false, |v| v.2), Fd::Pty { id, master } => l.ptys.get(id).map_or(false, |t| if *master { t.nb.0 } else { t.nb.1 }), _ => false }
++    match f { Fd::Sock { id } => l.socks.get(id).map_or(false, |s| s.nb), Fd::Unix { id } => l.us.get(id).map_or(false, |u| u.nb), Fd::Event { id } => l.evs.get(id).map_or(false, |v| v.2), Fd::Pty { id, master } => l.ptys.get(id).map_or(false, |t| if *master { t.nb.0 } else { t.nb.1 }), Fd::Pipe { id, w } => l.pipe_nb.contains(&(*id, *w)), _ => false }
 +}
 +fn set_nb(l: &mut Lx, f: &Fd, on: bool) {
 +    match f {
@@ -1274,6 +1298,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +        Fd::Unix { id } => if let Some(u) = l.us.get_mut(id) { u.nb = on },
 +        Fd::Event { id } => if let Some(v) = l.evs.get_mut(id) { v.2 = on },
 +        Fd::Pty { id, master } => if let Some(t) = l.ptys.get_mut(id) { if *master { t.nb.0 = on } else { t.nb.1 = on } },
++        Fd::Pipe { id, w } => { if on { l.pipe_nb.insert((*id, *w)); } else { l.pipe_nb.remove(&(*id, *w)); } }
 +        _ => {}
 +    }
 +}
@@ -1298,9 +1323,17 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +        l.want = Some(Cond::Fds(vec![(Fd::Unix { id }, 1)]));
 +        return BLOCKED;
 +    }
++    let pos = l.pread.get(&rx).copied().unwrap_or(0);
++    let mut k = (n as usize).min(l.pipes[&rx].len());
++    l.us_got = None;
++    if let Some(q) = l.passed.get_mut(&rx) {
++        while q.front().map_or(false, |x| x.0 < pos) { q.pop_front(); } // read without a control buffer: dropped
++        if let Some(x) = q.front() { if x.0 == pos { l.us_got = q.pop_front().map(|x| x.1); } }
++        if let Some(x) = q.front() { k = k.min((x.0 - pos) as usize); }
++    }
 +    let b = l.pipes.get_mut(&rx).unwrap();
-+    let k = (n as usize).min(b.len());
 +    let d: Vec<u8> = b.drain(..k).collect();
++    *l.pread.entry(rx).or_default() += k as u64;
 +    if e.mmu.write_bytes(buf, &d).is_err() { return -14; }
 +    k as i64
 +}
@@ -1446,7 +1479,26 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +            if let Some(pu) = pu { write_unix_addr(e, a1, a2, &pu); }
 +            n as i64
 +        }
-+        44 | 46 => { // sendto / sendmsg
++        44 | 46 => { // sendto / sendmsg (with SCM_RIGHTS: the descriptors travel too)
++            if nr == 46 {
++                let (ctl, clen) = (e.r64(a1 + 32), e.r64(a1 + 40));
++                let mut o = 0u64;
++                while ctl != 0 && o + 16 <= clen {
++                    let (len, lvl, ty) = (e.r64(ctl + o), e.r32(ctl + o + 8), e.r32(ctl + o + 12));
++                    if len < 16 { break; }
++                    if lvl == 1 && ty == 1 {
++                        let fds: Vec<i32> = (0..(len - 16) / 4).map(|k| e.r32(ctl + o + 16 + 4 * k) as i32).collect();
++                        let l = lx(e);
++                        let v: Vec<Fd> = fds.iter().filter_map(|f| l.fds.get(f).cloned()).collect();
++                        if let Some(UsSt::Conn { tx, .. }) = l.us.get(&id).map(|u| &u.st) {
++                            let tx = *tx;
++                            let at = l.pread.get(&tx).copied().unwrap_or(0) + l.pipes.get(&tx).map_or(0, |b| b.len() as u64);
++                            l.passed.entry(tx).or_default().push_back((at, v));
++                        }
++                    }
++                    o += (len + 7) & !7;
++                }
++            }
 +            let d = if nr == 44 {
 +                let mut d = vec![0u8; a2.min(1 << 24) as usize];
 +                let _ = e.mmu.read_bytes(a1, &mut d);
@@ -1467,7 +1519,23 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +                let (iov, iovn) = (e.r64(a1 + 16), e.r64(a1 + 24));
 +                let (b, n) = (e.r64(iov), if iovn > 0 { e.r64(iov + 8) } else { 0 });
 +                let v = us_read(e, id, b, n, a2 & 0x40 != 0);
-+                if v >= 0 { e.w32(a1 + 8, 0); e.w64(a1 + 40, 0); e.w32(a1 + 48, 0); }
++                if v >= 0 {
++                    e.w32(a1 + 8, 0); e.w32(a1 + 48, 0);
++                    let (ctl, clen) = (e.r64(a1 + 32), e.r64(a1 + 40));
++                    let l = lx(e);
++                    let got = if v > 0 && ctl != 0 { l.us_got.take() } else { l.us_got = None; None };
++                    match got {
++                        Some(fds) if clen >= 16 + 4 * fds.len() as u64 => {
++                            let nums: Vec<i32> = fds.into_iter().map(|f| { let n = l.new_fd(f); if a2 & 0x4000_0000 != 0 { l.cloexec.insert(n); } n }).collect();
++                            let len = 16 + 4 * nums.len() as u64;
++                            e.w64(ctl, len); e.w32(ctl + 8, 1); e.w32(ctl + 12, 1);
++                            for (k, n) in nums.iter().enumerate() { e.w32(ctl + 16 + 4 * k as u64, *n as u32); }
++                            e.w64(a1 + 40, (len + 7) & !7);
++                        }
++                        Some(_) => { e.w64(a1 + 40, 0); e.w32(a1 + 48, 8); } // MSG_CTRUNC
++                        None => e.w64(a1 + 40, 0),
++                    }
++                }
 +                v
 +            }
 +        }
@@ -1509,7 +1577,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  fn read_addr(e: &mut Engine, a: u64, len: u64) -> Option<[u8; 16]> {
      if a == 0 || len < 8 { return None; }
      let mut b = [0u8; 28];
-@@ -1249,6 +2237,7 @@
+@@ -1249,6 +2293,7 @@
  }
  
  fn net_call(e: &mut Engine, nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i64 {
@@ -1517,7 +1585,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      let fd = a0 as i32;
      let sid = match lx(e).fds.get(&fd) { Some(Fd::Sock { id }) => Some(*id), _ => None };
      match nr {
-@@ -1376,16 +2365,16 @@
+@@ -1376,16 +2421,16 @@
  pub extern "C" fn linux_save_tar() -> u32 {
      let Some(l) = crate::eng().s.lx.as_ref() else { return 0 };
      let mut t: Vec<u8> = Vec::new();
@@ -1537,7 +1605,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          h[124..136].copy_from_slice(format!("{:011o}\0", size).as_bytes());
          h[136..148].copy_from_slice(b"00000000000\0");
          h[156] = ty;
-@@ -1400,12 +2389,12 @@
+@@ -1400,12 +2445,12 @@
          if p.starts_with("/proc") || p.starts_with("/dev") || p.starts_with("/tmp/") { continue; }
          let name = &p[1..];
          match n {
