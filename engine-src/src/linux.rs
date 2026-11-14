@@ -95,6 +95,9 @@ pub struct Lx {
     eps: BTreeMap<u32, BTreeMap<i32, (u32, u64)>>,
     next_ev: u32,
     ptys: BTreeMap<u32, Pty>,
+    // owners and permissions (path -> mode bits, uid, gid); paths not listed: root, 755/644
+    meta: BTreeMap<String, (u32, u32, u32)>,
+    umask: u32,
 }
 
 /// A pseudo-terminal: what the master writes goes through the line discipline to the slave's input;
@@ -227,6 +230,11 @@ impl Lx {
             if let Some(n) = longlink.take() { link = n; }
             let path = self.abs(&format!("/{}", name));
             if path == "/" { continue; }
+            if matches!(ty, b'5' | b'0' | 0 | b'7' | b'1') {
+                let (m, u, g) = (num(&h[100..108]) as u32 & 0o7777, num(&h[108..116]) as u32, num(&h[116..124]) as u32);
+                let dflt = if ty == b'5' { 0o755 } else if path.starts_with("/bin/") || path.starts_with("/usr/bin/") || path.starts_with("/sbin/") || path.starts_with("/usr/sbin/") { 0o755 } else { 0o644 };
+                if m != 0 && (m != dflt || u != 0 || g != 0) { self.meta.insert(path.clone(), (m, u, g)); } else { self.meta.remove(&path); }
+            }
             if let Some((dir, _)) = path.rsplit_once('/') { self.mkdirs(dir); }
             match ty {
                 b'5' => { self.mkdirs(&path); }
@@ -250,7 +258,7 @@ fn lx(e: &mut Engine) -> &mut Lx { e.s.lx.as_mut().unwrap() }
 impl Engine {
     /// Loads a static ELF and builds the Linux start stack.
     pub fn linux_boot(&mut self, name: &str, cmd: &str) -> Result<(), String> {
-        let mut l = Lx { cwd: "/root".into(), mmap_next: MMAP_BASE, pid: 1, next_pid: 100, lflag: 0x8A3B, winsize: (30, 100), ..Default::default() };
+        let mut l = Lx { umask: 0o022, cwd: "/root".into(), mmap_next: MMAP_BASE, pid: 1, next_pid: 100, lflag: 0x8A3B, winsize: (30, 100), ..Default::default() };
         l.procs.insert(1, Proc { ppid: 0, saved: None, zombie: None, pgid: 1, ctty: 0 });
         for d in ["/bin", "/usr/bin", "/sbin", "/tmp", "/root", "/etc", "/dev", "/dev/pts", "/proc/self"] { l.mkdirs(d); }
         l.fs.insert("/etc/passwd".into(), Node::File(b"root:x:0:0:root:/root:/bin/sh\n".to_vec()));
@@ -382,8 +390,17 @@ impl Engine {
 
 fn ret(e: &mut Engine, v: i64) { e.cpu.regs[0] = v as u64; }
 
-fn stat_buf(e: &mut Engine, a: u64, mode: u32, size: u64, ino: u64) -> i64 {
+fn stat_buf(e: &mut Engine, a: u64, mode: u32, size: u64, ino: u64) -> i64 { stat_buf_own(e, a, mode, size, ino, (0, 0)) }
+
+/// Permission bits and owner of a path.
+fn perm(l: &Lx, p: &str, dir: bool) -> (u32, u32, u32) {
+    l.meta.get(p).copied().unwrap_or(if dir { (0o755, 0, 0) } else if p.starts_with("/dev/") { (0o666, 0, 0) } else if p.starts_with("/bin/") || p.starts_with("/usr/bin/") || p.starts_with("/sbin/") || p.starts_with("/usr/sbin/") { (0o755, 0, 0) } else { (0o644, 0, 0) })
+}
+
+fn stat_buf_own(e: &mut Engine, a: u64, mode: u32, size: u64, ino: u64, own: (u32, u32)) -> i64 {
     let mut b = [0u8; 144];
+    b[28..32].copy_from_slice(&own.0.to_le_bytes());
+    b[32..36].copy_from_slice(&own.1.to_le_bytes());
     b[0..8].copy_from_slice(&1u64.to_le_bytes());
     b[8..16].copy_from_slice(&ino.to_le_bytes());
     b[16..24].copy_from_slice(&1u64.to_le_bytes());
@@ -403,13 +420,14 @@ fn stat_path(e: &mut Engine, path: &str, a: u64, follow: bool) -> i64 {
     // terminals: the same inode as fstat of an open one (ttyname compares them)
     let ino = if let Some(n) = p.strip_prefix("/dev/pts/").and_then(|n| n.parse::<u64>().ok()) { 8000 + n } else if p == "/dev/console" || p == "/dev/tty" { 5 } else { p.bytes().fold(1469598103934665603u64, |h, c| (h ^ c as u64).wrapping_mul(1099511628211)) };
     let (mode, size) = match l.fs.get(&p) {
-        _ if p == "/" => (0o040755, 4096),
-        Some(Node::Dir) => (0o040755, 4096),
-        Some(Node::File(d)) => (if p.starts_with("/dev/") { 0o020666 } else if p.starts_with("/bin/") || p.starts_with("/usr/bin/") { 0o100755 } else { 0o100644 }, d.len() as u64),
+        _ if p == "/" => (0o040000, 4096),
+        Some(Node::Dir) => (0o040000, 4096),
+        Some(Node::File(d)) => (if p.starts_with("/dev/") { 0o020000 } else if l.us_names.contains_key(&p) { 0o140000 } else { 0o100000 }, d.len() as u64),
         Some(Node::Link(t)) => (0o120777, t.len() as u64),
         None => return -ENOENT,
     };
-    stat_buf(e, a, mode, size, ino)
+    let (bits, uid, gid) = if mode == 0o120777 { (0, 0, 0) } else { perm(l, &p, mode == 0o040000) };
+    stat_buf_own(e, a, mode | bits, size, ino, (uid, gid))
 }
 
 /// /proc files made when opened (memory, CPU, uptime) so free, top and htop have something to read.
@@ -433,7 +451,7 @@ fn proc_file(e: &mut Engine, p: &str) {
     l.fs.insert(p.to_string(), Node::File(text.into_bytes()));
 }
 
-fn open(e: &mut Engine, path: &str, flags: u64) -> i64 {
+fn open(e: &mut Engine, path: &str, flags: u64, mode: u64) -> i64 {
     let l = lx(e);
     let p = l.resolve(path, true);
     let p = if p.starts_with("/proc/") { let q = p.clone(); proc_file(e, &q); q } else { p };
@@ -476,6 +494,7 @@ fn open(e: &mut Engine, path: &str, flags: u64) -> i64 {
         let dir = p.rsplit_once('/').map(|x| x.0).unwrap_or("/");
         if !l.is_dir(if dir.is_empty() { "/" } else { dir }) { return -ENOENT; }
         l.fs.insert(p.clone(), Node::File(Vec::new()));
+        l.meta.insert(p.clone(), (mode as u32 & 0o7777 & !l.umask, l.ids.2, l.ids.1));
     } else if flags & 0xC0 == 0xC0 {
         return -EEXIST;
     }
@@ -651,8 +670,9 @@ pub fn syscall(e: &mut Engine) {
             if t.is_empty() { -3 } else { let mut dead = false; for k in t { dead |= signal(e, k, a1 as u32); } if dead { NORET } else { 0 } }
         }
         1 => do_write(e, a0 as i32, a1, a2),
-        2 => { let p = e.read_cstr(a0, 4096); open(e, &p, a1) }
-        257 => { let p = path_at(e, a0, a1); open(e, &p, a2) }
+        2 => { let p = e.read_cstr(a0, 4096); open(e, &p, a1, a2) }
+        257 => { let p = path_at(e, a0, a1); open(e, &p, a2, a3) }
+        85 => { let p = e.read_cstr(a0, 4096); open(e, &p, 0x241, a1) } // creat
         3 => { let l = lx(e); l.cloexec.remove(&(a0 as i32)); if l.fds.remove(&(a0 as i32)).is_some() { 0 } else { -EBADF } }
         4 | 6 => { let p = e.read_cstr(a0, 4096); stat_path(e, &p, a1, nr == 4) }
         262 => { // newfstatat
@@ -865,6 +885,10 @@ pub fn syscall(e: &mut Engine) {
             }
         }
         74 | 75 | 162 => 0, // fsync / fdatasync / sync
+        285 => { // fallocate: grows the file (mode 0)
+            let l = lx(e);
+            if let Some(Fd::File { path, .. }) = l.fds.get(&(a0 as i32)) { let p = path.clone(); if a1 & 1 == 0 { if let Some(Node::File(d)) = l.fs.get_mut(&p) { let end = (a2 + a3) as usize; if d.len() < end { d.resize(end, 0); } } } 0 } else { -ESPIPE }
+        }
         77 => { let l = lx(e); if let Some(Fd::File { path, .. }) = l.fds.get(&(a0 as i32)) { let p = path.clone(); if let Some(Node::File(d)) = l.fs.get_mut(&p) { d.resize(a1 as usize, 0); } } 0 }
         76 => { let p = e.read_cstr(a0, 4096); let l = lx(e); let q = l.resolve(&p, true); if let Some(Node::File(d)) = l.fs.get_mut(&q) { d.resize(a1 as usize, 0); 0 } else { -ENOENT } }
         78 | 217 => getdents(e, a0 as i32, a1, a2),
@@ -878,12 +902,12 @@ pub fn syscall(e: &mut Engine) {
             let (f, t) = if nr == 82 { (e.read_cstr(a0, 4096), e.read_cstr(a1, 4096)) } else { (path_at(e, a0, a1), path_at(e, a2, a3)) };
             let l = lx(e); let (f, t) = (l.resolve(&f, false), l.resolve(&t, false));
             let keys: Vec<String> = l.fs.keys().filter(|k| **k == f || k.starts_with(&format!("{}/", f))).cloned().collect();
-            if keys.is_empty() { -ENOENT } else { for k in keys { let n = l.fs.remove(&k).unwrap(); let nk = format!("{}{}", t, &k[f.len()..]); l.written.remove(&k); if matches!(n, Node::File(_)) { l.written.insert(nk.clone()); } l.fs.insert(nk, n); } 0 }
+            if keys.is_empty() { -ENOENT } else { for k in keys { let n = l.fs.remove(&k).unwrap(); let nk = format!("{}{}", t, &k[f.len()..]); l.written.remove(&k); if let Some(m) = l.meta.remove(&k) { l.meta.insert(nk.clone(), m); } if matches!(n, Node::File(_)) { l.written.insert(nk.clone()); } l.fs.insert(nk, n); } 0 }
         }
         83 | 258 => { // mkdir / mkdirat
-            let p = if nr == 83 { e.read_cstr(a0, 4096) } else { path_at(e, a0, a1) };
+            let (p, m) = if nr == 83 { (e.read_cstr(a0, 4096), a1) } else { (path_at(e, a0, a1), a2) };
             let l = lx(e); let q = l.resolve(&p, false);
-            if l.fs.contains_key(&q) { -EEXIST } else { l.fs.insert(q, Node::Dir); 0 }
+            if l.fs.contains_key(&q) { -EEXIST } else { l.meta.insert(q.clone(), (m as u32 & 0o7777 & !l.umask, l.ids.2, l.ids.1)); l.fs.insert(q, Node::Dir); 0 }
         }
         84 | 87 | 263 => { // rmdir / unlink / unlinkat
             let (p, dir) = if nr == 263 { (path_at(e, a0, a1), a2 & 0x200 != 0) } else { (e.read_cstr(a0, 4096), nr == 84) };
@@ -894,7 +918,7 @@ pub fn syscall(e: &mut Engine) {
                 Some(Node::Dir) if !l.children(&q).is_empty() => -ENOTEMPTY,
                 Some(Node::Dir) => { l.fs.remove(&q); 0 }
                 Some(_) if dir => -ENOTDIR,
-                Some(_) => { l.fs.remove(&q); l.written.remove(&q); l.us_names.remove(&q); 0 }
+                Some(_) => { l.fs.remove(&q); l.written.remove(&q); l.us_names.remove(&q); l.meta.remove(&q); 0 }
             }
         }
         86 | 88 | 265 | 266 => { // link / symlink / linkat / symlinkat
@@ -924,7 +948,36 @@ pub fn syscall(e: &mut Engine) {
             let l = lx(e); let q = l.resolve(&p, false);
             match l.fs.get(&q) { Some(Node::Link(t)) => { let t = t.clone(); let k = t.len().min(n as usize); let _ = e.mmu.write_bytes(b, &t.as_bytes()[..k]); k as i64 } Some(_) => -EINVAL, None => -ENOENT }
         }
-        90 | 91 | 92 | 93 | 94 | 95 | 268 | 260 | 280 | 235 | 132 => 0, // chmod, chown, umask, utimes...
+        90 | 91 | 268 | 92 | 93 | 94 | 260 => { // chmod, fchmod, fchmodat, chown, fchown, lchown, fchownat
+            let p = match nr {
+                91 | 93 => match lx(e).fds.get(&(a0 as i32)) { Some(Fd::File { path, .. }) | Some(Fd::Dir { path, .. }) => path.clone(), Some(_) => return ret(e, 0), None => return ret(e, -EBADF) },
+                268 | 260 => path_at(e, a0, a1),
+                _ => e.read_cstr(a0, 4096),
+            };
+            let l = lx(e);
+            let q = l.resolve(&p, nr != 94 && !(nr == 260 && a4 & 0x100 != 0));
+            let dir = l.is_dir(&q);
+            if q != "/" && !l.fs.contains_key(&q) { return ret(e, -ENOENT); }
+            let mut m = perm(l, &q, dir);
+            let me = l.ids.2;
+            if matches!(nr, 90 | 91 | 268) {
+                if me != 0 && me != m.1 { return ret(e, -1); } // EPERM
+                m.0 = (if nr == 268 { a2 } else { a1 }) as u32 & 0o7777;
+            } else {
+                let (u, g) = if nr == 260 { (a2, a3) } else { (a1, a2) };
+                if me != 0 && (u as i32 != -1 && u as u32 != m.1) { return ret(e, -1); }
+                if u as i32 != -1 { m.1 = u as u32; }
+                if g as i32 != -1 { m.2 = g as u32; }
+            }
+            l.meta.insert(q, m);
+            0
+        }
+        95 => { let l = lx(e); let o = l.umask; l.umask = a0 as u32 & 0o777; o as i64 } // umask
+        280 | 235 | 132 => { // utimensat, utimes, utime: times are not kept, but the file must exist (touch creates it then)
+            let p = if nr == 280 { if a1 == 0 { return ret(e, 0); } path_at(e, a0, a1) } else { e.read_cstr(a0, 4096) };
+            let l = lx(e); let q = l.resolve(&p, true);
+            if q == "/" || l.fs.contains_key(&q) { 0 } else { -ENOENT }
+        }
         96 => { // gettimeofday
             let ms = crate::epoch_ms();
             if a0 != 0 { e.w64(a0, (ms / 1000.0) as u64); e.w64(a0 + 8, ((ms % 1000.0) * 1000.0) as u64); }
@@ -1044,6 +1097,7 @@ fn statx(e: &mut Engine, path: &str, dirfd: i32, flags: u64, buf: u64) -> i64 {
     b[4..8].copy_from_slice(&4096u32.to_le_bytes());
     b[16..20].copy_from_slice(&1u32.to_le_bytes());
     b[28..30].copy_from_slice(&(u32::from_le_bytes(st[24..28].try_into().unwrap()) as u16).to_le_bytes());
+    b[20..28].copy_from_slice(&st[28..36]); // uid, gid
     b[32..40].copy_from_slice(&g(8).to_le_bytes());
     b[40..48].copy_from_slice(&g(48).to_le_bytes());
     b[48..56].copy_from_slice(&g(64).to_le_bytes());
@@ -2311,16 +2365,16 @@ pub extern "C" fn linux_dirty() -> u32 { crate::eng().s.lx.as_mut().map_or(0, |l
 pub extern "C" fn linux_save_tar() -> u32 {
     let Some(l) = crate::eng().s.lx.as_ref() else { return 0 };
     let mut t: Vec<u8> = Vec::new();
-    fn hdr(t: &mut Vec<u8>, name: &str, ty: u8, size: usize, link: &str, mode: u32) {
+    fn hdr(t: &mut Vec<u8>, name: &str, ty: u8, size: usize, link: &str, mode: u32, own: (u32, u32)) {
         if name.len() > 99 { // GNU long name
             let mut d = name.as_bytes().to_vec(); d.push(0);
-            hdr(t, "././@LongLink", b'L', d.len(), "", 0o644);
+            hdr(t, "././@LongLink", b'L', d.len(), "", 0o644, (0, 0));
             t.extend_from_slice(&d); t.resize((t.len() + 511) / 512 * 512, 0);
         }
         let mut h = [0u8; 512];
         let n = name.as_bytes(); h[..n.len().min(99)].copy_from_slice(&n[..n.len().min(99)]);
         h[100..108].copy_from_slice(format!("{:07o}\0", mode).as_bytes());
-        h[108..116].copy_from_slice(b"0000000\0"); h[116..124].copy_from_slice(b"0000000\0");
+        h[108..116].copy_from_slice(format!("{:07o}\0", own.0 & 0o777_7777).as_bytes()); h[116..124].copy_from_slice(format!("{:07o}\0", own.1 & 0o777_7777).as_bytes());
         h[124..136].copy_from_slice(format!("{:011o}\0", size).as_bytes());
         h[136..148].copy_from_slice(b"00000000000\0");
         h[156] = ty;
@@ -2335,12 +2389,12 @@ pub extern "C" fn linux_save_tar() -> u32 {
         if p.starts_with("/proc") || p.starts_with("/dev") || p.starts_with("/tmp/") { continue; }
         let name = &p[1..];
         match n {
-            Node::Dir => hdr(&mut t, &format!("{}/", name), b'5', 0, "", 0o755),
+            Node::Dir => { let (m, u, g) = perm(l, p, true); hdr(&mut t, &format!("{}/", name), b'5', 0, "", m, (u, g)) }
             Node::Link(k) => {
-                if k.len() > 99 { let mut d = k.as_bytes().to_vec(); d.push(0); hdr(&mut t, "././@LongLink", b'K', d.len(), "", 0o644); t.extend_from_slice(&d); t.resize((t.len() + 511) / 512 * 512, 0); }
-                hdr(&mut t, name, b'2', 0, k, 0o777)
+                if k.len() > 99 { let mut d = k.as_bytes().to_vec(); d.push(0); hdr(&mut t, "././@LongLink", b'K', d.len(), "", 0o644, (0, 0)); t.extend_from_slice(&d); t.resize((t.len() + 511) / 512 * 512, 0); }
+                hdr(&mut t, name, b'2', 0, k, 0o777, (0, 0))
             }
-            Node::File(d) => { hdr(&mut t, name, b'0', d.len(), "", 0o755); t.extend_from_slice(d); t.resize((t.len() + 511) / 512 * 512, 0); }
+            Node::File(d) => { let (m, u, g) = perm(l, p, false); hdr(&mut t, name, b'0', d.len(), "", m, (u, g)); t.extend_from_slice(d); t.resize((t.len() + 511) / 512 * 512, 0); }
         }
     }
     t.extend_from_slice(&[0u8; 1024]);
