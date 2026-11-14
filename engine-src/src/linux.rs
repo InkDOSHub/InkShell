@@ -31,6 +31,7 @@ pub enum Fd {
     Unix { id: u32 },  // a local stream socket (AF_UNIX, or TCP on 127.0.0.1)
     Event { id: u32 }, // eventfd
     Epoll { id: u32 },
+    Pty { id: u32, master: bool }, // /dev/ptmx and its /dev/pts/N
 }
 
 /// What a waiting Linux thread waits for.
@@ -43,7 +44,7 @@ pub struct Saved {
     brk_start: u64, brk: u64, mmap_next: u64, exe: String, ids: (u32, u32, u32),
     space: crate::mmu::Space, jit: crate::jit::Jit,
 }
-pub struct Proc { ppid: u32, saved: Option<Saved>, zombie: Option<i32>, pgid: u32 }
+pub struct Proc { ppid: u32, saved: Option<Saved>, zombie: Option<i32>, pgid: u32, ctty: u32 } // ctty: controlling pty (0 = the page's terminal)
 
 #[derive(Default)]
 pub struct Lx {
@@ -93,6 +94,21 @@ pub struct Lx {
     evs: BTreeMap<u32, (u64, bool, bool)>, // count, semaphore, non-blocking
     eps: BTreeMap<u32, BTreeMap<i32, (u32, u64)>>,
     next_ev: u32,
+    ptys: BTreeMap<u32, Pty>,
+}
+
+/// A pseudo-terminal: what the master writes goes through the line discipline to the slave's input;
+/// what the slave writes goes (with output processing) to the master.
+pub struct Pty { inq: std::collections::VecDeque<u8>, line: Vec<u8>, eofs: u32, out: std::collections::VecDeque<u8>, termios: Vec<u8>, ws: (u16, u16), fg: u32, nb: (bool, bool), opened: bool } // opened: a slave was opened once
+
+fn default_termios() -> Vec<u8> {
+    let mut t = vec![0u8; 36];
+    t[0..4].copy_from_slice(&0x500u32.to_le_bytes()); // ICRNL | IXON
+    t[4..8].copy_from_slice(&0x5u32.to_le_bytes()); // OPOST | ONLCR
+    t[8..12].copy_from_slice(&0xBFu32.to_le_bytes()); // CS8 | CREAD | B38400
+    t[12..16].copy_from_slice(&0x8A3Bu32.to_le_bytes()); // ISIG | ICANON | ECHO...
+    t[17..28].copy_from_slice(&[3, 0x1C, 0x7F, 0x15, 4, 0, 1, 0, 0x11, 0x13, 0x1A]); // ^C ^\ DEL ^U ^D, VMIN 1, ^Q ^S ^Z
+    t
 }
 
 /// A local stream socket. Connected pairs talk through two pipe buffers.
@@ -235,13 +251,13 @@ impl Engine {
     /// Loads a static ELF and builds the Linux start stack.
     pub fn linux_boot(&mut self, name: &str, cmd: &str) -> Result<(), String> {
         let mut l = Lx { cwd: "/root".into(), mmap_next: MMAP_BASE, pid: 1, next_pid: 100, lflag: 0x8A3B, winsize: (30, 100), ..Default::default() };
-        l.procs.insert(1, Proc { ppid: 0, saved: None, zombie: None, pgid: 1 });
-        for d in ["/bin", "/usr/bin", "/sbin", "/tmp", "/root", "/etc", "/dev", "/proc/self"] { l.mkdirs(d); }
+        l.procs.insert(1, Proc { ppid: 0, saved: None, zombie: None, pgid: 1, ctty: 0 });
+        for d in ["/bin", "/usr/bin", "/sbin", "/tmp", "/root", "/etc", "/dev", "/dev/pts", "/proc/self"] { l.mkdirs(d); }
         l.fs.insert("/etc/passwd".into(), Node::File(b"root:x:0:0:root:/root:/bin/sh\n".to_vec()));
         l.fs.insert("/etc/group".into(), Node::File(b"root:x:0:\n".to_vec()));
         l.fs.insert("/etc/hostname".into(), Node::File(b"inksoc\n".to_vec()));
         l.fs.insert("/dev/null".into(), Node::File(Vec::new()));
-        for d in ["zero", "urandom", "random", "tty"] { l.fs.insert(format!("/dev/{}", d), Node::File(Vec::new())); }
+        for d in ["zero", "urandom", "random", "tty", "console", "ptmx"] { l.fs.insert(format!("/dev/{}", d), Node::File(Vec::new())); }
         // the page's files go to /root; an ELF also goes to /bin (busybox: every applet links to it)
         let nm = |e: &Engine, k: &str| e.s.names.get(k).cloned().unwrap_or_else(|| k.to_string());
         let files: Vec<(String, Vec<u8>)> = self.s.files.iter().map(|(k, v)| (nm(self, k), v.clone())).collect();
@@ -384,7 +400,8 @@ fn stat_buf(e: &mut Engine, a: u64, mode: u32, size: u64, ino: u64) -> i64 {
 fn stat_path(e: &mut Engine, path: &str, a: u64, follow: bool) -> i64 {
     let l = lx(e);
     let p = l.resolve(path, follow);
-    let ino = p.bytes().fold(1469598103934665603u64, |h, c| (h ^ c as u64).wrapping_mul(1099511628211));
+    // terminals: the same inode as fstat of an open one (ttyname compares them)
+    let ino = if let Some(n) = p.strip_prefix("/dev/pts/").and_then(|n| n.parse::<u64>().ok()) { 8000 + n } else if p == "/dev/console" || p == "/dev/tty" { 5 } else { p.bytes().fold(1469598103934665603u64, |h, c| (h ^ c as u64).wrapping_mul(1099511628211)) };
     let (mode, size) = match l.fs.get(&p) {
         _ if p == "/" => (0o040755, 4096),
         Some(Node::Dir) => (0o040755, 4096),
@@ -429,7 +446,30 @@ fn open(e: &mut Engine, path: &str, flags: u64) -> i64 {
         return fd as i64;
     }
     if flags & 0x10000 != 0 { return if exists { -ENOTDIR } else { -ENOENT }; }
-    if p == "/dev/tty" || p == "/dev/console" { return l.new_fd(Fd::Tty) as i64; }
+    if p == "/dev/ptmx" || p.starts_with("/dev/pts/") || p == "/dev/tty" {
+        let me = l.pid;
+        let ctty = l.procs.get(&me).map_or(0, |x| x.ctty);
+        let (id, master) = if p == "/dev/ptmx" {
+            let id = (0..).find(|k| !l.ptys.contains_key(k) || !held(l, &|f| matches!(f, Fd::Pty { id: i, .. } if *i == *k))).unwrap();
+            l.ptys.insert(id, Pty { inq: Default::default(), line: Vec::new(), eofs: 0, out: Default::default(), termios: default_termios(), ws: (24, 80), fg: 0, nb: (false, false), opened: false });
+            l.fs.insert(format!("/dev/pts/{}", id), Node::File(Vec::new()));
+            (id, true)
+        } else if p == "/dev/tty" {
+            if ctty == 0 { let fd = l.new_fd(Fd::Tty); if flags & 0x80000 != 0 { l.cloexec.insert(fd); } return fd as i64; }
+            (ctty - 1, false)
+        } else {
+            let Ok(n) = p[9..].parse::<u32>() else { return -ENOENT };
+            if !l.ptys.contains_key(&n) { return -5; } // EIO
+            // a session leader without a terminal gets this one (unless O_NOCTTY)
+            if flags & 0x100 == 0 && ctty == 0 && l.procs.get(&me).map_or(false, |x| x.pgid == me) { if let Some(x) = l.procs.get_mut(&me) { x.ctty = n + 1; } }
+            (n, false)
+        };
+        if let Some(t) = l.ptys.get_mut(&id) { if master { t.nb.0 = flags & 0x800 != 0; } else { t.nb.1 = flags & 0x800 != 0; t.opened = true; } }
+        let fd = l.new_fd(Fd::Pty { id, master });
+        if flags & 0x80000 != 0 { l.cloexec.insert(fd); }
+        return fd as i64;
+    }
+    if p == "/dev/console" { return l.new_fd(Fd::Tty) as i64; }
     if p == "/dev/zero" || p == "/dev/urandom" || p == "/dev/random" { let fd = l.new_fd(Fd::Dev(if p == "/dev/zero" { 0 } else { 1 })); if flags & 0x80000 != 0 { l.cloexec.insert(fd); } return fd as i64; }
     if !exists {
         if flags & 0x40 == 0 { return -ENOENT; }
@@ -471,6 +511,7 @@ fn do_read(e: &mut Engine, fd: i32, buf: u64, n: u64) -> i64 {
         Some(Fd::Unix { id }) => { let id = *id; us_read(e, id, buf, n, false) }
         Some(Fd::Event { id }) => { let id = *id; ev_read(e, id, buf, n) }
         Some(Fd::Epoll { .. }) => -EINVAL,
+        Some(Fd::Pty { id, master }) => { let (id, m) = (*id, *master); pty_read(e, id, m, buf, n) }
         Some(Fd::Dev(k)) => {
             let k = *k; let n = n.min(1 << 20) as usize;
             let mut d = vec![0u8; n];
@@ -524,6 +565,10 @@ fn write_data(e: &mut Engine, fd: i32, d: &[u8]) -> i64 {
             8
         }
         Some(Fd::Epoll { .. }) => -EINVAL,
+        Some(Fd::Pty { id, master }) => {
+            let (id, m) = (*id, *master);
+            if m { let sigs = pty_input(l, id, d); for (g, sig) in sigs { pty_signal(e, id, g, sig); } n as i64 } else { pty_output(l, id, d) }
+        }
         Some(Fd::Dev(_)) => n as i64,
         Some(Fd::Pipe { id, .. }) => {
             let id = *id;
@@ -617,7 +662,7 @@ pub fn syscall(e: &mut Engine) {
         5 => fstat(e, a0 as i32, a1),
         8 => { // lseek
             let l = lx(e);
-            let size = match l.fds.get(&(a0 as i32)) { Some(Fd::File { path, .. }) => match l.fs.get(path) { Some(Node::File(d)) => d.len() as i64, _ => 0 }, Some(Fd::Tty | Fd::Pipe { .. } | Fd::Sock { .. } | Fd::Dev(_) | Fd::Unix { .. } | Fd::Event { .. } | Fd::Epoll { .. }) => return ret(e, -ESPIPE), Some(Fd::Dir { .. }) => 0, None => return ret(e, -EBADF) };
+            let size = match l.fds.get(&(a0 as i32)) { Some(Fd::File { path, .. }) => match l.fs.get(path) { Some(Node::File(d)) => d.len() as i64, _ => 0 }, Some(Fd::Tty | Fd::Pipe { .. } | Fd::Sock { .. } | Fd::Dev(_) | Fd::Unix { .. } | Fd::Event { .. } | Fd::Epoll { .. } | Fd::Pty { .. }) => return ret(e, -ESPIPE), Some(Fd::Dir { .. }) => 0, None => return ret(e, -EBADF) };
             match l.fds.get_mut(&(a0 as i32)) {
                 Some(Fd::File { pos, .. }) => {
                     let np = match a2 { 0 => a1 as i64, 1 => *pos as i64 + a1 as i64, 2 => size + a1 as i64, _ => -1 };
@@ -784,7 +829,7 @@ pub fn syscall(e: &mut Engine) {
             let g = if a1 == 0 { p } else { a1 as u32 };
             match l.procs.get_mut(&p) { Some(x) => { x.pgid = g; 0 } None => -3 }
         }
-        112 => { let l = lx(e); let me = l.pid; if let Some(x) = l.procs.get_mut(&me) { x.pgid = me; } me as i64 } // setsid
+        112 => { let l = lx(e); let me = l.pid; if let Some(x) = l.procs.get_mut(&me) { x.pgid = me; x.ctty = 0; } me as i64 } // setsid
         121 => { let l = lx(e); let p = if a0 == 0 { l.pid } else { a0 as u32 }; l.procs.get(&p).map_or(-3, |x| x.pgid as i64) } // getpgid
         111 => { let l = lx(e); l.procs.get(&l.pid).map_or(l.pid, |x| x.pgid) as i64 } // getpgrp
         124 => 1, // getsid
@@ -801,7 +846,7 @@ pub fn syscall(e: &mut Engine) {
             for (k, s) in ["Linux", "inksoc", "6.1.0-inksoc", "#1 SMP InkSoC", "x86_64", "(none)"].iter().enumerate() { b[65 * k..65 * k + s.len()].copy_from_slice(s.as_bytes()); }
             if e.mmu.write_bytes(a0, &b).is_err() { -14 } else { 0 }
         }
-        72 if (a1 == 3 || a1 == 4) && matches!(lx(e).fds.get(&(a0 as i32)), Some(Fd::Sock { .. } | Fd::Unix { .. } | Fd::Event { .. })) => { // F_GETFL / F_SETFL: O_NONBLOCK
+        72 if (a1 == 3 || a1 == 4) && matches!(lx(e).fds.get(&(a0 as i32)), Some(Fd::Sock { .. } | Fd::Unix { .. } | Fd::Event { .. } | Fd::Pty { .. })) => { // F_GETFL / F_SETFL: O_NONBLOCK
             let l = lx(e);
             let f = l.fds.get(&(a0 as i32)).cloned().unwrap();
             if a1 == 4 { set_nb(l, &f, a2 & 0x800 != 0); 0 } else { 2 | if get_nb(l, &f) { 0x800 } else { 0 } }
@@ -862,6 +907,20 @@ pub fn syscall(e: &mut Engine) {
         }
         89 | 267 => { // readlink / readlinkat
             let (p, b, n) = if nr == 89 { (e.read_cstr(a0, 4096), a1, a2) } else { (path_at(e, a0, a1), a2, a3) };
+            if let Some(k) = p.strip_prefix("/proc/self/fd/").and_then(|k| k.parse::<i32>().ok()) { // what a descriptor is (ttyname, ls -l)
+                let t = match lx(e).fds.get(&k) {
+                    None => return ret(e, -EBADF),
+                    Some(Fd::Tty) => "/dev/console".to_string(),
+                    Some(Fd::Pty { id, master }) => if *master { "/dev/ptmx".into() } else { format!("/dev/pts/{}", id) },
+                    Some(Fd::File { path, .. }) | Some(Fd::Dir { path, .. }) => path.clone(),
+                    Some(Fd::Pipe { id, .. }) => format!("pipe:[{}]", id),
+                    Some(Fd::Sock { id }) | Some(Fd::Unix { id }) => format!("socket:[{}]", id),
+                    Some(Fd::Dev(k)) => if *k == 0 { "/dev/zero".into() } else { "/dev/urandom".into() },
+                    Some(Fd::Event { .. }) => "anon_inode:[eventfd]".into(),
+                    Some(Fd::Epoll { .. }) => "anon_inode:[eventpoll]".into(),
+                };
+                let k = t.len().min(n as usize); let _ = e.mmu.write_bytes(b, &t.as_bytes()[..k]); return ret(e, k as i64);
+            }
             let l = lx(e); let q = l.resolve(&p, false);
             match l.fs.get(&q) { Some(Node::Link(t)) => { let t = t.clone(); let k = t.len().min(n as usize); let _ = e.mmu.write_bytes(b, &t.as_bytes()[..k]); k as i64 } Some(_) => -EINVAL, None => -ENOENT }
         }
@@ -963,6 +1022,7 @@ fn fstat(e: &mut Engine, fd: i32, a: u64) -> i64 {
     match l.fds.get(&fd) {
         Some(Fd::Pipe { id, .. }) => { let id = *id as u64; stat_buf(e, a, 0o010600, 0, 1000 + id) }
         Some(Fd::Tty) => stat_buf(e, a, 0o020620, 0, 5),
+        Some(Fd::Pty { id, .. }) => { let id = *id as u64; stat_buf(e, a, 0o020620, 0, 8000 + id) }
         Some(Fd::Sock { id }) | Some(Fd::Unix { id }) => { let id = *id as u64; stat_buf(e, a, 0o140777, 0, 5000 + id) }
         Some(Fd::Event { id }) | Some(Fd::Epoll { id }) => { let id = *id as u64; stat_buf(e, a, 0o600, 0, 9000 + id) }
         Some(Fd::Dev(k)) => { let k = *k as u64; stat_buf(e, a, 0o020666, 0, 7 + k) }
@@ -1003,11 +1063,13 @@ fn ioctl(e: &mut Engine, fd: i32, req: u64, a: u64) -> i64 {
             Fd::Pipe { id, .. } => l.pipes.get(id).map_or(0, |b| b.len()),
             Fd::Sock { id } => l.socks.get(id).map_or(0, |s| s.rx.len()),
             Fd::Unix { id } => match l.us.get(id).map(|u| &u.st) { Some(UsSt::Conn { rx, .. }) => l.pipes.get(rx).map_or(0, |b| b.len()), _ => 0 },
+            Fd::Pty { id, master } => l.ptys.get(id).map_or(0, |t| if *master { t.out.len() } else { t.inq.len() }),
             _ => 0,
         };
         e.w32(a, n as u32);
         return 0;
     }
+    if let Some(Fd::Pty { id, master }) = lx(e).fds.get(&fd).cloned() { return pty_ioctl(e, id, master, req, a); }
     if !tty { return -ENOTTY; }
     match req {
         0x5401 => { // TCGETS: what the program set last (a cooked terminal at first)
@@ -1032,7 +1094,8 @@ fn ioctl(e: &mut Engine, fd: i32, req: u64, a: u64) -> i64 {
             0
         }
         0x5413 => { let (rows, cols) = lx(e).winsize; let w: [u16; 4] = [rows, cols, 0, 0]; for (k, v) in w.iter().enumerate() { e.w16(a + 2 * k as u64, *v); } 0 }
-        0x5414 => 0,
+        0x5414 | 0x540E | 0x5422 | 0x540B | 0x5409 | 0x540A => 0, // TIOCSWINSZ, TIOCSCTTY, TIOCNOTTY, TCFLSH, TCSBRK, TCXONC
+        0x5411 => { e.w32(a, 0); 0 } // TIOCOUTQ
         0x540F => { let l = lx(e); let g = if l.fg != 0 { l.fg } else { l.procs.get(&l.pid).map_or(l.pid, |p| p.pgid) }; e.w32(a, g); 0 } // TIOCGPGRP
         0x5410 => { let g = e.r32(a); lx(e).fg = g; 0 } // TIOCSPGRP
         _ => -EINVAL,
@@ -1142,6 +1205,14 @@ fn fd_state(l: &Lx, f: &Fd) -> (bool, bool, bool) {
             _ => (false, false, true),
         },
         Fd::Event { id } => (l.evs.get(id).map_or(false, |v| v.0 > 0), true, false),
+        Fd::Pty { id, master } => {
+            let other = pty_held(l, *id, !*master) || (*master && !l.ptys.get(id).map_or(false, |t| t.opened));
+            match l.ptys.get(id) {
+                Some(t) if *master => (!t.out.is_empty() || !other, true, !other),
+                Some(t) => (!t.inq.is_empty() || t.eofs > 0 || !other, other, !other),
+                None => (true, false, true),
+            }
+        }
         _ => (true, true, false),
     }
 }
@@ -1204,8 +1275,8 @@ fn fork(e: &mut Engine) -> i64 {
         brk_start: l.brk_start, brk: l.brk, mmap_next: l.mmap_next, exe: l.exe.clone(), ids: l.ids, space, jit,
     };
     let me = l.pid;
-    let pgid = l.procs.get(&me).map_or(me, |p| p.pgid);
-    l.procs.insert(pid, Proc { ppid: me, saved: Some(saved), zombie: None, pgid });
+    let (pgid, ctty) = l.procs.get(&me).map_or((me, 0), |p| (p.pgid, p.ctty));
+    l.procs.insert(pid, Proc { ppid: me, saved: Some(saved), zombie: None, pgid, ctty });
     if let Some(a) = l.acts.get(&me).cloned() { l.acts.insert(pid, a); }
     let tid = e.cur_tid();
     let mask = lx(e).masks.get(&tid).copied().unwrap_or(0);
@@ -1304,6 +1375,118 @@ fn execve(e: &mut Engine, path: &str, mut args: Vec<String>, env: Vec<String>) -
     match e.load_elf(&data, &p, &args, &env) {
         Ok(()) => NORET,
         Err(m) => { crate::console(&format!("{}: {}\n", path, m)); exit_proc(e, 127 << 8); NORET }
+    }
+}
+
+// ---------------------------------------------------------------- pseudo-terminals
+
+fn pty_held(l: &Lx, id: u32, master: bool) -> bool { held(l, &|f| matches!(f, Fd::Pty { id: i, master: m } if *i == id && *m == master)) }
+
+/// The master typed `d`: line editing, echo and Ctrl+C, Ctrl+\ and Ctrl+Z as the terminal settings say.
+/// Returns the signals to send (to the terminal's foreground group).
+fn pty_input(l: &mut Lx, id: u32, d: &[u8]) -> Vec<(u32, u32)> {
+    let mut sigs = Vec::new();
+    let Some(t) = l.ptys.get_mut(&id) else { return sigs };
+    for &c0 in d {
+        let r = |o: usize| u32::from_le_bytes(t.termios[o..o + 4].try_into().unwrap());
+        let (iflag, oflag, lflag) = (r(0), r(4), r(12));
+        let cc: Vec<u8> = t.termios[17..36].to_vec();
+        let echo = lflag & 8 != 0;
+        let mut c = c0;
+        if c == b'\r' && iflag & 0x80 != 0 { continue; } // IGNCR
+        if c == b'\r' && iflag & 0x100 != 0 { c = b'\n'; } else if c == b'\n' && iflag & 0x40 != 0 { c = b'\r'; } // ICRNL / INLCR
+        if lflag & 1 != 0 && c != 0 && (c == cc[0] || c == cc[1] || c == cc[10]) { // ISIG
+            let sig = if c == cc[0] { 2 } else if c == cc[1] { 3 } else { 20 };
+            if echo { t.out.extend([b'^', c + 64, b'\r', b'\n']); }
+            t.line.clear();
+            sigs.push((t.fg, sig));
+            continue;
+        }
+        if lflag & 2 != 0 { // ICANON
+            if c == cc[2] || c == 8 { if t.line.pop().is_some() && echo { t.out.extend(b"\x08 \x08"); } continue; }
+            if c == cc[3] { if echo { for _ in 0..t.line.len() { t.out.extend(b"\x08 \x08"); } } t.line.clear(); continue; }
+            if c == cc[4] { if t.line.is_empty() { t.eofs += 1; } else { let ln = std::mem::take(&mut t.line); t.inq.extend(ln); } continue; }
+            t.line.push(c);
+            if echo || (c == b'\n' && lflag & 0x40 != 0) { if c == b'\n' && oflag & 5 == 5 { t.out.extend(b"\r\n"); } else { t.out.push_back(c); } }
+            if c == b'\n' { let ln = std::mem::take(&mut t.line); t.inq.extend(ln); }
+        } else {
+            t.inq.push_back(c);
+            if echo { if c == b'\n' && oflag & 5 == 5 { t.out.extend(b"\r\n"); } else { t.out.push_back(c); } }
+        }
+    }
+    sigs
+}
+
+/// The slave wrote `d`: output processing (OPOST|ONLCR turns \n into \r\n).
+fn pty_output(l: &mut Lx, id: u32, d: &[u8]) -> i64 {
+    if !pty_held(l, id, true) { return -5; } // EIO: nobody holds the master
+    let Some(t) = l.ptys.get_mut(&id) else { return -5 };
+    let oflag = u32::from_le_bytes(t.termios[4..8].try_into().unwrap());
+    if oflag & 5 == 5 { for &c in d { if c == b'\n' { t.out.extend(b"\r\n"); } else { t.out.push_back(c); } } } else { t.out.extend(d.iter()); }
+    d.len() as i64
+}
+
+fn pty_read(e: &mut Engine, id: u32, master: bool, buf: u64, n: u64) -> i64 {
+    let l = lx(e);
+    let other = pty_held(l, id, !master) || (master && !l.ptys.get(&id).map_or(false, |t| t.opened));
+    let Some(t) = l.ptys.get_mut(&id) else { return -5 };
+    let canon = u32::from_le_bytes(t.termios[12..16].try_into().unwrap()) & 2 != 0;
+    let q = if master { &mut t.out } else { &mut t.inq };
+    if q.is_empty() {
+        if !master && t.eofs > 0 { t.eofs -= 1; return 0; }
+        if !other { return if master { -5 } else { 0 }; } // the other side closed: EIO / end of input
+        if (master && t.nb.0) || (!master && t.nb.1) { return -EAGAIN; }
+        l.want = Some(Cond::Fds(vec![(Fd::Pty { id, master }, 1)]));
+        return BLOCKED;
+    }
+    let mut k = (n as usize).min(q.len());
+    if !master && canon { if let Some(nl) = q.iter().position(|&c| c == b'\n') { k = k.min(nl + 1); } }
+    let d: Vec<u8> = q.drain(..k).collect();
+    if e.mmu.write_bytes(buf, &d).is_err() { return -14; }
+    k as i64
+}
+
+/// A signal from the terminal: to its foreground group, or (none set) to the processes it controls.
+fn pty_signal(e: &mut Engine, id: u32, fg: u32, sig: u32) {
+    let l = lx(e);
+    let to: Vec<u32> = l.procs.iter().filter(|(_, p)| p.zombie.is_none() && if fg != 0 { p.pgid == fg } else { p.ctty == id + 1 }).map(|(k, _)| *k).collect();
+    for pid in to { signal(e, pid, sig); }
+}
+
+fn pty_ioctl(e: &mut Engine, id: u32, master: bool, req: u64, a: u64) -> i64 {
+    let me = lx(e).pid;
+    match req {
+        0x5401 => { let t = lx(e).ptys.get(&id).map(|t| t.termios.clone()).unwrap_or_else(default_termios); if e.mmu.write_bytes(a, &t).is_err() { -14 } else { 0 } } // TCGETS
+        0x5402..=0x5404 => { // TCSETS / TCSETSW / TCSETSF
+            let mut b = vec![0u8; 36];
+            let _ = e.mmu.read_bytes(a, &mut b);
+            if let Some(t) = lx(e).ptys.get_mut(&id) {
+                t.termios = b;
+                if req == 0x5404 { t.inq.clear(); t.line.clear(); }
+                // leaving line mode: what was typed so far becomes input
+                if u32::from_le_bytes(t.termios[12..16].try_into().unwrap()) & 2 == 0 && !t.line.is_empty() { let ln = std::mem::take(&mut t.line); t.inq.extend(ln); }
+            }
+            0
+        }
+        0x5413 => { let (r, c) = lx(e).ptys.get(&id).map_or((24, 80), |t| t.ws); for (k, v) in [r, c, 0, 0].iter().enumerate() { e.w16(a + 2 * k as u64, *v); } 0 } // TIOCGWINSZ
+        0x5414 => { // TIOCSWINSZ: SIGWINCH to the foreground group
+            let (r, c) = (e.r16(a), e.r16(a + 2));
+            let fg = { let l = lx(e); match l.ptys.get_mut(&id) { Some(t) => { let ch = t.ws != (r, c); t.ws = (r, c); if ch { Some(t.fg) } else { None } } None => None } };
+            if let Some(g) = fg { pty_signal(e, id, g, 28); }
+            0
+        }
+        0x540F => { let l = lx(e); let g = l.ptys.get(&id).map_or(0, |t| t.fg); let g = if g != 0 { g } else { l.procs.get(&me).map_or(me, |p| p.pgid) }; e.w32(a, g); 0 } // TIOCGPGRP
+        0x5410 => { let g = e.r32(a); if let Some(t) = lx(e).ptys.get_mut(&id) { t.fg = g; } 0 } // TIOCSPGRP
+        0x540E => { if let Some(p) = lx(e).procs.get_mut(&me) { p.ctty = id + 1; } 0 } // TIOCSCTTY
+        0x5422 => { if let Some(p) = lx(e).procs.get_mut(&me) { if p.ctty == id + 1 { p.ctty = 0; } } 0 } // TIOCNOTTY
+        0x5429 => { e.w32(a, me); 0 } // TIOCGSID
+        0x80045430 => { e.w32(a, id); 0 } // TIOCGPTN
+        0x40045431 => 0, // TIOCSPTLCK
+        0x5441 if master => { let l = lx(e); if let Some(t) = l.ptys.get_mut(&id) { t.opened = true; } let fd = l.new_fd(Fd::Pty { id, master: false }); if a & 0x80000 != 0 { l.cloexec.insert(fd); } fd as i64 } // TIOCGPTPEER
+        0x540B => { if let Some(t) = lx(e).ptys.get_mut(&id) { if a != 1 { t.inq.clear(); t.line.clear(); } if a != 0 { t.out.clear(); } } 0 } // TCFLSH
+        0x5409 | 0x540A | 0x5408 => 0, // TCSBRK, TCXONC, TCSBRKP
+        0x5411 => { e.w32(a, 0); 0 } // TIOCOUTQ
+        _ => -EINVAL,
     }
 }
 
@@ -1737,13 +1920,14 @@ fn ev_read(e: &mut Engine, id: u32, buf: u64, n: u64) -> i64 {
 }
 
 fn get_nb(l: &Lx, f: &Fd) -> bool {
-    match f { Fd::Sock { id } => l.socks.get(id).map_or(false, |s| s.nb), Fd::Unix { id } => l.us.get(id).map_or(false, |u| u.nb), Fd::Event { id } => l.evs.get(id).map_or(false, |v| v.2), _ => false }
+    match f { Fd::Sock { id } => l.socks.get(id).map_or(false, |s| s.nb), Fd::Unix { id } => l.us.get(id).map_or(false, |u| u.nb), Fd::Event { id } => l.evs.get(id).map_or(false, |v| v.2), Fd::Pty { id, master } => l.ptys.get(id).map_or(false, |t| if *master { t.nb.0 } else { t.nb.1 }), _ => false }
 }
 fn set_nb(l: &mut Lx, f: &Fd, on: bool) {
     match f {
         Fd::Sock { id } => if let Some(s) = l.socks.get_mut(id) { s.nb = on },
         Fd::Unix { id } => if let Some(u) = l.us.get_mut(id) { u.nb = on },
         Fd::Event { id } => if let Some(v) = l.evs.get_mut(id) { v.2 = on },
+        Fd::Pty { id, master } => if let Some(t) = l.ptys.get_mut(id) { if *master { t.nb.0 = on } else { t.nb.1 = on } },
         _ => {}
     }
 }

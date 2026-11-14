@@ -13,6 +13,10 @@
 #include <sys/wait.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <sys/ioctl.h>
+#include <termios.h>
 
 static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
@@ -84,6 +88,27 @@ int main(int argc, char **argv) {
     write(p[1], "y", 1); FD_ZERO(&rs); FD_SET(p[0], &rs); tv.tv_usec = 30000;
     int s1 = select(p[0] + 1, &rs, 0, 0, &tv);
     printf("epoll %d %d %ld %d %ld %lu select %d %d\n", n0, n1, d1, n2, d2, (unsigned long)v, s0, s1); // 0 1 22 1 11 5 select 0 1
+  }
+  if (!strcmp(only, "all") || !strcmp(only, "pty")) {
+    int m = posix_openpt(O_RDWR | O_NOCTTY); grantpt(m); unlockpt(m);
+    char *sn = ptsname(m);
+    struct winsize ws = {24, 80, 0, 0}; ioctl(m, TIOCSWINSZ, &ws);
+    pid_t c = fork();
+    if (c == 0) {
+      setsid(); int s = open(sn, O_RDWR); ioctl(s, TIOCSCTTY, 0);
+      dup2(s, 0); dup2(s, 1); dup2(s, 2); if (s > 2) close(s);
+      execl("/bin/sh", "sh", "-c", "stty size; tty >/dev/null && echo is-tty; read x; echo got-$x; exec cat", (char *)0);
+      _exit(1);
+    }
+    write(m, "abc\r", 4);
+    char all[4096] = {0}; int n = 0, k, sent = 0;
+    while (n < (int)sizeof all - 1 && (k = read(m, all + n, sizeof all - 1 - n)) > 0) {
+      n += k; all[n] = 0;
+      if (!sent && strstr(all, "got-abc")) { usleep(50000); write(m, "\x03", 1); sent = 1; }
+    }
+    int st; waitpid(c, &st, 0);
+    printf("pty %s %s %s %s sig %d\n", strstr(all, "24 80") ? "size" : "-", strstr(all, "is-tty") ? "tty" : "-",
+           strstr(all, "got-abc\r\n") ? "line" : "-", strstr(all, "^C") ? "^C" : "-", WIFSIGNALED(st) ? WTERMSIG(st) : -1);
   }
   return 0;
 }
