@@ -17,6 +17,9 @@
 #include <stdlib.h>
 #include <sys/ioctl.h>
 #include <termios.h>
+#include <sys/time.h>
+#include <sys/timerfd.h>
+#include <time.h>
 
 static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
@@ -28,6 +31,8 @@ static void *worker(void *a) {
 }
 static volatile int got;
 static void on_sig(int s) { got = s; }
+static volatile int ticks;
+static void on_tick(int s) { ticks++; }
 
 int main(int argc, char **argv) {
   const char *only = argc > 1 ? argv[1] : "all";
@@ -109,6 +114,31 @@ int main(int argc, char **argv) {
     int st; waitpid(c, &st, 0);
     printf("pty %s %s %s %s sig %d\n", strstr(all, "24 80") ? "size" : "-", strstr(all, "is-tty") ? "tty" : "-",
            strstr(all, "got-abc\r\n") ? "line" : "-", strstr(all, "^C") ? "^C" : "-", WIFSIGNALED(st) ? WTERMSIG(st) : -1);
+  }
+  if (!strcmp(only, "all") || !strcmp(only, "timers")) {
+    signal(SIGALRM, on_sig); got = 0;
+    alarm(1); pause();                          // alarm wakes pause with SIGALRM
+    int a = got;
+    signal(SIGALRM, on_tick);
+    struct itimerval it = {{0, 50000}, {0, 50000}};
+    setitimer(ITIMER_REAL, &it, 0);
+    while (ticks < 3) pause();                  // an interval timer ticks again and again
+    struct itimerval off = {0}; setitimer(ITIMER_REAL, &off, 0);
+    int tf = timerfd_create(CLOCK_MONOTONIC, 0);
+    struct itimerspec ts = {{0, 20000000}, {0, 20000000}};
+    timerfd_settime(tf, 0, &ts, 0);
+    unsigned long long n = 0, sum = 0;
+    while (sum < 3) { read(tf, &n, 8); sum += n; }
+    timer_t t; struct sigevent ev = {0}; ev.sigev_notify = SIGEV_SIGNAL; ev.sigev_signo = SIGUSR1;
+    signal(SIGUSR1, on_sig); got = 0;
+    timer_create(CLOCK_MONOTONIC, &ev, &t);
+    struct itimerspec one = {{0, 0}, {0, 30000000}};
+    timer_settime(t, 0, &one, 0);
+    while (!got) pause();
+    pid_t c = fork();
+    if (c == 0) { signal(SIGALRM, SIG_DFL); alarm(1); for (;;) usleep(10000); }
+    int st; waitpid(c, &st, 0);
+    printf("timers %d %d %s %d %d\n", a, ticks >= 3, sum >= 3 ? "fd" : "-", got, WIFSIGNALED(st) ? WTERMSIG(st) : -1);
   }
   return 0;
 }

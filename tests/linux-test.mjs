@@ -46,7 +46,7 @@ async function settle(maxMs = 120000) {
     const st = x.run(2000000);
     if (st === 1 || st === 2) return st;
     // waiting: a timer due soon (sleep, a timeout) is not idle; only waiting for the terminal is
-    if (st === 3) { const ms = x.stat(17); if (ms >= 30 && ++idle > 20) return 3; await new Promise((r) => setTimeout(r, Math.min(ms, 30) || 2)); } else idle = 0;
+    if (st === 3) { const ms = x.stat(17); if (ms >= 30 && !(x.linux_timer_ms?.() >= 0) && ++idle > 20) return 3; await new Promise((r) => setTimeout(r, Math.min(ms, 30) || 2)); } else idle = 0;
   }
   return 0;
 }
@@ -81,6 +81,7 @@ await step('/root/stage1 threads\n', /threads 200000/, 'threads, mutex and condi
 await step('/root/stage1 signals\n', /signals 10 7 15/, 'signal handlers, pause, kill');
 await step('/root/stage1 sockets\n', /sockets ping pong 0 tcp-ok/, 'socketpair, unix server, TCP on 127.0.0.1');
 await step('/root/stage1 epoll\n', /epoll 0 1 22 1 11 5 select 0 1/, 'epoll, eventfd, select');
+await step('/root/stage1 timers\n', /timers 14 1 fd 10 14/, 'alarm, setitimer, timerfd, timer_create; SIGALRM ends a process');
 await step('/root/stage1 pty\n', /pty size tty line \^C sig 2/, 'pseudo-terminal: size, tty name, line mode, Ctrl+C');
 await step('trap "echo caught-usr1" USR1; kill -USR1 $$\n', /caught-usr1/, 'shell trap');
 await step('(nc -l -p 8098 > /tmp/nc.txt &) ; sleep 0.3; echo over-nc | nc 127.0.0.1 8098; sleep 0.3; cat /tmp/nc.txt\n', /^over-nc/m, 'nc server and client on this machine');

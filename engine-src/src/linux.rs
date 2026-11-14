@@ -32,6 +32,7 @@ pub enum Fd {
     Event { id: u32 }, // eventfd
     Epoll { id: u32 },
     Pty { id: u32, master: bool }, // /dev/ptmx and its /dev/pts/N
+    Timer { id: u32 }, // timerfd
 }
 
 /// What a waiting Linux thread waits for.
@@ -106,7 +107,15 @@ pub struct Lx {
     pipe_nb: BTreeSet<(u32, bool)>, // pipe ends opened O_NONBLOCK
     // MAP_SHARED file mappings (pid, address, length, file, offset): written back at munmap/msync
     shared: Vec<(u32, u64, u64, String, u64)>,
+    timers: BTreeMap<u32, Tmr>, // alarm/setitimer, timer_create and timerfd timers (by id)
+    alarms: BTreeMap<u32, u32>, // each process's ITIMER_REAL timer (pid -> timer id)
+    next_tm: u32,
 }
+
+/// A timer: at `next` (host ms; 0 = disarmed) it signals `sig` to `pid`, or (fd) counts an
+/// expiration a timerfd read returns; `every` > 0 rearms it.
+#[derive(Clone, Default)]
+pub struct Tmr { pid: u32, sig: u32, fd: bool, nb: bool, real: bool, next: f64, every: f64, count: u64 }
 
 /// A pseudo-terminal: what the master writes goes through the line discipline to the slave's input;
 /// what the slave writes goes (with output processing) to the master.
@@ -537,6 +546,7 @@ fn do_read(e: &mut Engine, fd: i32, buf: u64, n: u64) -> i64 {
         Some(Fd::Sock { id }) => { let id = *id; sock_recv(e, id, buf, n, false).0 }
         Some(Fd::Unix { id }) => { let id = *id; us_read(e, id, buf, n, false) }
         Some(Fd::Event { id }) => { let id = *id; ev_read(e, id, buf, n) }
+        Some(Fd::Timer { id }) => { let id = *id; tfd_read(e, id, buf, n) }
         Some(Fd::Epoll { .. }) => -EINVAL,
         Some(Fd::Pty { id, master }) => { let (id, m) = (*id, *master); pty_read(e, id, m, buf, n) }
         Some(Fd::Dev(k)) => {
@@ -585,6 +595,7 @@ fn write_data(e: &mut Engine, fd: i32, d: &[u8]) -> i64 {
         Some(Fd::Tty) => { crate::console(&String::from_utf8_lossy(&d)); n as i64 }
         Some(Fd::Sock { id }) => { let id = *id; sock_send(l, id, d, None) }
         Some(Fd::Unix { id }) => { let id = *id; us_write(l, id, d) }
+        Some(Fd::Timer { .. }) => -EINVAL,
         Some(Fd::Event { id }) => {
             if d.len() < 8 { return -EINVAL; }
             let v = u64::from_le_bytes(d[..8].try_into().unwrap());
@@ -631,7 +642,11 @@ pub fn syscall(e: &mut Engine) {
     // a signal the thread can take now: its handler runs first; the call then restarts
     // (SA_RESTART, or a call that never waits) or returns EINTR
     let tid = e.cur_tid();
-    let sig = { let l = lx(e); deliverable(l, l.pid, tid) };
+    let sig = { let l = lx(e); fire_timers(l); deliverable(l, l.pid, tid) };
+    if sig != 0 && nr != 15 && { let l = lx(e); let pid = l.pid; act(l, pid, sig)[0] == 0 && !dfl_ignore(sig) && pid != 1 } {
+        exit_proc(e, sig as i32); // a pending signal without a handler (a timer's SIGALRM): its default action
+        return;
+    }
     if sig != 0 && nr != 15 {
         let flags = { let l = lx(e); act(l, l.pid, sig)[1] };
         let slow = matches!(nr, 0 | 7 | 23 | 34 | 35 | 43 | 45 | 47 | 61 | 128 | 130 | 202 | 230 | 232 | 270 | 271 | 281 | 288 | 441);
@@ -691,7 +706,7 @@ pub fn syscall(e: &mut Engine) {
         5 => fstat(e, a0 as i32, a1),
         8 => { // lseek
             let l = lx(e);
-            let size = match l.fds.get(&(a0 as i32)) { Some(Fd::File { path, .. }) => match l.fs.get(path) { Some(Node::File(d)) => d.len() as i64, _ => 0 }, Some(Fd::Tty | Fd::Pipe { .. } | Fd::Sock { .. } | Fd::Dev(_) | Fd::Unix { .. } | Fd::Event { .. } | Fd::Epoll { .. } | Fd::Pty { .. }) => return ret(e, -ESPIPE), Some(Fd::Dir { .. }) => 0, None => return ret(e, -EBADF) };
+            let size = match l.fds.get(&(a0 as i32)) { Some(Fd::File { path, .. }) => match l.fs.get(path) { Some(Node::File(d)) => d.len() as i64, _ => 0 }, Some(Fd::Tty | Fd::Pipe { .. } | Fd::Sock { .. } | Fd::Dev(_) | Fd::Unix { .. } | Fd::Event { .. } | Fd::Epoll { .. } | Fd::Pty { .. } | Fd::Timer { .. }) => return ret(e, -ESPIPE), Some(Fd::Dir { .. }) => 0, None => return ret(e, -EBADF) };
             match l.fds.get_mut(&(a0 as i32)) {
                 Some(Fd::File { pos, .. }) => {
                     let np = match a2 { 0 => a1 as i64, 1 => *pos as i64 + a1 as i64, 2 => size + a1 as i64, _ => -1 };
@@ -831,8 +846,64 @@ pub fn syscall(e: &mut Engine) {
         24 => 0, // sched_yield
         165 | 166 => -1, // mount / umount2: EPERM, as for a program without the right to mount
         73 => 0, // flock: one machine, nobody else holds the lock
-        37 => 0, // alarm
-        38 => { if a2 != 0 { let _ = e.mmu.write_bytes(a2, &[0u8; 32]); } 0 } // setitimer: timers are not delivered
+        37 => { // alarm: seconds left on the previous one
+            let pid = lx(e).pid;
+            let id = alarm_timer(lx(e), pid);
+            let (left, _) = tm_get(lx(e), id);
+            tm_set(lx(e), id, a0 as f64 * 1000.0, 0.0);
+            ((left + 999.0) / 1000.0) as i64
+        }
+        36 | 38 => { // getitimer / setitimer: ITIMER_REAL (others are accepted and never fire)
+            let (newv, old) = if nr == 36 { (0, a1) } else { (a1, a2) };
+            let id = if a0 == 0 { let pid = lx(e).pid; Some(alarm_timer(lx(e), pid)) } else { None };
+            let (left, every) = id.map_or((0.0, 0.0), |id| tm_get(lx(e), id));
+            if old != 0 { for (k, v) in [every, left].iter().enumerate() { e.w64(old + 16 * k as u64, (*v / 1000.0) as u64); e.w64(old + 16 * k as u64 + 8, ((*v % 1000.0) * 1000.0) as u64); } }
+            if newv != 0 && id.is_some() {
+                let tv = |e: &mut Engine, a: u64| e.r64(a) as f64 * 1000.0 + e.r64(a + 8) as f64 / 1000.0;
+                let (every, val) = (tv(e, newv), tv(e, newv + 16));
+                tm_set(lx(e), id.unwrap(), val, every);
+            }
+            0
+        }
+        222 => { // timer_create: a signal (SIGALRM unless the sigevent names one) or nothing
+            let (sig, notify) = if a1 == 0 { (14, 0) } else { (e.r32(a1 + 8), e.r32(a1 + 12)) };
+            let l = lx(e);
+            l.next_tm += 1; let id = l.next_tm;
+            let real = a0 == 0 || a0 == 5 || a0 == 8;
+            l.timers.insert(id, Tmr { pid: l.pid, sig: if notify == 1 { 0 } else { sig }, real, ..Default::default() });
+            e.w32(a2, id); 0
+        }
+        223 | 286 => { // timer_settime / timerfd_settime (flags & 1 = absolute time)
+            let id = if nr == 223 { Some(a0 as u32) } else { match lx(e).fds.get(&(a0 as i32)) { Some(Fd::Timer { id }) => Some(*id), _ => None } };
+            match id.filter(|i| lx(e).timers.contains_key(i)) {
+                None => -EINVAL,
+                Some(id) => {
+                    let (left, every) = tm_get(lx(e), id);
+                    if a3 != 0 { put_ts(e, a3, every); put_ts(e, a3 + 16, left); }
+                    let ts = |e: &mut Engine, a: u64| e.r64(a) as f64 * 1000.0 + e.r64(a + 8) as f64 / 1e6;
+                    let (every, mut val) = (ts(e, a2), ts(e, a2 + 16));
+                    if a1 & 1 != 0 && val > 0.0 { let real = lx(e).timers[&id].real; val = (val - if real { crate::epoch_ms() } else { crate::now_ms() }).max(0.001); }
+                    if nr == 286 { if let Some(t) = lx(e).timers.get_mut(&id) { t.count = 0; } }
+                    tm_set(lx(e), id, val, every);
+                    0
+                }
+            }
+        }
+        224 | 287 => { // timer_gettime / timerfd_gettime
+            let id = if nr == 224 { Some(a0 as u32) } else { match lx(e).fds.get(&(a0 as i32)) { Some(Fd::Timer { id }) => Some(*id), _ => None } };
+            match id.filter(|i| lx(e).timers.contains_key(i)) { None => -EINVAL, Some(id) => { let (left, every) = tm_get(lx(e), id); put_ts(e, a1, every); put_ts(e, a1 + 16, left); 0 } }
+        }
+        225 => 0, // timer_getoverrun
+        226 => { if lx(e).timers.remove(&(a0 as u32)).is_some() { 0 } else { -EINVAL } } // timer_delete
+        283 => { // timerfd_create
+            let l = lx(e);
+            l.next_tm += 1; let id = l.next_tm;
+            let real = a0 == 0 || a0 == 5 || a0 == 8;
+            l.timers.insert(id, Tmr { pid: l.pid, fd: true, nb: a1 & 0x800 != 0, real, ..Default::default() });
+            let fd = l.new_fd(Fd::Timer { id });
+            if a1 & 0x80000 != 0 { l.cloexec.insert(fd); }
+            fd as i64
+        }
         32 => { let l = lx(e); match l.fds.get(&(a0 as i32)).cloned() { Some(f) => l.new_fd(f) as i64, None => -EBADF } }
         33 | 292 => { // dup2 / dup3
             let l = lx(e);
@@ -953,6 +1024,7 @@ pub fn syscall(e: &mut Engine) {
                     Some(Fd::Sock { id }) | Some(Fd::Unix { id }) => format!("socket:[{}]", id),
                     Some(Fd::Dev(k)) => if *k == 0 { "/dev/zero".into() } else { "/dev/urandom".into() },
                     Some(Fd::Event { .. }) => "anon_inode:[eventfd]".into(),
+                    Some(Fd::Timer { .. }) => "anon_inode:[timerfd]".into(),
                     Some(Fd::Epoll { .. }) => "anon_inode:[eventpoll]".into(),
                 };
                 let k = t.len().min(n as usize); let _ = e.mmu.write_bytes(b, &t.as_bytes()[..k]); return ret(e, k as i64);
@@ -1089,7 +1161,7 @@ fn fstat(e: &mut Engine, fd: i32, a: u64) -> i64 {
         Some(Fd::Tty) => stat_buf(e, a, 0o020620, 0, 5),
         Some(Fd::Pty { id, .. }) => { let id = *id as u64; stat_buf(e, a, 0o020620, 0, 8000 + id) }
         Some(Fd::Sock { id }) | Some(Fd::Unix { id }) => { let id = *id as u64; stat_buf(e, a, 0o140777, 0, 5000 + id) }
-        Some(Fd::Event { id }) | Some(Fd::Epoll { id }) => { let id = *id as u64; stat_buf(e, a, 0o600, 0, 9000 + id) }
+        Some(Fd::Event { id }) | Some(Fd::Epoll { id }) | Some(Fd::Timer { id }) => { let id = *id as u64; stat_buf(e, a, 0o600, 0, 9000 + id) }
         Some(Fd::Dev(k)) => { let k = *k as u64; stat_buf(e, a, 0o020666, 0, 7 + k) }
         Some(Fd::File { path, .. }) | Some(Fd::Dir { path, .. }) => { let p = path.clone(); stat_path(e, &p, a, true) }
         None => -EBADF,
@@ -1297,6 +1369,7 @@ fn fd_state(l: &Lx, f: &Fd) -> (bool, bool, bool) {
             _ => (false, false, true),
         },
         Fd::Event { id } => (l.evs.get(id).map_or(false, |v| v.0 > 0), true, false),
+        Fd::Timer { id } => (l.timers.get(id).map_or(false, |t| t.count > 0), false, false),
         Fd::Pty { id, master } => {
             let other = pty_held(l, *id, !*master) || (*master && !l.ptys.get(id).map_or(false, |t| t.opened));
             match l.ptys.get(id) {
@@ -1312,6 +1385,7 @@ fn fd_state(l: &Lx, f: &Fd) -> (bool, bool, bool) {
 /// Can a Linux thread waiting on `c` go on?
 pub fn ready(e: &mut Engine, c: &Cond, pid: u32, tid: u32) -> bool {
     let l = lx(e);
+    fire_timers(l);
     if deliverable(l, pid, tid) != 0 { return true; } // a signal to handle: the call returns or restarts
     match c {
         Cond::PipeRead(id) => l.pipes.get(id).map_or(true, |b| !b.is_empty()) || !has_end(l, *id, true),
@@ -1414,6 +1488,7 @@ fn gone(e: &mut Engine, pid: u32) {
     let l = lx(e);
     for t in ts { l.tids.remove(&t); l.masks.remove(&t); l.susp.remove(&t); }
     l.acts.remove(&pid); l.pend.remove(&pid);
+    l.timers.retain(|_, t| t.pid != pid); l.alarms.remove(&pid);
     let pp = l.procs.get(&pid).map_or(0, |p| p.ppid);
     if pp != 0 && act(l, pp, 17)[0] > 1 { *l.pend.entry(pp).or_default() |= bit(17); }
 }
@@ -1999,6 +2074,72 @@ fn epoll_wait(e: &mut Engine, ep: i32, out: u64, max: u64, ms: i64) -> i64 {
     NORET
 }
 
+/// The ITIMER_REAL timer of `pid` (alarm and setitimer share it).
+fn alarm_timer(l: &mut Lx, pid: u32) -> u32 {
+    if let Some(id) = l.alarms.get(&pid) { if l.timers.contains_key(id) { return *id; } }
+    l.next_tm += 1; let id = l.next_tm;
+    l.timers.insert(id, Tmr { pid, sig: 14, ..Default::default() });
+    l.alarms.insert(pid, id);
+    id
+}
+
+/// (ms left, interval ms) of a timer.
+fn tm_get(l: &Lx, id: u32) -> (f64, f64) {
+    l.timers.get(&id).map_or((0.0, 0.0), |t| (if t.next > 0.0 { (t.next - crate::now_ms()).max(0.0) } else { 0.0 }, t.every))
+}
+
+/// Arms a timer `ms` from now (0 disarms), then every `every` ms.
+fn tm_set(l: &mut Lx, id: u32, ms: f64, every: f64) {
+    if let Some(t) = l.timers.get_mut(&id) { t.next = if ms > 0.0 { crate::now_ms() + ms } else { 0.0 }; t.every = every; }
+    crate::lock::kick();
+}
+
+fn put_ts(e: &mut Engine, a: u64, ms: f64) { e.w64(a, (ms / 1000.0) as u64); e.w64(a + 8, ((ms % 1000.0) * 1e6) as u64); }
+
+/// Timers that are due: their signal goes pending (a handler runs at the next system call; the
+/// default action ends the process there), a timerfd counts the expirations.
+fn fire_timers(l: &mut Lx) {
+    if l.timers.is_empty() { return; }
+    let now = crate::now_ms();
+    let mut sigs = Vec::new();
+    l.timers.retain(|_, t| {
+        if t.next <= 0.0 || now < t.next { return true; }
+        let n = if t.every > 0.0 { ((now - t.next) / t.every) as u64 + 1 } else { 1 };
+        t.next = if t.every > 0.0 { t.next + n as f64 * t.every } else { 0.0 };
+        if t.fd { t.count += n; } else if t.sig != 0 { sigs.push((t.pid, t.sig)); }
+        true
+    });
+    for (pid, sig) in sigs {
+        if !l.procs.get(&pid).map_or(false, |p| p.zombie.is_none()) { continue; }
+        if act(l, pid, sig)[0] != 1 { *l.pend.entry(pid).or_default() |= bit(sig); }
+    }
+}
+
+/// Milliseconds until the next armed timer of a live process, or -1 (none): for the test harness,
+/// which otherwise stops when every thread just waits.
+#[no_mangle]
+pub extern "C" fn linux_timer_ms() -> f64 {
+    let e = crate::eng();
+    let Some(l) = e.s.lx.as_ref() else { return -1.0 };
+    let now = crate::now_ms();
+    l.timers.values().filter(|t| t.next > 0.0).map(|t| (t.next - now).max(0.0)).fold(-1.0, |a: f64, b| if a < 0.0 { b } else { a.min(b) })
+}
+
+fn tfd_read(e: &mut Engine, id: u32, buf: u64, n: u64) -> i64 {
+    if n < 8 { return -EINVAL; }
+    let l = lx(e);
+    fire_timers(l);
+    let Some(t) = l.timers.get_mut(&id) else { return -EBADF };
+    if t.count == 0 {
+        if t.nb { return -EAGAIN; }
+        l.want = Some(Cond::Fds(vec![(Fd::Timer { id }, 1)]));
+        return BLOCKED;
+    }
+    let v = std::mem::take(&mut t.count);
+    e.w64(buf, v);
+    8
+}
+
 fn ev_read(e: &mut Engine, id: u32, buf: u64, n: u64) -> i64 {
     if n < 8 { return -EINVAL; }
     let l = lx(e);
@@ -2015,13 +2156,14 @@ fn ev_read(e: &mut Engine, id: u32, buf: u64, n: u64) -> i64 {
 }
 
 fn get_nb(l: &Lx, f: &Fd) -> bool {
-    match f { Fd::Sock { id } => l.socks.get(id).map_or(false, |s| s.nb), Fd::Unix { id } => l.us.get(id).map_or(false, |u| u.nb), Fd::Event { id } => l.evs.get(id).map_or(false, |v| v.2), Fd::Pty { id, master } => l.ptys.get(id).map_or(false, |t| if *master { t.nb.0 } else { t.nb.1 }), Fd::Pipe { id, w } => l.pipe_nb.contains(&(*id, *w)), _ => false }
+    match f { Fd::Sock { id } => l.socks.get(id).map_or(false, |s| s.nb), Fd::Unix { id } => l.us.get(id).map_or(false, |u| u.nb), Fd::Event { id } => l.evs.get(id).map_or(false, |v| v.2), Fd::Timer { id } => l.timers.get(id).map_or(false, |t| t.nb), Fd::Pty { id, master } => l.ptys.get(id).map_or(false, |t| if *master { t.nb.0 } else { t.nb.1 }), Fd::Pipe { id, w } => l.pipe_nb.contains(&(*id, *w)), _ => false }
 }
 fn set_nb(l: &mut Lx, f: &Fd, on: bool) {
     match f {
         Fd::Sock { id } => if let Some(s) = l.socks.get_mut(id) { s.nb = on },
         Fd::Unix { id } => if let Some(u) = l.us.get_mut(id) { u.nb = on },
         Fd::Event { id } => if let Some(v) = l.evs.get_mut(id) { v.2 = on },
+        Fd::Timer { id } => if let Some(t) = l.timers.get_mut(id) { t.nb = on },
         Fd::Pty { id, master } => if let Some(t) = l.ptys.get_mut(id) { if *master { t.nb.0 = on } else { t.nb.1 = on } },
         Fd::Pipe { id, w } => { if on { l.pipe_nb.insert((*id, *w)); } else { l.pipe_nb.remove(&(*id, *w)); } }
         _ => {}

@@ -1,7 +1,7 @@
 diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 --- a/src/linux.rs	2026-11-14 16:19:45.000000000 +0000
-+++ b/src/linux.rs	2026-11-14 18:10:26.867505216 +0000
-@@ -28,11 +28,15 @@
++++ b/src/linux.rs	2026-11-14 19:43:13.764856857 +0000
+@@ -28,11 +28,16 @@
      Pipe { id: u32, w: bool },
      Sock { id: u32 },
      Dev(u8), // 0 /dev/zero, 1 /dev/urandom
@@ -9,6 +9,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +    Event { id: u32 }, // eventfd
 +    Epoll { id: u32 },
 +    Pty { id: u32, master: bool }, // /dev/ptmx and its /dev/pts/N
++    Timer { id: u32 }, // timerfd
  }
  
  /// What a waiting Linux thread waits for.
@@ -18,7 +19,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  
  /// A process that is not running right now keeps its state here.
  pub struct Saved {
-@@ -40,7 +44,7 @@
+@@ -40,7 +45,7 @@
      brk_start: u64, brk: u64, mmap_next: u64, exe: String, ids: (u32, u32, u32),
      space: crate::mmu::Space, jit: crate::jit::Jit,
  }
@@ -27,7 +28,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  
  #[derive(Default)]
  pub struct Lx {
-@@ -74,12 +78,58 @@
+@@ -74,12 +79,66 @@
      pub next_sock: u32,
      pub net_out: Vec<u8>,
      pub dns: Vec<String>,
@@ -60,7 +61,15 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +    pipe_nb: BTreeSet<(u32, bool)>, // pipe ends opened O_NONBLOCK
 +    // MAP_SHARED file mappings (pid, address, length, file, offset): written back at munmap/msync
 +    shared: Vec<(u32, u64, u64, String, u64)>,
++    timers: BTreeMap<u32, Tmr>, // alarm/setitimer, timer_create and timerfd timers (by id)
++    alarms: BTreeMap<u32, u32>, // each process's ITIMER_REAL timer (pid -> timer id)
++    next_tm: u32,
 +}
++
++/// A timer: at `next` (host ms; 0 = disarmed) it signals `sig` to `pid`, or (fd) counts an
++/// expiration a timerfd read returns; `every` > 0 rearms it.
++#[derive(Clone, Default)]
++pub struct Tmr { pid: u32, sig: u32, fd: bool, nb: bool, real: bool, next: f64, every: f64, count: u64 }
 +
 +/// A pseudo-terminal: what the master writes goes through the line discipline to the slave's input;
 +/// what the slave writes goes (with output processing) to the master.
@@ -88,7 +97,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  const EAGAIN: i64 = 11; const ENOTCONN: i64 = 107; const ECONNREFUSED: i64 = 111; const EOPNOTSUPP: i64 = 95; const EAFNOSUPPORT: i64 = 97; const ENETUNREACH: i64 = 101;
  
  
-@@ -188,6 +238,11 @@
+@@ -188,6 +247,11 @@
              if let Some(n) = longlink.take() { link = n; }
              let path = self.abs(&format!("/{}", name));
              if path == "/" { continue; }
@@ -100,7 +109,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
              if let Some((dir, _)) = path.rsplit_once('/') { self.mkdirs(dir); }
              match ty {
                  b'5' => { self.mkdirs(&path); }
-@@ -211,14 +266,14 @@
+@@ -211,14 +275,14 @@
  impl Engine {
      /// Loads a static ELF and builds the Linux start stack.
      pub fn linux_boot(&mut self, name: &str, cmd: &str) -> Result<(), String> {
@@ -119,7 +128,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          // the page's files go to /root; an ELF also goes to /bin (busybox: every applet links to it)
          let nm = |e: &Engine, k: &str| e.s.names.get(k).cloned().unwrap_or_else(|| k.to_string());
          let files: Vec<(String, Vec<u8>)> = self.s.files.iter().map(|(k, v)| (nm(self, k), v.clone())).collect();
-@@ -239,7 +294,7 @@
+@@ -239,7 +303,7 @@
              }
          }
          self.s.lx = Some(Box::new(l));
@@ -128,7 +137,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          self.sched_init();
          self.s.sched.th[0].pid = 1;
          let mut args = split_args(cmd);
-@@ -343,8 +398,17 @@
+@@ -343,8 +407,17 @@
  
  fn ret(e: &mut Engine, v: i64) { e.cpu.regs[0] = v as u64; }
  
@@ -147,7 +156,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      b[0..8].copy_from_slice(&1u64.to_le_bytes());
      b[8..16].copy_from_slice(&ino.to_le_bytes());
      b[16..24].copy_from_slice(&1u64.to_le_bytes());
-@@ -361,20 +425,45 @@
+@@ -361,20 +434,45 @@
  fn stat_path(e: &mut Engine, path: &str, a: u64, follow: bool) -> i64 {
      let l = lx(e);
      let p = l.resolve(path, follow);
@@ -167,9 +176,8 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 -    stat_buf(e, a, mode, size, ino)
 +    let (bits, uid, gid) = if mode == 0o120777 { (0, 0, 0) } else { perm(l, &p, mode == 0o040000) };
 +    stat_buf_own(e, a, mode | bits, size, ino, (uid, gid))
- }
- 
--fn open(e: &mut Engine, path: &str, flags: u64) -> i64 {
++}
++
 +/// /proc files made when opened (memory, CPU, uptime) so free, top and htop have something to read.
 +fn proc_file(e: &mut Engine, p: &str) {
 +    let total_kb = e.mmu.sh.target_bytes >> 10;
@@ -189,8 +197,9 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +    let l = lx(e);
 +    l.mkdirs("/proc");
 +    l.fs.insert(p.to_string(), Node::File(text.into_bytes()));
-+}
-+
+ }
+ 
+-fn open(e: &mut Engine, path: &str, flags: u64) -> i64 {
 +fn open(e: &mut Engine, path: &str, flags: u64, mode: u64) -> i64 {
      let l = lx(e);
      let p = l.resolve(path, true);
@@ -199,7 +208,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      let exists = p == "/" || l.fs.contains_key(&p);
      if l.is_dir(&p) {
          if flags & 3 != 0 { return -EISDIR; }
-@@ -383,13 +472,37 @@
+@@ -383,13 +481,37 @@
          return fd as i64;
      }
      if flags & 0x10000 != 0 { return if exists { -ENOTDIR } else { -ENOENT }; }
@@ -238,7 +247,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      } else if flags & 0xC0 == 0xC0 {
          return -EEXIST;
      }
-@@ -412,7 +525,7 @@
+@@ -412,7 +534,7 @@
          Some(Fd::Pipe { id, .. }) => {
              let id = *id;
              if l.pipes.get(&id).map_or(true, |b| b.is_empty()) {
@@ -247,22 +256,24 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
                  return 0;
              }
              let b = l.pipes.get_mut(&id).unwrap();
-@@ -422,6 +535,10 @@
+@@ -422,6 +544,11 @@
              k as i64
          }
          Some(Fd::Sock { id }) => { let id = *id; sock_recv(e, id, buf, n, false).0 }
 +        Some(Fd::Unix { id }) => { let id = *id; us_read(e, id, buf, n, false) }
 +        Some(Fd::Event { id }) => { let id = *id; ev_read(e, id, buf, n) }
++        Some(Fd::Timer { id }) => { let id = *id; tfd_read(e, id, buf, n) }
 +        Some(Fd::Epoll { .. }) => -EINVAL,
 +        Some(Fd::Pty { id, master }) => { let (id, m) = (*id, *master); pty_read(e, id, m, buf, n) }
          Some(Fd::Dev(k)) => {
              let k = *k; let n = n.min(1 << 20) as usize;
              let mut d = vec![0u8; n];
-@@ -467,6 +584,18 @@
+@@ -467,6 +594,19 @@
      match l.fds.get_mut(&fd) {
          Some(Fd::Tty) => { crate::console(&String::from_utf8_lossy(&d)); n as i64 }
          Some(Fd::Sock { id }) => { let id = *id; sock_send(l, id, d, None) }
 +        Some(Fd::Unix { id }) => { let id = *id; us_write(l, id, d) }
++        Some(Fd::Timer { .. }) => -EINVAL,
 +        Some(Fd::Event { id }) => {
 +            if d.len() < 8 { return -EINVAL; }
 +            let v = u64::from_le_bytes(d[..8].try_into().unwrap());
@@ -277,14 +288,18 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          Some(Fd::Dev(_)) => n as i64,
          Some(Fd::Pipe { id, .. }) => {
              let id = *id;
-@@ -499,6 +628,17 @@
+@@ -499,6 +639,21 @@
      e.cpu.regs[11] = 0x202;
      #[cfg(feature = "prof")]
      crate::console(&format!("[sys pid {} {} {:x} {:x} {:x}]\n", lx(e).pid, nr, a0, a1, a2));
 +    // a signal the thread can take now: its handler runs first; the call then restarts
 +    // (SA_RESTART, or a call that never waits) or returns EINTR
 +    let tid = e.cur_tid();
-+    let sig = { let l = lx(e); deliverable(l, l.pid, tid) };
++    let sig = { let l = lx(e); fire_timers(l); deliverable(l, l.pid, tid) };
++    if sig != 0 && nr != 15 && { let l = lx(e); let pid = l.pid; act(l, pid, sig)[0] == 0 && !dfl_ignore(sig) && pid != 1 } {
++        exit_proc(e, sig as i32); // a pending signal without a handler (a timer's SIGALRM): its default action
++        return;
++    }
 +    if sig != 0 && nr != 15 {
 +        let flags = { let l = lx(e); act(l, l.pid, sig)[1] };
 +        let slow = matches!(nr, 0 | 7 | 23 | 34 | 35 | 43 | 45 | 47 | 61 | 128 | 130 | 202 | 230 | 232 | 270 | 271 | 281 | 288 | 441);
@@ -295,7 +310,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      if matches!(nr, 2 | 257 | 76 | 77 | 82 | 264 | 316 | 83 | 258 | 84 | 87 | 263 | 86 | 88 | 265 | 266) || (matches!(nr, 1 | 18 | 20) && matches!(lx(e).fds.get(&(a0 as i32)), Some(Fd::File { .. }))) { lx(e).dirty = true; }
      let v: i64 = match nr {
          0 => do_read(e, a0 as i32, a1, a2),
-@@ -509,10 +649,11 @@
+@@ -509,10 +664,11 @@
              let r = l.new_fd(Fd::Pipe { id, w: false });
              let w = l.new_fd(Fd::Pipe { id, w: true });
              if nr == 293 && a1 & 0x80000 != 0 { l.cloexec.insert(r); l.cloexec.insert(w); }
@@ -308,7 +323,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          56 | 57 | 58 => fork(e),
          59 | 322 => {
              let path = if nr == 59 { e.read_cstr(a0, 4096) } else { path_at(e, a0, a1) };
-@@ -522,18 +663,25 @@
+@@ -522,18 +678,25 @@
              execve(e, &path, args, env)
          }
          61 => { if a3 != 0 { let _ = e.mmu.write_bytes(a3, &[0u8; 144]); } wait4(e, a0 as i32 as i64, a1, a2) }
@@ -341,16 +356,16 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          3 => { let l = lx(e); l.cloexec.remove(&(a0 as i32)); if l.fds.remove(&(a0 as i32)).is_some() { 0 } else { -EBADF } }
          4 | 6 => { let p = e.read_cstr(a0, 4096); stat_path(e, &p, a1, nr == 4) }
          262 => { // newfstatat
-@@ -543,7 +691,7 @@
+@@ -543,7 +706,7 @@
          5 => fstat(e, a0 as i32, a1),
          8 => { // lseek
              let l = lx(e);
 -            let size = match l.fds.get(&(a0 as i32)) { Some(Fd::File { path, .. }) => match l.fs.get(path) { Some(Node::File(d)) => d.len() as i64, _ => 0 }, Some(Fd::Tty) | Some(Fd::Pipe { .. }) | Some(Fd::Sock { .. }) | Some(Fd::Dev(_)) => return ret(e, -ESPIPE), Some(Fd::Dir { .. }) => 0, None => return ret(e, -EBADF) };
-+            let size = match l.fds.get(&(a0 as i32)) { Some(Fd::File { path, .. }) => match l.fs.get(path) { Some(Node::File(d)) => d.len() as i64, _ => 0 }, Some(Fd::Tty | Fd::Pipe { .. } | Fd::Sock { .. } | Fd::Dev(_) | Fd::Unix { .. } | Fd::Event { .. } | Fd::Epoll { .. } | Fd::Pty { .. }) => return ret(e, -ESPIPE), Some(Fd::Dir { .. }) => 0, None => return ret(e, -EBADF) };
++            let size = match l.fds.get(&(a0 as i32)) { Some(Fd::File { path, .. }) => match l.fs.get(path) { Some(Node::File(d)) => d.len() as i64, _ => 0 }, Some(Fd::Tty | Fd::Pipe { .. } | Fd::Sock { .. } | Fd::Dev(_) | Fd::Unix { .. } | Fd::Event { .. } | Fd::Epoll { .. } | Fd::Pty { .. } | Fd::Timer { .. }) => return ret(e, -ESPIPE), Some(Fd::Dir { .. }) => 0, None => return ret(e, -EBADF) };
              match l.fds.get_mut(&(a0 as i32)) {
                  Some(Fd::File { pos, .. }) => {
                      let np = match a2 { 0 => a1 as i64, 1 => *pos as i64 + a1 as i64, 2 => size + a1 as i64, _ => -1 };
-@@ -554,8 +702,9 @@
+@@ -554,8 +717,9 @@
              }
          }
          9 => mmap(e, a0, a1, a2, a3, r[8] as i32, r[9]),
@@ -362,7 +377,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          25 => -ENOMEM, // mremap: callers fall back to mmap + copy
          12 => { // brk
              let l = lx(e);
-@@ -567,7 +716,59 @@
+@@ -567,7 +731,59 @@
                  a0 as i64
              } else if a0 >= start && a0 <= cur { lx(e).brk = a0; a0 as i64 } else { cur as i64 }
          }
@@ -423,7 +438,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          16 => ioctl(e, a0 as i32, a1, a2),
          40 => { // sendfile
              let (out, inp, offp, n) = (a0 as i32, a1 as i32, a2, a3.min(1 << 20));
-@@ -601,11 +802,32 @@
+@@ -601,16 +817,93 @@
              let l = lx(e); let q = l.resolve(&p, true);
              if q == "/" || l.fs.contains_key(&q) { 0 } else { -ENOENT }
          }
@@ -445,7 +460,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +        232 | 281 | 441 => {
 +            let ms = if nr == 441 { if a3 == 0 { -1 } else { (e.r64(a3) * 1000 + e.r64(a3 + 8) / 1_000_000) as i64 } } else { a3 as i32 as i64 };
 +            epoll_wait(e, a0 as i32, a1, a2, ms)
-         }
++        }
 +        284 | 290 => { // eventfd / eventfd2
 +            let l = lx(e);
 +            l.next_ev += 1; let id = l.next_ev;
@@ -454,13 +469,76 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +            let fd = l.new_fd(Fd::Event { id });
 +            if fl & 0x80000 != 0 { l.cloexec.insert(fd); }
 +            fd as i64
-+        }
+         }
 +        41..=55 | 288 => net_call(e, nr, a0, a1, a2, a3, a4, r[9]),
 +        7 | 271 => { for k in 0..a1.min(64) { let ev = e.r16(a0 + 8 * k + 4); e.w16(a0 + 8 * k + 6, ev & 5); } a1 as i64 } // a huge poll: everything is ready
          24 => 0, // sched_yield
          165 | 166 => -1, // mount / umount2: EPERM, as for a program without the right to mount
          73 => 0, // flock: one machine, nobody else holds the lock
-@@ -631,23 +853,34 @@
+-        37 => 0, // alarm
+-        38 => { if a2 != 0 { let _ = e.mmu.write_bytes(a2, &[0u8; 32]); } 0 } // setitimer: timers are not delivered
++        37 => { // alarm: seconds left on the previous one
++            let pid = lx(e).pid;
++            let id = alarm_timer(lx(e), pid);
++            let (left, _) = tm_get(lx(e), id);
++            tm_set(lx(e), id, a0 as f64 * 1000.0, 0.0);
++            ((left + 999.0) / 1000.0) as i64
++        }
++        36 | 38 => { // getitimer / setitimer: ITIMER_REAL (others are accepted and never fire)
++            let (newv, old) = if nr == 36 { (0, a1) } else { (a1, a2) };
++            let id = if a0 == 0 { let pid = lx(e).pid; Some(alarm_timer(lx(e), pid)) } else { None };
++            let (left, every) = id.map_or((0.0, 0.0), |id| tm_get(lx(e), id));
++            if old != 0 { for (k, v) in [every, left].iter().enumerate() { e.w64(old + 16 * k as u64, (*v / 1000.0) as u64); e.w64(old + 16 * k as u64 + 8, ((*v % 1000.0) * 1000.0) as u64); } }
++            if newv != 0 && id.is_some() {
++                let tv = |e: &mut Engine, a: u64| e.r64(a) as f64 * 1000.0 + e.r64(a + 8) as f64 / 1000.0;
++                let (every, val) = (tv(e, newv), tv(e, newv + 16));
++                tm_set(lx(e), id.unwrap(), val, every);
++            }
++            0
++        }
++        222 => { // timer_create: a signal (SIGALRM unless the sigevent names one) or nothing
++            let (sig, notify) = if a1 == 0 { (14, 0) } else { (e.r32(a1 + 8), e.r32(a1 + 12)) };
++            let l = lx(e);
++            l.next_tm += 1; let id = l.next_tm;
++            let real = a0 == 0 || a0 == 5 || a0 == 8;
++            l.timers.insert(id, Tmr { pid: l.pid, sig: if notify == 1 { 0 } else { sig }, real, ..Default::default() });
++            e.w32(a2, id); 0
++        }
++        223 | 286 => { // timer_settime / timerfd_settime (flags & 1 = absolute time)
++            let id = if nr == 223 { Some(a0 as u32) } else { match lx(e).fds.get(&(a0 as i32)) { Some(Fd::Timer { id }) => Some(*id), _ => None } };
++            match id.filter(|i| lx(e).timers.contains_key(i)) {
++                None => -EINVAL,
++                Some(id) => {
++                    let (left, every) = tm_get(lx(e), id);
++                    if a3 != 0 { put_ts(e, a3, every); put_ts(e, a3 + 16, left); }
++                    let ts = |e: &mut Engine, a: u64| e.r64(a) as f64 * 1000.0 + e.r64(a + 8) as f64 / 1e6;
++                    let (every, mut val) = (ts(e, a2), ts(e, a2 + 16));
++                    if a1 & 1 != 0 && val > 0.0 { let real = lx(e).timers[&id].real; val = (val - if real { crate::epoch_ms() } else { crate::now_ms() }).max(0.001); }
++                    if nr == 286 { if let Some(t) = lx(e).timers.get_mut(&id) { t.count = 0; } }
++                    tm_set(lx(e), id, val, every);
++                    0
++                }
++            }
++        }
++        224 | 287 => { // timer_gettime / timerfd_gettime
++            let id = if nr == 224 { Some(a0 as u32) } else { match lx(e).fds.get(&(a0 as i32)) { Some(Fd::Timer { id }) => Some(*id), _ => None } };
++            match id.filter(|i| lx(e).timers.contains_key(i)) { None => -EINVAL, Some(id) => { let (left, every) = tm_get(lx(e), id); put_ts(e, a1, every); put_ts(e, a1 + 16, left); 0 } }
++        }
++        225 => 0, // timer_getoverrun
++        226 => { if lx(e).timers.remove(&(a0 as u32)).is_some() { 0 } else { -EINVAL } } // timer_delete
++        283 => { // timerfd_create
++            let l = lx(e);
++            l.next_tm += 1; let id = l.next_tm;
++            let real = a0 == 0 || a0 == 5 || a0 == 8;
++            l.timers.insert(id, Tmr { pid: l.pid, fd: true, nb: a1 & 0x800 != 0, real, ..Default::default() });
++            let fd = l.new_fd(Fd::Timer { id });
++            if a1 & 0x80000 != 0 { l.cloexec.insert(fd); }
++            fd as i64
++        }
+         32 => { let l = lx(e); match l.fds.get(&(a0 as i32)).cloned() { Some(f) => l.new_fd(f) as i64, None => -EBADF } }
+         33 | 292 => { // dup2 / dup3
+             let l = lx(e);
+@@ -631,23 +924,34 @@
          118 | 120 => { let i = lx(e).ids; let v = if nr == 118 { [i.0, i.2, i.2] } else { [i.1; 3] }; for (p, x) in [a0, a1, a2].into_iter().zip(v) { if p != 0 { e.w32(p, x); } } 0 }
          116 | 115 => 0, // setgroups / getgroups (none)
          122 | 123 => lx(e).ids.0 as i64, // setfsuid / setfsgid
@@ -503,7 +581,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          }
          72 => { // fcntl
              let l = lx(e);
-@@ -663,6 +896,11 @@
+@@ -663,6 +967,11 @@
              }
          }
          74 | 75 | 162 => 0, // fsync / fdatasync / sync
@@ -515,7 +593,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          77 => { let l = lx(e); if let Some(Fd::File { path, .. }) = l.fds.get(&(a0 as i32)) { let p = path.clone(); if let Some(Node::File(d)) = l.fs.get_mut(&p) { d.resize(a1 as usize, 0); } } 0 }
          76 => { let p = e.read_cstr(a0, 4096); let l = lx(e); let q = l.resolve(&p, true); if let Some(Node::File(d)) = l.fs.get_mut(&q) { d.resize(a1 as usize, 0); 0 } else { -ENOENT } }
          78 | 217 => getdents(e, a0 as i32, a1, a2),
-@@ -676,12 +914,12 @@
+@@ -676,12 +985,12 @@
              let (f, t) = if nr == 82 { (e.read_cstr(a0, 4096), e.read_cstr(a1, 4096)) } else { (path_at(e, a0, a1), path_at(e, a2, a3)) };
              let l = lx(e); let (f, t) = (l.resolve(&f, false), l.resolve(&t, false));
              let keys: Vec<String> = l.fs.keys().filter(|k| **k == f || k.starts_with(&format!("{}/", f))).cloned().collect();
@@ -531,7 +609,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          }
          84 | 87 | 263 => { // rmdir / unlink / unlinkat
              let (p, dir) = if nr == 263 { (path_at(e, a0, a1), a2 & 0x200 != 0) } else { (e.read_cstr(a0, 4096), nr == 84) };
-@@ -692,7 +930,7 @@
+@@ -692,7 +1001,7 @@
                  Some(Node::Dir) if !l.children(&q).is_empty() => -ENOTEMPTY,
                  Some(Node::Dir) => { l.fs.remove(&q); 0 }
                  Some(_) if dir => -ENOTDIR,
@@ -540,7 +618,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
              }
          }
          86 | 88 | 265 | 266 => { // link / symlink / linkat / symlinkat
-@@ -705,10 +943,53 @@
+@@ -705,10 +1014,54 @@
          }
          89 | 267 => { // readlink / readlinkat
              let (p, b, n) = if nr == 89 { (e.read_cstr(a0, 4096), a1, a2) } else { (path_at(e, a0, a1), a2, a3) };
@@ -554,6 +632,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +                    Some(Fd::Sock { id }) | Some(Fd::Unix { id }) => format!("socket:[{}]", id),
 +                    Some(Fd::Dev(k)) => if *k == 0 { "/dev/zero".into() } else { "/dev/urandom".into() },
 +                    Some(Fd::Event { .. }) => "anon_inode:[eventfd]".into(),
++                    Some(Fd::Timer { .. }) => "anon_inode:[timerfd]".into(),
 +                    Some(Fd::Epoll { .. }) => "anon_inode:[eventpoll]".into(),
 +                };
 +                let k = t.len().min(n as usize); let _ = e.mmu.write_bytes(b, &t.as_bytes()[..k]); return ret(e, k as i64);
@@ -595,7 +674,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          96 => { // gettimeofday
              let ms = crate::epoch_ms();
              if a0 != 0 { e.w64(a0, (ms / 1000.0) as u64); e.w64(a0 + 8, ((ms % 1000.0) * 1000.0) as u64); }
-@@ -716,16 +997,25 @@
+@@ -716,16 +1069,25 @@
          }
          97 | 302 => { if nr == 302 && a3 != 0 { e.w64(a3, u64::MAX); e.w64(a3 + 8, u64::MAX); } 0 } // getrlimit / prlimit64
          98 => { let _ = e.mmu.write_bytes(a1, &[0u8; 144]); 0 } // getrusage
@@ -624,7 +703,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          228 => { // clock_gettime
              let ms = if a0 == 0 || a0 == 5 || a0 == 8 { crate::epoch_ms() } else { crate::now_ms() };
              e.w64(a1, (ms / 1000.0) as u64); e.w64(a1 + 8, ((ms % 1000.0) * 1e6) as u64);
-@@ -761,7 +1051,15 @@
+@@ -761,7 +1123,15 @@
          return;
      }
      lx(e).want = None;
@@ -641,18 +720,18 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  }
  
  impl Lx {
-@@ -789,7 +1087,9 @@
+@@ -789,7 +1159,9 @@
      match l.fds.get(&fd) {
          Some(Fd::Pipe { id, .. }) => { let id = *id as u64; stat_buf(e, a, 0o010600, 0, 1000 + id) }
          Some(Fd::Tty) => stat_buf(e, a, 0o020620, 0, 5),
 -        Some(Fd::Sock { id }) => { let id = *id as u64; stat_buf(e, a, 0o140777, 0, 5000 + id) }
 +        Some(Fd::Pty { id, .. }) => { let id = *id as u64; stat_buf(e, a, 0o020620, 0, 8000 + id) }
 +        Some(Fd::Sock { id }) | Some(Fd::Unix { id }) => { let id = *id as u64; stat_buf(e, a, 0o140777, 0, 5000 + id) }
-+        Some(Fd::Event { id }) | Some(Fd::Epoll { id }) => { let id = *id as u64; stat_buf(e, a, 0o600, 0, 9000 + id) }
++        Some(Fd::Event { id }) | Some(Fd::Epoll { id }) | Some(Fd::Timer { id }) => { let id = *id as u64; stat_buf(e, a, 0o600, 0, 9000 + id) }
          Some(Fd::Dev(k)) => { let k = *k as u64; stat_buf(e, a, 0o020666, 0, 7 + k) }
          Some(Fd::File { path, .. }) | Some(Fd::Dir { path, .. }) => { let p = path.clone(); stat_path(e, &p, a, true) }
          None => -EBADF,
-@@ -809,6 +1109,7 @@
+@@ -809,6 +1181,7 @@
      b[4..8].copy_from_slice(&4096u32.to_le_bytes());
      b[16..20].copy_from_slice(&1u32.to_le_bytes());
      b[28..30].copy_from_slice(&(u32::from_le_bytes(st[24..28].try_into().unwrap()) as u16).to_le_bytes());
@@ -660,7 +739,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      b[32..40].copy_from_slice(&g(8).to_le_bytes());
      b[40..48].copy_from_slice(&g(48).to_le_bytes());
      b[48..56].copy_from_slice(&g(64).to_le_bytes());
-@@ -819,6 +1120,22 @@
+@@ -819,6 +1192,22 @@
  fn ioctl(e: &mut Engine, fd: i32, req: u64, a: u64) -> i64 {
      let tty = matches!(lx(e).fds.get(&fd), Some(Fd::Tty));
      if !lx(e).fds.contains_key(&fd) { return -EBADF; }
@@ -683,7 +762,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      if !tty { return -ENOTTY; }
      match req {
          0x5401 => { // TCGETS: what the program set last (a cooked terminal at first)
-@@ -843,9 +1160,10 @@
+@@ -843,9 +1232,10 @@
              0
          }
          0x5413 => { let (rows, cols) = lx(e).winsize; let w: [u16; 4] = [rows, cols, 0, 0]; for (k, v) in w.iter().enumerate() { e.w16(a + 2 * k as u64, *v); } 0 }
@@ -697,7 +776,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          _ => -EINVAL,
      }
  }
-@@ -900,11 +1218,37 @@
+@@ -900,11 +1290,37 @@
          let s = (off as usize).min(d.len());
          let k = (len as usize).min(d.len() - s);
          let chunk = d[s..s + k].to_vec();
@@ -735,7 +814,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  /// Text typed in the terminal, for programs reading stdin.
  #[no_mangle]
  pub extern "C" fn linux_stdin(n: u32) {
-@@ -921,13 +1265,54 @@
+@@ -921,13 +1337,56 @@
  
  /// Is there an open read end (`w` false) or write end (`w` true) of pipe `id` in any process?
  fn has_end(l: &Lx, id: u32, w: bool) -> bool {
@@ -773,6 +852,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +            _ => (false, false, true),
 +        },
 +        Fd::Event { id } => (l.evs.get(id).map_or(false, |v| v.0 > 0), true, false),
++        Fd::Timer { id } => (l.timers.get(id).map_or(false, |t| t.count > 0), false, false),
 +        Fd::Pty { id, master } => {
 +            let other = pty_held(l, *id, !*master) || (*master && !l.ptys.get(id).map_or(false, |t| t.opened));
 +            match l.ptys.get(id) {
@@ -789,11 +869,12 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 -pub fn ready(e: &mut Engine, c: &Cond) -> bool {
 +pub fn ready(e: &mut Engine, c: &Cond, pid: u32, tid: u32) -> bool {
      let l = lx(e);
++    fire_timers(l);
 +    if deliverable(l, pid, tid) != 0 { return true; } // a signal to handle: the call returns or restarts
      match c {
          Cond::PipeRead(id) => l.pipes.get(id).map_or(true, |b| !b.is_empty()) || !has_end(l, *id, true),
          Cond::Child { parent, pid } => {
-@@ -937,12 +1322,17 @@
+@@ -937,12 +1396,17 @@
          Cond::Stdin => !l.stdin.is_empty() || l.stdin_eof,
          Cond::Until => false,
          Cond::Socks(ids) => ids.iter().any(|i| l.socks.get(i).map_or(true, |s| !s.rx.is_empty() || !s.dgrams.is_empty() || s.closed)),
@@ -814,7 +895,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  /// Makes process `pid` the running one (its memory, files and compiled code).
  pub fn enter(e: &mut Engine, pid: u32) {
      if pid == 0 || lx(e).pid == pid { return; }
-@@ -977,10 +1367,15 @@
+@@ -977,10 +1441,15 @@
          brk_start: l.brk_start, brk: l.brk, mmap_next: l.mmap_next, exe: l.exe.clone(), ids: l.ids, space, jit,
      };
      let me = l.pid;
@@ -832,7 +913,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      pid as i64
  }
  
-@@ -996,6 +1391,7 @@
+@@ -996,6 +1465,7 @@
      l.fds.clear(); l.cloexec.clear();
      for p in l.procs.values_mut() { if p.ppid == pid { p.ppid = 1; } }
      if let Some(p) = l.procs.get_mut(&pid) { p.zombie = Some(status); }
@@ -840,7 +921,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      e.mmu.free_space();
      { let on = e.jit.on; e.jit = Default::default(); e.jit.on = on; }
      e.end_linux(pid);
-@@ -1008,9 +1404,20 @@
+@@ -1008,9 +1478,21 @@
      let saved = p.saved.take();
      for q in l.procs.values_mut() { if q.ppid == pid { q.ppid = 1; } }
      if let Some(s) = saved { e.mmu.free_saved(s.space); }
@@ -854,6 +935,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +    let l = lx(e);
 +    for t in ts { l.tids.remove(&t); l.masks.remove(&t); l.susp.remove(&t); }
 +    l.acts.remove(&pid); l.pend.remove(&pid);
++    l.timers.retain(|_, t| t.pid != pid); l.alarms.remove(&pid);
 +    let pp = l.procs.get(&pid).map_or(0, |p| p.ppid);
 +    if pp != 0 && act(l, pp, 17)[0] > 1 { *l.pend.entry(pp).or_default() |= bit(17); }
 +}
@@ -861,7 +943,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  fn wait4(e: &mut Engine, pid: i64, status: u64, opts: u64) -> i64 {
      let l = lx(e);
      let me = l.pid;
-@@ -1053,6 +1460,8 @@
+@@ -1053,6 +1535,8 @@
      let cx: Vec<i32> = l.cloexec.iter().copied().collect();
      for fd in cx { l.fds.remove(&fd); }
      l.cloexec.clear();
@@ -870,7 +952,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      e.mmu.free_space();
      { let on = e.jit.on; e.jit = Default::default(); e.jit.on = on; }
      match e.load_elf(&data, &p, &args, &env) {
-@@ -1061,6 +1470,299 @@
+@@ -1061,6 +1545,299 @@
      }
  }
  
@@ -1170,7 +1252,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  /// A child process hit a fatal error: it ends with a signal and the others go on.
  /// false = it is the first process (the whole run stops with the error).
  pub fn crash(e: &mut Engine, m: &str) -> bool {
-@@ -1080,7 +1782,14 @@
+@@ -1080,7 +1857,14 @@
  
  #[no_mangle]
  pub extern "C" fn linux_winsize(rows: u32, cols: u32) {
@@ -1186,7 +1268,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  }
  
  /// Ctrl+D: the next read of the terminal returns 0 (end of input).
-@@ -1093,10 +1802,13 @@
+@@ -1093,10 +1877,13 @@
      let e = crate::eng();
      let Some(l) = e.s.lx.as_mut() else { return };
      l.stdin.clear();
@@ -1203,7 +1285,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      }
      crate::lock::kick();
  }
-@@ -1190,42 +1902,403 @@
+@@ -1190,42 +1977,470 @@
      Some(r)
  }
  
@@ -1326,6 +1408,72 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +    NORET
 +}
 +
++/// The ITIMER_REAL timer of `pid` (alarm and setitimer share it).
++fn alarm_timer(l: &mut Lx, pid: u32) -> u32 {
++    if let Some(id) = l.alarms.get(&pid) { if l.timers.contains_key(id) { return *id; } }
++    l.next_tm += 1; let id = l.next_tm;
++    l.timers.insert(id, Tmr { pid, sig: 14, ..Default::default() });
++    l.alarms.insert(pid, id);
++    id
++}
++
++/// (ms left, interval ms) of a timer.
++fn tm_get(l: &Lx, id: u32) -> (f64, f64) {
++    l.timers.get(&id).map_or((0.0, 0.0), |t| (if t.next > 0.0 { (t.next - crate::now_ms()).max(0.0) } else { 0.0 }, t.every))
++}
++
++/// Arms a timer `ms` from now (0 disarms), then every `every` ms.
++fn tm_set(l: &mut Lx, id: u32, ms: f64, every: f64) {
++    if let Some(t) = l.timers.get_mut(&id) { t.next = if ms > 0.0 { crate::now_ms() + ms } else { 0.0 }; t.every = every; }
++    crate::lock::kick();
++}
++
++fn put_ts(e: &mut Engine, a: u64, ms: f64) { e.w64(a, (ms / 1000.0) as u64); e.w64(a + 8, ((ms % 1000.0) * 1e6) as u64); }
++
++/// Timers that are due: their signal goes pending (a handler runs at the next system call; the
++/// default action ends the process there), a timerfd counts the expirations.
++fn fire_timers(l: &mut Lx) {
++    if l.timers.is_empty() { return; }
++    let now = crate::now_ms();
++    let mut sigs = Vec::new();
++    l.timers.retain(|_, t| {
++        if t.next <= 0.0 || now < t.next { return true; }
++        let n = if t.every > 0.0 { ((now - t.next) / t.every) as u64 + 1 } else { 1 };
++        t.next = if t.every > 0.0 { t.next + n as f64 * t.every } else { 0.0 };
++        if t.fd { t.count += n; } else if t.sig != 0 { sigs.push((t.pid, t.sig)); }
++        true
++    });
++    for (pid, sig) in sigs {
++        if !l.procs.get(&pid).map_or(false, |p| p.zombie.is_none()) { continue; }
++        if act(l, pid, sig)[0] != 1 { *l.pend.entry(pid).or_default() |= bit(sig); }
++    }
++}
++
++/// Milliseconds until the next armed timer of a live process, or -1 (none): for the test harness,
++/// which otherwise stops when every thread just waits.
++#[no_mangle]
++pub extern "C" fn linux_timer_ms() -> f64 {
++    let e = crate::eng();
++    let Some(l) = e.s.lx.as_ref() else { return -1.0 };
++    let now = crate::now_ms();
++    l.timers.values().filter(|t| t.next > 0.0).map(|t| (t.next - now).max(0.0)).fold(-1.0, |a: f64, b| if a < 0.0 { b } else { a.min(b) })
++}
++
++fn tfd_read(e: &mut Engine, id: u32, buf: u64, n: u64) -> i64 {
++    if n < 8 { return -EINVAL; }
++    let l = lx(e);
++    fire_timers(l);
++    let Some(t) = l.timers.get_mut(&id) else { return -EBADF };
++    if t.count == 0 {
++        if t.nb { return -EAGAIN; }
++        l.want = Some(Cond::Fds(vec![(Fd::Timer { id }, 1)]));
++        return BLOCKED;
++    }
++    let v = std::mem::take(&mut t.count);
++    e.w64(buf, v);
++    8
++}
++
 +fn ev_read(e: &mut Engine, id: u32, buf: u64, n: u64) -> i64 {
 +    if n < 8 { return -EINVAL; }
 +    let l = lx(e);
@@ -1342,13 +1490,14 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +}
 +
 +fn get_nb(l: &Lx, f: &Fd) -> bool {
-+    match f { Fd::Sock { id } => l.socks.get(id).map_or(false, |s| s.nb), Fd::Unix { id } => l.us.get(id).map_or(false, |u| u.nb), Fd::Event { id } => l.evs.get(id).map_or(false, |v| v.2), Fd::Pty { id, master } => l.ptys.get(id).map_or(false, |t| if *master { t.nb.0 } else { t.nb.1 }), Fd::Pipe { id, w } => l.pipe_nb.contains(&(*id, *w)), _ => false }
++    match f { Fd::Sock { id } => l.socks.get(id).map_or(false, |s| s.nb), Fd::Unix { id } => l.us.get(id).map_or(false, |u| u.nb), Fd::Event { id } => l.evs.get(id).map_or(false, |v| v.2), Fd::Timer { id } => l.timers.get(id).map_or(false, |t| t.nb), Fd::Pty { id, master } => l.ptys.get(id).map_or(false, |t| if *master { t.nb.0 } else { t.nb.1 }), Fd::Pipe { id, w } => l.pipe_nb.contains(&(*id, *w)), _ => false }
 +}
 +fn set_nb(l: &mut Lx, f: &Fd, on: bool) {
 +    match f {
 +        Fd::Sock { id } => if let Some(s) = l.socks.get_mut(id) { s.nb = on },
 +        Fd::Unix { id } => if let Some(u) = l.us.get_mut(id) { u.nb = on },
 +        Fd::Event { id } => if let Some(v) = l.evs.get_mut(id) { v.2 = on },
++        Fd::Timer { id } => if let Some(t) = l.timers.get_mut(id) { t.nb = on },
 +        Fd::Pty { id, master } => if let Some(t) = l.ptys.get_mut(id) { if *master { t.nb.0 = on } else { t.nb.1 = on } },
 +        Fd::Pipe { id, w } => { if on { l.pipe_nb.insert((*id, *w)); } else { l.pipe_nb.remove(&(*id, *w)); } }
 +        _ => {}
@@ -1629,7 +1778,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  fn read_addr(e: &mut Engine, a: u64, len: u64) -> Option<[u8; 16]> {
      if a == 0 || len < 8 { return None; }
      let mut b = [0u8; 28];
-@@ -1249,6 +2322,7 @@
+@@ -1249,6 +2464,7 @@
  }
  
  fn net_call(e: &mut Engine, nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i64 {
@@ -1637,7 +1786,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      let fd = a0 as i32;
      let sid = match lx(e).fds.get(&fd) { Some(Fd::Sock { id }) => Some(*id), _ => None };
      match nr {
-@@ -1376,16 +2450,16 @@
+@@ -1376,16 +2592,16 @@
  pub extern "C" fn linux_save_tar() -> u32 {
      let Some(l) = crate::eng().s.lx.as_ref() else { return 0 };
      let mut t: Vec<u8> = Vec::new();
@@ -1657,7 +1806,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          h[124..136].copy_from_slice(format!("{:011o}\0", size).as_bytes());
          h[136..148].copy_from_slice(b"00000000000\0");
          h[156] = ty;
-@@ -1400,12 +2474,12 @@
+@@ -1400,12 +2616,12 @@
          if p.starts_with("/proc") || p.starts_with("/dev") || p.starts_with("/tmp/") { continue; }
          let name = &p[1..];
          match n {
