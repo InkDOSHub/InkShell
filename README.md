@@ -6,7 +6,7 @@
 
 <p align="center"><b><a href="https://hub.inkdos.workers.dev/InkShell/">Open InkShell</a></b> · part of <a href="https://github.com/InkDOSHub/inkdoshub.github.io">InkDOS Hub</a> · MIT license</p>
 
-<p align="center"><img src=".github/prints/InkShell-alpine-iphone.png" width="28%" alt="InkShell start screen on iPhone"></p>
+<p align="center"><img src=".github/prints/InkShell-alpine-iphone.png" width="28%" alt="Alpine Linux first start in InkShell on iPhone"></p>
 
 ## How it works
 
@@ -14,7 +14,7 @@ Alpine Linux 3.21 (x86-64) runs on [InkSoC](https://github.com/InkDOSHub/InkSoC)
 
 - First start creates your user and password (`sudo` works); type `help` for the guide.
 - `apk` and internet through a public WebSocket tunnel (wisp); when it cannot be reached, through the InkDOS Hub's own relay (`/net/wisp/` on hub.inkdos.workers.dev, which cannot reach sites hosted on Cloudflare). Or no network.
-- Inside InkOS (`?inkos=1`) it is the Terminal app: Linux starts at once and the page's header steps aside.
+- Linux starts as soon as the page opens. Inside InkOS (`?inkos=1`) it is the Terminal app and the page's header steps aside.
 - Programs see 8 GB; real RAM follows this device's calibrated limit and the rest goes to swap in the browser storage.
 - Your files stay in this browser between visits; ⇡ and ⇣ send and download files.
 
