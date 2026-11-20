@@ -1,8 +1,13 @@
 /* Alpine Linux terminal: the engine (engine.wasm, a fixed copy of InkSoC kept for this app)
    runs Alpine's programs; this worker feeds it keys, saves the files in OPFS and carries
-   the sockets over a public wisp tunnel. */
+   the sockets over a wisp tunnel: the public one first, the Hub's own relay
+   (/net/wisp/ on hub.inkdos.workers.dev) when the public one cannot be reached. */
 'use strict';
 const NETS = { wisp: 'wss://wisp.mercurywork.shop/v86/', off: null };
+// The Hub's relay: a Cloudflare Worker, so it cannot reach sites hosted on Cloudflare;
+// that is why it is the fallback and not the first choice.
+const HUB_WISP = 'wss://hub.inkdos.workers.dev/net/wisp/';
+let wsUrl = null;
 const SAVE = 'alpine-fs.tar';
 const out = (t) => postMessage({ type: 'out', text: t });
 let x, mem, lx = null, keys = [], net = 'wisp';
@@ -38,8 +43,10 @@ function wsSend(b) { if (ws && ws.readyState === 1) ws.send(b); else wsq.push(b)
 function packet(t, id, body) { const b = new Uint8Array(5 + body.length); b[0] = t; new DataView(b.buffer).setUint32(1, id, true); b.set(body, 5); return b; }
 function netIn(id, kind, d) { put(d || new Uint8Array(0)); x.linux_net_in(id, kind); }
 function openWs() {
-  ws = new WebSocket(NETS[net]); ws.binaryType = 'arraybuffer';
-  ws.onopen = () => { for (const b of wsq) ws.send(b); wsq = []; };
+  wsUrl = wsUrl || NETS[net];
+  const sock = ws = new WebSocket(wsUrl); ws.binaryType = 'arraybuffer';
+  let opened = false;
+  ws.onopen = () => { opened = true; for (const b of wsq) ws.send(b); wsq = []; };
   ws.onmessage = (ev) => {
     if (typeof ev.data === 'string') return;
     const b = new Uint8Array(ev.data); if (b.length < 5) return;
@@ -47,7 +54,13 @@ function openWs() {
     if (b[0] === 2) { got.add(id); netIn(id, 1, b.subarray(5)); }
     else if (b[0] === 4) netIn(id, got.has(id) || b[5] === 2 ? 2 : 3);
   };
-  const lost = () => { ws = null; wsq = []; };
+  const lost = () => {
+    if (ws !== sock) return;
+    ws = null;
+    // the public tunnel is down or blocked: the queued packets go through the Hub's relay
+    if (!opened && wsUrl !== HUB_WISP) { wsUrl = HUB_WISP; out('\r\n\x1b[2m[network: public wisp unreachable, using the InkDOS Hub relay]\x1b[0m\r\n'); openWs(); return; }
+    wsq = [];
+  };
   ws.onclose = lost; ws.onerror = lost;
 }
 function pumpNet() {
@@ -109,7 +122,7 @@ async function run({ rows, cols, network, poolMb, targetMb }) {
   };
   const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(u + ': ' + r.status); return r; });
   const [wasm, busybox, overlay, saved] = await Promise.all([
-    get('engine.wasm?v=16').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
+    get('engine.wasm?v=17').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
     get('overlay.tar?v=4').then((r) => r.arrayBuffer()), loadSaved()]);
   let rootfs = saved;
   if (!rootfs) {
@@ -182,7 +195,7 @@ onmessage = async (ev) => {
   if (d.type === 'resize') { if (lx) lx.resize(d.rows, d.cols); return; }
   if (d.type === 'put') { if (lx) lx.put(d.name, d.data); else pendingPuts.push({ name: d.name, data: d.data }); return; }
   if (d.type === 'get') { postMessage({ type: 'file', path: d.path, data: lx ? lx.get(d.path) : null }); return; }
-  if (d.type === 'net') { net = d.network; if (ws) { try { ws.close(); } catch (e) {} ws = null; } return; }
+  if (d.type === 'net') { net = d.network; wsUrl = null; if (ws) { try { ws.close(); } catch (e) {} ws = null; } return; }
   if (d.type === 'save') { if (lx) { await save(); } postMessage({ type: 'saved' }); return; }
   if (d.type === 'reset') { const root = await opfs(); if (root) { try { await root.removeEntry(SAVE); } catch (e) {} } postMessage({ type: 'reset' }); return; }
   if (d.type === 'calibrate') { calibrate(); return; }

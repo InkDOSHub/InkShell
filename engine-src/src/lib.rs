@@ -106,6 +106,7 @@ pub struct Engine {
 /// Everything the cores share (used under the engine lock with several cores).
 pub struct Shared {
     pub exited: bool,
+    pub main_done: bool,   // the first process ended while child processes still run
     pub exit_code: u32,
     pub error: Option<String>,
     pub next_alloc: u64,
@@ -146,6 +147,8 @@ pub struct Shared {
     pub exe_entry: u64,
     pub exe_base: u64,
     pub cmdline: (u64, u64),
+    /// ANSI copies of startup strings, keyed by (process, address of the UTF-16 buffer)
+    pub startup_ansi: HashMap<(u32, u64), u64>,
     pub unknown_calls: u64,
     pub crt: msvcrt::Crt,
     pub fs: files::Files,
@@ -161,6 +164,13 @@ pub struct Shared {
     pub pinfo: HashMap<u32, proc::ProcInfo>,
     /// GetStdHandle: input, output, error
     pub std: [u64; 3],
+    /// console input typed in the page (winapi/console.rs); live = the page sends lines
+    pub con_in: Vec<u8>,
+    pub con_live: bool,
+    /// the page's game controller (winapi/xinput.rs): connected, packet number, XINPUT_GAMEPAD bytes
+    pub pad_on: bool,
+    pub pad_packet: u32,
+    pub pad: [u8; 12],
     /// folders searched for DLLs after C:\InkSoC (SetDllDirectory, AddDllDirectory, folders DLLs were loaded from)
     pub dll_dirs: Vec<String>,
     /// 32-bit program (WoW64): its ntdll, and the CONTEXT passed to Wow64LdrpInitialize
@@ -196,6 +206,64 @@ pub(crate) unsafe fn take_buf() -> Vec<u8> { std::mem::take(&mut BUF) }
 pub(crate) fn eng() -> &'static mut Engine { unsafe { ENGINE.as_mut().unwrap() } }
 
 pub fn console(s: &str) { unsafe { host_console(s.as_ptr(), s.len() as u32) } }
+/// The engine's own heap (files, windows, tables; not the program's memory): counts the
+/// bytes in use, and says what was asked when the browser gives no more memory.
+struct CountingAlloc;
+static HEAP_USED: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+unsafe impl std::alloc::GlobalAlloc for CountingAlloc {
+    unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
+        let p = std::alloc::System.alloc(l);
+        note_alloc(p, l.size());
+        p
+    }
+    unsafe fn alloc_zeroed(&self, l: std::alloc::Layout) -> *mut u8 {
+        let p = std::alloc::System.alloc_zeroed(l);
+        note_alloc(p, l.size());
+        p
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
+        std::alloc::System.dealloc(p, l);
+        HEAP_USED.fetch_sub(l.size(), core::sync::atomic::Ordering::Relaxed);
+    }
+    unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, n: usize) -> *mut u8 {
+        let q = std::alloc::System.realloc(p, l, n);
+        if !q.is_null() {
+            HEAP_USED.fetch_sub(l.size(), core::sync::atomic::Ordering::Relaxed);
+        }
+        note_alloc(q, n);
+        q
+    }
+}
+fn note_alloc(p: *mut u8, n: usize) {
+    if p.is_null() {
+        let used = HEAP_USED.load(core::sync::atomic::Ordering::Relaxed);
+        let mut b = [0u8; 120];
+        let s = fmt_oom(&mut b, n, used);
+        unsafe { host_console(s.as_ptr(), s.len() as u32) }
+    } else {
+        HEAP_USED.fetch_add(n, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+/// The out-of-memory line, written without allocating.
+fn fmt_oom(b: &mut [u8; 120], asked: usize, used: usize) -> &[u8] {
+    use std::io::Write;
+    let mut c = std::io::Cursor::new(&mut b[..]);
+    let _ = write!(c, "[engine] out of memory: asked {} KB, engine heap {} MB in use\n", asked >> 10, used >> 20);
+    let n = c.position() as usize;
+    &b[..n]
+}
+#[global_allocator]
+static ALLOC: CountingAlloc = CountingAlloc;
+/// Bytes of the engine's own heap in use.
+#[no_mangle]
+pub extern "C" fn heap_used() -> f64 {
+    HEAP_USED.load(core::sync::atomic::Ordering::Relaxed) as f64
+}
+
+/// An engine bug stops the page with only "unreachable": print where it happened first.
+fn panic_note() {
+    std::panic::set_hook(Box::new(|i| console(&format!("[engine] internal error: {}\n", i))));
+}
 
 // ---- exports to JS ----
 
@@ -211,9 +279,10 @@ pub extern "C" fn buffer(len: u32) -> *mut u8 {
 #[no_mangle]
 #[allow(static_mut_refs)]
 pub extern "C" fn init(pool_mb: u32, target_mb: u32) {
+    panic_note();
     unsafe {
         SHARED = Some(Shared {
-            exited: false, exit_code: 0, error: None,
+            exited: false, main_done: false, exit_code: 0, error: None,
             next_alloc: 0x0000_0200_0000_0000, // 2 TB: far above 4 GB on purpose
             next_dll: 0x0000_7FF0_0000_0000,
             bridge_calls: 0,
@@ -221,9 +290,9 @@ pub extern "C" fn init(pool_mb: u32, target_mb: u32) {
             thunks: Vec::new(), thunk_ids: HashMap::new(),
             heap: heap::Heap::default(), tls_used: 0, no_init: false, thunk_fb: HashMap::new(), routes: Vec::new(), wine_fb: HashMap::new(), env_block: 0, tls_tmpl: Vec::new(),
             init_queue: Vec::new(), resume: Vec::new(), user_shared: false, win: Default::default(), gdi: Default::default(), gl: Default::default(), audio: Default::default(), net: Default::default(), unix_dispatcher: 0, next_luid: 0, win_ki: 0, recent: [(0, 0); 16], recent_n: 0, wine_exports: HashMap::new(), ldr_entries: HashMap::new(), loadlib: Vec::new(),
-            stack_top: 0, exe_entry: 0, exe_base: 0, cmdline: (0, 0), unknown_calls: 0, crt: Default::default(), fs: Default::default(),
+            stack_top: 0, exe_entry: 0, exe_base: 0, cmdline: (0, 0), startup_ansi: HashMap::new(), unknown_calls: 0, crt: Default::default(), fs: Default::default(),
             sched: Default::default(), cores: 1, insns: 0, jit_on: true, lx: None, names: HashMap::new(),
-            wpid: 0, procs: HashMap::new(), pinfo: HashMap::new(), std: [3, 1, 2], dll_dirs: Vec::new(), wow64: false, wow64_ntdll: 0, wow64_ctx: 0, images: HashMap::new(), image_files: HashMap::new(), root_off: 0, image_slots: HashMap::new(), atoms: Vec::new(),
+            wpid: 0, procs: HashMap::new(), pinfo: HashMap::new(), std: [3, 1, 2], con_in: Vec::new(), con_live: false, pad_on: false, pad_packet: 0, pad: [0; 12], dll_dirs: Vec::new(), wow64: false, wow64_ntdll: 0, wow64_ctx: 0, images: HashMap::new(), image_files: HashMap::new(), root_off: 0, image_slots: HashMap::new(), atoms: Vec::new(),
         });
         ENGINE = Some(Engine {
             mmu: Mmu::new(pool_mb as usize, target_mb as u64),
@@ -281,10 +350,20 @@ pub extern "C" fn core_init(id: u32) {
     }
 }
 
+/// The bytes after a file's name (and the NUL that ends it), moved to the front of `b`.
+/// Nothing is allocated: the file is not copied a second time while it is added.
+fn body_after_name(mut b: Vec<u8>, nl: usize) -> Vec<u8> {
+    let cut = (nl + 1).min(b.len());
+    b.drain(..cut);
+    b
+}
+
 /// Adds a file (from BUF) that the program can load, e.g. a DLL.
+/// Returns 0 when it is added, -1 when the engine's heap has no room for it: the page stops
+/// the run with that error; the engine does not trap.
 #[no_mangle]
 #[allow(static_mut_refs)]
-pub extern "C" fn add_file() {
+pub extern "C" fn add_file() -> i32 {
     unsafe {
         let b = std::mem::take(&mut BUF);
         let nl = b.iter().position(|&c| c == 0).unwrap_or(0);
@@ -292,14 +371,99 @@ pub extern "C" fn add_file() {
         // a file of the saved drive C: comes with its Windows path; the others are plain names
         if raw.contains('\\') || raw.contains(':') {
             let e = eng();
-            let Some(k) = files::key_of(&raw) else { return };
-            if raw.ends_with('\\') { e.s.fs.dirs.insert(k.clone()); } else { e.s.files.insert(k.clone(), b[nl + 1..].to_vec()); e.s.fs.drive.insert(k.clone()); }
+            let Some(k) = files::key_of(&raw) else { return 0 };
+            if raw.ends_with('\\') {
+                e.s.fs.dirs.insert(k.clone());
+            } else {
+                if store_file_with(&mut e.s.files, k.clone(), body_after_name(b, nl), 1) < 0 { return -1; }
+                e.s.fs.drive.insert(k.clone());
+            }
             e.note_case(&k, &raw);
-            return;
+            return 0;
         }
         let name = pe::norm(&raw);
+        if eng().s.names.try_reserve(1).is_err() { return -1; }
+        if store_file_with(&mut eng().s.files, name.clone(), body_after_name(b, nl), 1) < 0 { return -1; }
         eng().s.names.insert(name.clone(), raw.rsplit(['\\', '/']).next().unwrap_or(&raw).to_string());
-        eng().s.files.insert(name, b[nl + 1..].to_vec());
+        0
+    }
+}
+
+/// Stores a file's bytes under `k` if the map can take one more entry: 0, or -1 with the map
+/// unchanged. `need` is the room asked for (1 in the engine); a test asks for more than the
+/// heap can give, to see the refusal without running out of memory.
+fn store_file_with(s: &mut store::Store, k: String, body: Vec<u8>, need: usize) -> i32 {
+    if !s.reserve_count(need) { return -1; }
+    s.insert(k, body);
+    0
+}
+
+#[cfg(test)]
+mod add_file_tests {
+    use super::body_after_name;
+
+    #[test]
+    fn body_is_moved_not_copied() {
+        let b = b"name.dll\0BODY".to_vec();
+        let p = b.as_ptr();
+        let out = body_after_name(b, 8);
+        assert_eq!(out, b"BODY");
+        assert_eq!(out.as_ptr(), p, "the body must stay in the buffer it arrived in");
+    }
+
+    #[test]
+    fn name_without_bytes_gives_an_empty_body() {
+        assert!(body_after_name(b"name\0".to_vec(), 4).is_empty());
+        assert!(body_after_name(b"name".to_vec(), 4).is_empty());
+    }
+
+    #[test]
+    fn no_nul_uses_position_zero_as_before() {
+        // add_file takes a missing NUL as position 0 (unwrap_or(0)). The old code cut b[nl + 1..],
+        // so the first byte goes and the rest stays; the move must keep exactly that.
+        assert_eq!(body_after_name(b"xyz".to_vec(), 0), b"yz");
+        assert_eq!(body_after_name(b"x".to_vec(), 0), b"");
+    }
+
+    fn keys_of(s: &crate::store::Store) -> Vec<String> {
+        let mut k: Vec<String> = s.keys().cloned().collect();
+        k.sort();
+        k
+    }
+
+    #[test]
+    fn a_file_is_stored_when_the_map_has_room() {
+        let mut s = crate::store::Store::default();
+        assert_eq!(super::store_file_with(&mut s, "a.dll".into(), b"AAAA".to_vec(), 1), 0);
+        assert_eq!(s.get("a.dll").map(|v| v.as_slice()), Some(&b"AAAA"[..]));
+    }
+
+    #[test]
+    fn a_refused_reserve_gives_minus_one_and_stores_nothing() {
+        let mut s = crate::store::Store::default();
+        assert_eq!(super::store_file_with(&mut s, "a.dll".into(), b"AAAA".to_vec(), 1), 0);
+        let before = keys_of(&s);
+        // usize::MAX entries cannot be reserved: the map refuses without allocating
+        assert_eq!(super::store_file_with(&mut s, "b.dll".into(), b"BBBB".to_vec(), usize::MAX), -1);
+        assert_eq!(keys_of(&s), before, "a refused file must leave the map as it was");
+        assert!(!s.contains_key("b.dll"));
+    }
+
+    #[test]
+    fn files_stored_before_a_refusal_keep_their_bytes() {
+        let mut s = crate::store::Store::default();
+        assert_eq!(super::store_file_with(&mut s, "a.dll".into(), b"AAAA".to_vec(), 1), 0);
+        assert_eq!(super::store_file_with(&mut s, "c.dll".into(), b"CCCCCC".to_vec(), 1), 0);
+        assert_eq!(super::store_file_with(&mut s, "b.dll".into(), b"BBBB".to_vec(), usize::MAX), -1);
+        assert_eq!(s.get("a.dll").map(|v| v.as_slice()), Some(&b"AAAA"[..]));
+        assert_eq!(s.get("c.dll").map(|v| v.as_slice()), Some(&b"CCCCCC"[..]));
+    }
+
+    #[test]
+    fn reserve_count_refuses_an_impossible_count() {
+        let mut s = crate::store::Store::default();
+        assert!(s.reserve_count(1));
+        assert!(!s.reserve_count(usize::MAX));
     }
 }
 
@@ -324,8 +488,23 @@ pub extern "C" fn start() -> i32 {
     let b = unsafe { std::mem::take(&mut BUF) };
     let nl = b.iter().position(|&c| c == 0).unwrap_or(b.len());
     let name = pe::norm(&String::from_utf8_lossy(&b[..nl]));
-    let cmd = String::from_utf8_lossy(b.get(nl + 1..).unwrap_or(&[])).into_owned();
+    let mut cmd = String::from_utf8_lossy(b.get(nl + 1..).unwrap_or(&[])).into_owned();
+    // a program path with spaces starts the command line in quotes, as Windows writes it
+    // (else the program reads "C:\Program" and "Files\..." as two arguments)
+    let raw = String::from_utf8_lossy(&b[..nl]).into_owned();
+    if raw.contains(' ') && cmd.to_ascii_lowercase().starts_with(&raw.to_ascii_lowercase()) {
+        cmd = format!("\"{}\"{}", &cmd[..raw.len()], &cmd[raw.len()..]);
+    }
     let e = eng();
+    // a program outside its home folder (at the root of C:): found by its path, run by its name
+    if !e.s.files.contains_key(&name) {
+        if let Some(k) = files::key_of(&raw).filter(|k| e.s.files.contains_key(k)) { if !e.s.files.alias(name.clone(), &k) { if let Some(b) = e.s.files.get(&k).cloned() { e.s.files.insert(name.clone(), b); } } }
+    }
+    // the program's own folder is searched for its DLLs, as on Windows (programs that ship
+    // their DLLs next to the .exe in a subfolder, like Luanti's bin\)
+    if let Some(k) = files::key_of(&raw) {
+        if let Some(i) = k.rfind('\\') { let d = k[..i].to_string(); if !e.s.dll_dirs.contains(&d) { e.s.dll_dirs.push(d); } }
+    }
     if let Some(d) = e.s.files.get("roots.der").cloned() {
         e.s.fs.reg.seed_roots(&d);
     }
@@ -401,6 +580,10 @@ pub extern "C" fn run(budget: u32) -> i32 {
     mmu::away(e.core);
     if e.s.error.is_some() { 2 } else if e.s.exited { 1 } else if idle { 3 } else { 0 }
 }
+
+/// Debug: stop-free watch point (NOJIT); up to 8.
+#[no_mangle]
+pub extern "C" fn add_watch(a: u32) { unsafe { if let Some(w) = cpu::WATCH.iter_mut().find(|w| **w == 0) { *w = a as u64; } } }
 
 static mut TRACE: bool = false;
 /// Prints every native call (debugging).
@@ -549,6 +732,11 @@ pub extern "C" fn guest_read32(addr: u64) -> u32 {
     match e.mmu.read32(addr) { Ok(v) => v, Err(_) => { e.fault(addr); 0 } }
 }
 
+/// A free range found by find_free: its address, end, the bump pointer after it, and
+/// whether it came from a gap below the bump pointer.
+#[derive(Clone, Copy)]
+struct Found { a: u64, end: u64, next: u64, gap: bool }
+
 impl Engine {
     pub fn fault(&mut self, addr: u64) {
         let mut m = format!("access violation at 0x{:x} (rip 0x{:x})", addr, self.cpu.rip);
@@ -568,6 +756,7 @@ impl Engine {
                 }
             }
         }
+        if unsafe { WINE_DEBUG } > 1 { { let iat = self.mmu.read64(0x7a406000).unwrap_or(1); console(&format!("[fault] tid {} pid {} {} region {:x?} wow64cpu iat {:x}\n", self.cur_tid(), self.s.wpid, m, self.mmu.region_of(addr), iat)); } }
         self.set_error(m);
     }
     /// Stops the program with a message (the first error wins).
@@ -594,34 +783,85 @@ impl Engine {
     }
 
     /// Reserves address space only (pages are backed when first touched).
+    /// Address space for `size` bytes (rounded up to 64 KB), reserved only. Internal use;
+    /// the VirtualAlloc API uses `reserve_pages`.
     pub fn reserve(&mut self, size: u64) -> Option<u64> {
-        let size = (size.max(1) + 0xFFFF) & !0xFFFF;
-        let a = self.next_free(size)?;
-        self.mmu.add_reserved(a, size);
-        Some(a)
+        self.map_range(size, crate::mmu::round_up_64k, false)
     }
 
-    /// VirtualAlloc-style reservation: 64 KB aligned, committed lazily.
+    /// Committed memory for `size` bytes (rounded up to 64 KB). Internal use; the VirtualAlloc
+    /// API uses `alloc_pages`. Nothing changes when it fails.
     pub fn alloc(&mut self, size: u64) -> Option<u64> {
-        let size = (size.max(1) + 0xFFFF) & !0xFFFF;
-        if self.mmu.sh.committed + size > self.mmu.sh.target_bytes { return None; }
-        let a = self.next_free(size)?;
-        self.mmu.add_region(a, size);
-        Some(a)
+        self.map_range(size, crate::mmu::round_up_64k, true)
     }
 
-    /// The next free stretch of `size` bytes from the allocation pointer, stepping over
-    /// anything already there (an image at its preferred base, a fixed allocation), with a
-    /// 64 KB gap after it. A 32-bit program's memory stays below 4 GB.
-    fn next_free(&mut self, size: u64) -> Option<u64> {
-        let limit = if self.s.next_alloc < 0x1_0000_0000 { 0xFFFF_0000 } else { 0x7F00_0000_0000 };
-        let mut a = self.s.next_alloc;
-        while let Some(end) = self.mmu.overlap_end(a, a + size) {
-            a = (end + 0xFFFF) & !0xFFFF;
+    /// VirtualAlloc with a NULL base, reserve only: `size` rounded up to whole pages, the base
+    /// on the 64 KB allocation granularity.
+    pub fn reserve_pages(&mut self, size: u64) -> Option<u64> {
+        self.map_range(size, crate::mmu::round_up_page, false)
+    }
+
+    /// VirtualAlloc with a NULL base, committed: `size` rounded up to whole pages, the base on
+    /// the 64 KB allocation granularity. Nothing changes when it fails.
+    pub fn alloc_pages(&mut self, size: u64) -> Option<u64> {
+        self.map_range(size, crate::mmu::round_up_page, true)
+    }
+
+    /// Finds a free range for `size` (at least one byte, rounded by `round`) and maps it:
+    /// reserved only, or committed within the memory target. Nothing changes when it fails.
+    fn map_range(&mut self, size: u64, round: fn(u64) -> Option<u64>, commit: bool) -> Option<u64> {
+        let size = round(size.max(1))?;
+        if commit && self.mmu.sh.committed.checked_add(size)? > self.mmu.sh.target_bytes { return None; }
+        let f = self.find_free(size)?;
+        if commit { self.mmu.add_region(f.a, size)?; } else { self.mmu.add_reserved(f.a, size)?; }
+        self.take_free(f);
+        Some(f.a)
+    }
+
+    /// Gives back a range that `reserve` just took and that cannot be used (its commit failed).
+    /// The region is released, with its pages. When it was the last range taken from the bump
+    /// pointer, the pointer goes back, so failed attempts do not use up address space. Nothing
+    /// refers to the range yet, so it can be taken again.
+    pub(crate) fn unreserve(&mut self, start: u64, size: u64) {
+        self.mmu.release_region(start);
+        if start.checked_add(size).and_then(|end| end.checked_add(0x10000)) == Some(self.s.next_alloc) {
+            self.s.next_alloc = start;
         }
-        if a + size > limit { return None; }
-        self.s.next_alloc = a + size + 0x10000;
-        Some(a)
+    }
+
+    /// Where the next `size` bytes go, found without changing anything. The bump pointer
+    /// steps over anything already there (an image at its preferred base, a fixed
+    /// allocation), with a 64 KB gap after it. A 32-bit program's memory stays below 4 GB.
+    /// When the top is used up, the search goes back for a gap below the bump pointer.
+    fn find_free(&self, size: u64) -> Option<Found> {
+        let limit = if self.s.next_alloc < 0x1_0000_0000 { 0xFFFF_0000 } else { 0x7F00_0000_0000 };
+        // every base is on the 64 KB granularity, whatever the size (a page-sized one included)
+        let mut a = crate::mmu::round_up_64k(self.s.next_alloc)?;
+        while let Some(end) = self.mmu.overlap_end(a, a.checked_add(size)?) {
+            a = crate::mmu::round_up_64k(end)?;
+        }
+        let (end, next) = crate::mmu::span_after(a, size, 0x10000)?;
+        let next = crate::mmu::round_up_64k(next)?;
+        if end > limit {
+            // the address space is used up to the top: go back for room that was freed
+            // (a 32-bit program that allocates and frees big buffers gets there quickly)
+            let from = if limit < 0x1_0000_0000 { crate::wow64::LOW_ALLOC } else { 0x0000_0200_0000_0000 };
+            let a = self.mmu.first_gap(from, limit, size, 0x10000)?;
+            let (end, _) = crate::mmu::span_after(a, size, 0)?;
+            return Some(Found { a, end, next: self.s.next_alloc, gap: true });
+        }
+        Some(Found { a, end, next, gap: false })
+    }
+
+    /// Takes a range found by find_free, after the mapping succeeded. Nothing here can fail:
+    /// the values were checked when they were found. A gap leaves the bump pointer alone;
+    /// the JIT forgets any code it had compiled for that address.
+    fn take_free(&mut self, f: Found) {
+        if f.gap {
+            self.jit.forget(f.a, f.end);
+        } else {
+            self.s.next_alloc = f.next;
+        }
     }
 
     /// Static TLS blocks of every image for the thread whose TEB is `teb`.
@@ -687,7 +927,8 @@ impl Engine {
         self.mmu.add_region(TEB, 0x2000);
         self.mmu.add_region(PEB, 0x1000);
         // a 32-bit program needs its memory below 2 GB: allocations start low
-        if self.s.files.get(name).map_or(false, |b| wow64::is_pe32(b)) { self.s.wow64 = true; self.s.next_alloc = wow64::LOW_ALLOC; }
+        let bytes = self.exe_image(name).ok_or_else(|| format!("{} not found", name))?;
+        if wow64::is_pe32(&bytes) { self.s.wow64 = true; self.s.next_alloc = wow64::LOW_ALLOC; }
         let stack = self.alloc(STACK_SIZE).ok_or("out of memory")?;
         self.s.stack_top = stack + STACK_SIZE - 0x100;
         let w = |e: &mut Engine, a: u64, v: u64| { e.w64(a, v); };
@@ -702,7 +943,6 @@ impl Engine {
         self.w16(TEB + 0x125A, 522); w(self, TEB + 0x1260, TEB + 0x1268);
         self.cpu.gs_base = TEB;
         self.sched_init();
-        let bytes = self.s.files.get(name).cloned().ok_or_else(|| format!("{} not found", name))?;
         if bytes.starts_with(b"\x7fELF") { return self.linux_boot(name, cmd); }
         let wow = wow64::is_pe32(&bytes);
         // before the imports are bound: msvcrt's _acmdln points at it
@@ -722,6 +962,27 @@ impl Engine {
         self.cpu.regs[4] = self.s.stack_top;
         self.next_init();
         Ok(())
+    }
+
+    /// The program file for loading: a big one still on disk (an installer with hundreds of MB
+    /// of data after its image) is read only up to the end of its sections; the program reads
+    /// the rest itself through a file handle.
+    fn exe_image(&self, name: &str) -> Option<Vec<u8>> {
+        let size = self.s.files.size(name)?;
+        if size < 64 << 20 || self.s.files.disk_of(name).is_none() { return self.s.files.get(name).cloned(); }
+        let h = self.s.files.read_at(name, 0, 0x1000)?;
+        let r32 = |b: &[u8], at: usize| b.get(at..at + 4).map_or(0, |x| u32::from_le_bytes([x[0], x[1], x[2], x[3]])) as u64;
+        let r16 = |b: &[u8], at: usize| b.get(at..at + 2).map_or(0, |x| u16::from_le_bytes([x[0], x[1]])) as usize;
+        let pe = r32(&h, 0x3C) as usize;
+        if !h.starts_with(b"MZ") || h.get(pe..pe + 4) != Some(b"PE\0\0") { return self.s.files.get(name).cloned(); }
+        let (nsec, opt) = (r16(&h, pe + 6), r16(&h, pe + 20));
+        let sec = pe + 24 + opt;
+        let mut end = r32(&h, pe + 24 + 60); // SizeOfHeaders (same place in PE32 and PE32+)
+        for i in 0..nsec {
+            let s = sec + 40 * i;
+            end = end.max(r32(&h, s + 20) + r32(&h, s + 16));
+        }
+        self.s.files.read_at(name, 0, end.min(size))
     }
 
     /// Calls a program function from native code, returning to `ret`.
@@ -884,4 +1145,12 @@ impl Engine {
             }
         }
     }
+}
+
+/// Host stand-ins for the wasm imports, so `cargo test` on the host can link.
+/// The tests never reach them except through console output.
+#[cfg(test)]
+mod host_stubs {
+    #[no_mangle]
+    pub extern "C" fn host_console(_ptr: *const u8, _len: u32) {}
 }

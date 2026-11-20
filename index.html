@@ -41,6 +41,8 @@
   #menubox.show{display:flex}
   #menubox button{font:inherit;font-size:14px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--fg);padding:6px 10px;cursor:pointer}
   #menubox #reset{color:#d33}
+  body.embed header>a,body.embed header>b{display:none}
+  body.embed header{justify-content:flex-end;padding:2px 8px;background:#0b0b0d;border-color:#222}
 </style>
 </head>
 <body class="panel">
@@ -77,6 +79,6 @@
 </div>
 <input type="file" id="file" multiple hidden>
 <script src="vendor/xterm.js?v=1"></script>
-<script src="app.js?v=17"></script>
+<script src="app.js?v=18"></script>
 </body>
 </html>
