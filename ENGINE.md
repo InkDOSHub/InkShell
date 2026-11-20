@@ -29,8 +29,9 @@ real programs, with their shared libraries (`/lib/ld-musl-x86_64.so.1`).
 - Memory: the same budget as InkSoC. Programs see 8 GB; real RAM = half of the lowest tab
   limit seen on this device (key `inksoc-limits`, shared with the InkSoC page; 256 MB before
   any calibration); the rest goes to `alpine-swap.bin` in OPFS.
-- Start panel (like the Wine app): system, network, memory with "Calibrate memory", saved
-  data with "Erase and start from zero", and Start. Nothing runs before Start.
+- Linux starts as soon as the page opens, with the saved settings. The panel (system, network,
+  memory with "Calibrate memory", saved data with "Erase and start from zero", and Start)
+  shows when Linux stops. Inside InkOS (`?inkos=1`) the page's own header steps aside too.
 - `alpine-rootfs.tar.gz`: Alpine's minirootfs, unpacked at `/` on the first start.
 - `busybox`: static BusyBox 1.35, used for the base commands.
 - `overlay/` (packed into `overlay.tar` by `overlay/build.sh`): first start (user and

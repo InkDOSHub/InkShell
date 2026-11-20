@@ -6,7 +6,7 @@
 
 <p align="center"><b><a href="https://hub.inkdos.workers.dev/InkShell/">Open InkShell</a></b> · part of <a href="https://github.com/InkDOSHub/inkdoshub.github.io">InkDOS Hub</a> · MIT license</p>
 
-<p align="center"><img src=".github/prints/InkShell-alpine-iphone.png" width="28%" alt="InkShell start screen on iPhone"></p>
+<p align="center"><img src=".github/prints/InkShell-alpine-iphone.png" width="28%" alt="Alpine Linux first start in InkShell on iPhone"></p>
 
 ## How it works
 
