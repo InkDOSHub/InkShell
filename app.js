@@ -178,10 +178,8 @@ if (vv) {
 // no auto-capitals or auto-correct in the terminal
 const ta = document.querySelector('.xterm-helper-textarea');
 if (ta) { ta.setAttribute('autocapitalize', 'off'); ta.setAttribute('autocorrect', 'off'); ta.setAttribute('spellcheck', 'false'); ta.setAttribute('autocomplete', 'off'); }
-// nothing runs before Start (like the Wine app), except inside InkOS (?inkos=1): there the
-// window is the terminal, so Linux starts at once with the saved choices and the page's
-// own header (back link, title) steps aside
-if (new URLSearchParams(location.search).has('inkos')) {
-  document.body.classList.add('embed');
-  $('start').click();
-}
+// Linux starts at once with the saved choices (the panel with the settings comes back when it stops).
+// Inside InkOS (?inkos=1) the window is the terminal, so the page's own header (back link,
+// title) steps aside.
+if (new URLSearchParams(location.search).has('inkos')) document.body.classList.add('embed');
+$('start').click();
