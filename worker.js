@@ -6,6 +6,7 @@ const NETS = { wisp: 'wss://wisp.mercurywork.shop/v86/', off: null };
 const SAVE = 'alpine-fs.tar';
 const out = (t) => postMessage({ type: 'out', text: t });
 let x, mem, lx = null, keys = [], net = 'wisp';
+const pendingPuts = []; // files sent before Linux is up (from InkOS or the upload button)
 const enc = new TextEncoder(), dec = new TextDecoder();
 const put = (b) => { const p = x.buffer(b.length); new Uint8Array(mem.buffer, p, b.length).set(b); };
 
@@ -136,6 +137,7 @@ async function run({ rows, cols, network, poolMb, targetMb }) {
     put(name, data) { const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 1 + d.length); b.set(nm); b.set(d, nm.length + 1); put(b); x.linux_put_file(); },
     get(path) { put(enc.encode(path)); const n = x.linux_get_file(); return n < 0 ? null : new Uint8Array(mem.buffer, x.out_ptr(), n).slice(); },
   };
+  while (pendingPuts.length) { const f = pendingPuts.shift(); lx.put(f.name, f.data); }
   const feed = () => {
     while (keys.length) {
       const s = keys.shift();
@@ -178,7 +180,7 @@ onmessage = async (ev) => {
   const d = ev.data;
   if (d.type === 'key') { keys.push(d.data); return; }
   if (d.type === 'resize') { if (lx) lx.resize(d.rows, d.cols); return; }
-  if (d.type === 'put') { if (lx) lx.put(d.name, d.data); return; }
+  if (d.type === 'put') { if (lx) lx.put(d.name, d.data); else pendingPuts.push({ name: d.name, data: d.data }); return; }
   if (d.type === 'get') { postMessage({ type: 'file', path: d.path, data: lx ? lx.get(d.path) : null }); return; }
   if (d.type === 'net') { net = d.network; if (ws) { try { ws.close(); } catch (e) {} ws = null; } return; }
   if (d.type === 'save') { if (lx) { await save(); } postMessage({ type: 'saved' }); return; }
