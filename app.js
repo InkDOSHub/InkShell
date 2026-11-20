@@ -52,7 +52,7 @@ $('calib').onclick = () => {
   if (!confirm('Calibrating fills memory until the browser says no. The tab may reload once; that is expected and gives the limit. Continue?')) return;
   $('calib').disabled = true;
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=15');
+  const c = new Worker('worker.js?v=16');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -76,7 +76,7 @@ async function showData() {
 showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
-  const r = new Worker('worker.js?v=15');
+  const r = new Worker('worker.js?v=16');
   r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
   r.postMessage({ type: 'reset' });
 };
@@ -91,7 +91,7 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=15');
+  w = new Worker('worker.js?v=16');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;
@@ -140,6 +140,18 @@ $('i').onclick = () => $('info').classList.toggle('show');
 $('menu').onclick = () => $('menubox').classList.toggle('show');
 $('save').onclick = () => { $('menubox').classList.remove('show'); if (w) w.postMessage({ type: 'save' }); };
 $('up').onclick = () => $('file').click();
+// A file from the InkOS Finder (Hub assets/inkos-bridge.js): same as the upload
+// button. Linux starts if it is not running; the worker keeps the file until
+// the system is up.
+window.addEventListener('inkos:file', async (e) => {
+  const f = e.detail;
+  if (!(f instanceof File)) return;
+  e.preventDefault();
+  if (!w) $('start').click();
+  const data = await f.arrayBuffer();
+  if (w) w.postMessage({ type: 'put', name: f.name, data }, [data]);
+  term.write('\r\n\x1b[2m[' + f.name + ' → your home folder]\x1b[0m\r\n');
+});
 $('file').onchange = async () => {
   for (const f of $('file').files) {
     const data = await f.arrayBuffer();
