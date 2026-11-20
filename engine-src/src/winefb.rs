@@ -194,6 +194,9 @@ pub struct Resume {
     pub pending: Vec<(u64, u64)>,
 }
 
+/// File name of the startup test fixture (tests/startup/startup-info-fixtúre.exe).
+pub const STARTUP_FIXTURE_EXE: &str = "startup-info-fixtúre.exe";
+
 impl Engine {
     /// Runs `pending` DllMains (in order), then either jumps to `target` with the
     /// call's registers restored, or returns `ret` to the caller.
@@ -235,7 +238,7 @@ impl Engine {
         if let Some(i) = pe::find_module(self, file) {
             return Some(i);
         }
-        let bytes = self.s.files.get(file).cloned()?;
+        let bytes = self.s.files.get_copy(file)?;
         let i = pe::load_image(self, file, &bytes, false).ok()?;
         // the core modules share the engine's state: their own DllMain must not run
         if ["wine-ntdll.dll", "wine-kernelbase.dll", "wine-kernel32.dll"].contains(&file) {
@@ -245,6 +248,9 @@ impl Engine {
         if file == "wine-ntdll.dll" {
             self.patch_wine_ntdll(i);
             self.wine_nls(i);
+        }
+        if file == "wine-kernelbase.dll" {
+            self.wine_kernelbase_nls(i);
         }
         Some(i)
     }
@@ -284,20 +290,36 @@ impl Engine {
         let Some(upper) = find(self, "RtlUpcaseUnicodeChar", &[0x48, 0x8B, 0x0D]) else { return };
         let acp = find(self, "RtlResetRtlTranslations", &[0x89, 0x05]);
         let _ = base;
-        let nls = upper - 0x80;
+        self.fill_nls_info(upper - 0x80);
+        if let Some(a) = acp {
+            self.w16(a, 65001);
+        } // NlsAnsiCodePage
+    }
+
+    /// An NLSTABLEINFO (OEM and ANSI code page headers, then the upper/lower case tables)
+    /// as Wine's locale startup leaves it: UTF-8 for both code pages, cases from l_intl.nls.
+    fn fill_nls_info(&mut self, nls: u64) {
         for t in [nls, nls + 0x40] {
             let _ = self.mmu.write_bytes(t, &[0xE9, 0xFD, 4, 0, 0x3F, 0, 0xFD, 0xFF, 0x3F, 0, 0x3F, 0]);
         }
-        if let Some(cm) = self.s.files.get("l_intl.nls").cloned() {
+        if let Some(cm) = self.s.files.get_copy("l_intl.nls") {
             let a = self.heap_alloc(cm.len() as u64, false);
             let _ = self.mmu.write_bytes(a, &cm);
             let n = u16::from_le_bytes([cm[2], cm[3]]) as u64;
             self.w64(nls + 0x80, a + 4);
             self.w64(nls + 0x88, a + 4 + 2 * n);
         }
-        if let Some(a) = acp {
-            self.w16(a, 65001);
-        } // NlsAnsiCodePage
+    }
+
+    /// kernelbase keeps its own copy of the tables (its DllMain's init_locale, skipped here);
+    /// without it its internal text conversions (PathCombineA, lstrcmpA, ...) read a NULL
+    /// code page table. Its place: GetOEMCP is `movzx eax, word [rip+d]` on nls_info.
+    fn wine_kernelbase_nls(&mut self, i: usize) {
+        let Some(&a) = self.s.modules[i].exports.get("GetOEMCP") else { return };
+        let mut b = [0u8; 8];
+        if self.mmu.read_bytes(a, &mut b).is_err() || b[..3] != [0x0F, 0xB7, 0x05] { return; }
+        let d = i32::from_le_bytes(b[3..7].try_into().unwrap()) as i64;
+        self.fill_nls_info((a as i64 + 7 + d) as u64);
     }
 
     /// Per-thread blocks Wine's ntdll expects in the TEB (activation context stack).
@@ -466,7 +488,16 @@ impl Engine {
         }
         self.w64(p + 0x80, eb);
         self.w64(p + 0x3F0, 2 * env.len() as u64);
-        us(self, p + 0xB0, "WinSta0\\Default"); // DesktopInfo
+        us(self, p + 0xB0, exe); // WindowTitle: the program's file name
+        us(self, p + 0xC0, "WinSta0\\Default"); // Desktop
+        if exe == STARTUP_FIXTURE_EXE {
+            // Test fixture only (tests/startup): distinct STARTUPINFO values so the
+            // smoke test can tell each field apart. Other programs keep zeros.
+            for (off, v) in [(0x88, 101u32), (0x8C, 102), (0x90, 103), (0x94, 104), (0x98, 105), (0x9C, 106), (0xA0, 107), (0xA4, 0x4000_0000)] {
+                self.w32(p + off, v);
+            }
+            self.w16(p + 0xA8, 7);
+        }
         self.w64(crate::PEB + 0x20, p);
         self.s.env_block = eb;
     }

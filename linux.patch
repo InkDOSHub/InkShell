@@ -1,6 +1,6 @@
 diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
---- a/src/linux.rs	2026-11-14 16:19:45.000000000 +0000
-+++ b/src/linux.rs	2026-11-14 19:43:13.764856857 +0000
+--- a/src/linux.rs	2026-11-20 13:02:23.000000000 +0000
++++ b/src/linux.rs	2026-11-20 13:30:27.150985627 +0000
 @@ -28,11 +28,16 @@
      Pipe { id: u32, w: bool },
      Sock { id: u32 },
@@ -1824,9 +1824,9 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      }
      t.extend_from_slice(&[0u8; 1024]);
 diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
---- a/src/mmu.rs	2026-11-14 16:19:45.000000000 +0000
-+++ b/src/mmu.rs	2026-11-14 16:36:51.044635780 +0000
-@@ -67,7 +67,6 @@
+--- a/src/mmu.rs	2026-11-20 13:02:23.000000000 +0000
++++ b/src/mmu.rs	2026-11-20 13:30:27.149373448 +0000
+@@ -160,7 +160,6 @@
  
  /// What every core shares: the frames of real RAM and the page table.
  pub struct MmuShared {
@@ -1834,7 +1834,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
      pool: Vec<u8>,
      frames: Vec<Frame>,
      free: Vec<u32>,
-@@ -84,11 +83,19 @@
+@@ -177,14 +176,22 @@
      pub swap_slots: u32,
      /// several address spaces (Linux processes): frames of the others must not be evicted
      pub no_evict: bool,
@@ -1844,27 +1844,30 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
 +    next_asid: u32,
 +    saved: HashMap<u32, Saved>,
 +    free_slots: Vec<u32>,
+     /// committed ranges: sorted, disjoint, page-aligned; their total is `committed`.
+     /// The write check reads these, not `regions`.
+     commits: Vec<(u64, u64)>,
  }
  
 -/// A saved address space (a Linux process that is not running).
-+struct Saved { table: HashMap<u64, Pte>, regions: Vec<(u64, u64)>, committed: u64 }
++struct Saved { table: HashMap<u64, Pte>, regions: Vec<(u64, u64)>, committed: u64, commits: Vec<(u64, u64)> }
 +
 +/// A saved address space (a Linux process that is not running): its tables stay in the MMU.
  #[derive(Default)]
--pub struct Space { table: HashMap<u64, Pte>, regions: Vec<(u64, u64)>, committed: u64 }
+-pub struct Space { table: HashMap<u64, Pte>, regions: Vec<(u64, u64)>, committed: u64, commits: Vec<(u64, u64)> }
 +pub struct Space { id: u32 }
  
- /// One core's view: its own TLB over the shared page table.
- pub struct Mmu {
-@@ -117,7 +124,6 @@
+ /// The page state VirtualQuery reports for one address (see `Mmu::page_run`).
+ #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+@@ -224,7 +231,6 @@
      pub fn new(pool_mb: usize, target_mb: u64) -> Mmu {
          let n = pool_mb * 256;
          let sh = Box::leak(Box::new(MmuShared {
 -            asid: 0,
              pool: vec![0u8; n * PAGE as usize],
-             frames: vec![Frame { vpn: 0, used: false, referenced: false, dirty: false, asid: 0 }; n],
+             frames: vec![Frame { vpn: 0, used: false, referenced: false, dirty: false, asid: 0, protect: 4 }; n],
              free: (0..n as u32).rev().collect(), limbo: Vec::new(),
-@@ -127,6 +133,7 @@
+@@ -234,6 +240,7 @@
              committed: 0,
              target_bytes: target_mb << 20,
              faults: 0, swap_ins: 0, swap_outs: 0, swap_slots: 0, no_evict: false,
@@ -1872,7 +1875,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
          }));
          let m = Mmu { tlb: vec![TlbEntry { tag: u64::MAX, add: 0, writable: false }; TLB_SIZE], core: 0, sh, lk: 0, lk_at: (0, 0, 0), lk_snap: None };
          TLBS[0].store(m.tlb.as_ptr() as u32, Release);
-@@ -212,6 +219,7 @@
+@@ -397,6 +404,7 @@
              let pte = self.sh.table.remove(&vpn).unwrap();
              self.shoot(vpn);
              if pte.frame != NONE { freed.push(pte.frame); }
@@ -1880,8 +1883,8 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
          }
          if freed.is_empty() { return; }
          if !crate::lock::MT {
-@@ -234,48 +242,78 @@
-         } else { false }
+@@ -565,49 +573,79 @@
+         (old_protect, true)
      }
  
 -    /// Which process's pages new frames belong to (eviction only takes the running one's).
@@ -1891,17 +1894,17 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
      /// Moves the current address space out (another process is going to run).
      pub fn take_space(&mut self) -> Space {
          self.flush_tlb();
--        Space { table: std::mem::take(&mut self.sh.table), regions: std::mem::take(&mut self.sh.regions), committed: std::mem::replace(&mut self.sh.committed, 0) }
+-        Space { table: std::mem::take(&mut self.sh.table), regions: std::mem::take(&mut self.sh.regions), committed: std::mem::replace(&mut self.sh.committed, 0), commits: std::mem::take(&mut self.sh.commits) }
 +        let id = self.sh.cur;
-+        let sv = Saved { table: std::mem::take(&mut self.sh.table), regions: std::mem::take(&mut self.sh.regions), committed: std::mem::replace(&mut self.sh.committed, 0) };
++        let sv = Saved { table: std::mem::take(&mut self.sh.table), regions: std::mem::take(&mut self.sh.regions), committed: std::mem::replace(&mut self.sh.committed, 0), commits: std::mem::take(&mut self.sh.commits) };
 +        self.sh.saved.insert(id, sv);
 +        Space { id }
      }
      pub fn put_space(&mut self, sp: Space) {
          self.flush_tlb();
--        self.sh.table = sp.table; self.sh.regions = sp.regions; self.sh.committed = sp.committed;
-+        let sv = self.sh.saved.remove(&sp.id).unwrap_or(Saved { table: HashMap::new(), regions: Vec::new(), committed: 0 });
-+        self.sh.table = sv.table; self.sh.regions = sv.regions; self.sh.committed = sv.committed;
+-        self.sh.table = sp.table; self.sh.regions = sp.regions; self.sh.committed = sp.committed; self.sh.commits = sp.commits;
++        let sv = self.sh.saved.remove(&sp.id).unwrap_or(Saved { table: HashMap::new(), regions: Vec::new(), committed: 0, commits: Vec::new() });
++        self.sh.table = sv.table; self.sh.regions = sv.regions; self.sh.committed = sv.committed; self.sh.commits = sv.commits;
 +        self.sh.cur = sp.id;
 +    }
 +    /// Windows child processes name the running space by their id. Here spaces get their own
@@ -1929,14 +1932,14 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
 -            };
 -            let (src, dst) = (pte.frame as usize * PAGE as usize, f as usize * PAGE as usize);
 -            self.sh.pool.copy_within(src..src + PAGE as usize, dst);
--            self.sh.frames[f as usize] = Frame { vpn, used: true, referenced: false, dirty: true, asid: self.sh.asid };
+-            self.sh.frames[f as usize] = Frame { vpn, used: true, referenced: false, dirty: true, asid: self.sh.asid, protect: 4 };
 -            table.insert(vpn, Pte { frame: f, slot: NONE });
 +            if pte.frame != NONE {
 +                let src = pte.frame as usize * PAGE as usize;
 +                if let Some(f) = self.sh.free.pop() {
 +                    let dst = f as usize * PAGE as usize;
 +                    self.sh.pool.copy_within(src..src + PAGE as usize, dst);
-+                    self.sh.frames[f as usize] = Frame { vpn, used: true, referenced: false, dirty: true, asid: id };
++                    self.sh.frames[f as usize] = Frame { vpn, used: true, referenced: false, dirty: true, asid: id, protect: 4 };
 +                    table.insert(vpn, Pte { frame: f, slot: NONE });
 +                    continue;
 +                }
@@ -1950,7 +1953,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
 +            self.sh.swap_outs += 1;
 +            table.insert(vpn, Pte { frame: NONE, slot });
 +        }
-+        self.sh.saved.insert(id, Saved { table, regions: self.sh.regions.clone(), committed: self.sh.committed });
++        self.sh.saved.insert(id, Saved { table, regions: self.sh.regions.clone(), committed: self.sh.committed, commits: self.sh.commits.clone() });
 +        Some(Space { id })
 +    }
 +    fn release_table(&mut self, table: HashMap<u64, Pte>) {
@@ -1958,7 +1961,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
 +            if p.frame != NONE { self.sh.frames[p.frame as usize].used = false; self.sh.free.push(p.frame); }
 +            if p.slot != NONE { self.sh.free_slots.push(p.slot); }
          }
--        Some(Space { table, regions: self.sh.regions.clone(), committed: self.sh.committed })
+-        Some(Space { table, regions: self.sh.regions.clone(), committed: self.sh.committed, commits: self.sh.commits.clone() })
      }
      /// Frees every page of the current address space (exec, exit).
      pub fn free_space(&mut self) {
@@ -1969,6 +1972,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
 +        let t = std::mem::take(&mut self.sh.table);
 +        self.release_table(t);
          self.sh.regions.clear();
+         self.sh.commits.clear();
          self.sh.committed = 0;
      }
      /// Frees a saved address space (a process that ended while not running).
@@ -1978,7 +1982,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
      }
  
      fn evict_one(&mut self) -> u32 {
-@@ -284,8 +322,6 @@
+@@ -616,8 +654,6 @@
              self.sh.hand = (self.sh.hand + 1) % self.sh.frames.len();
              let f = self.sh.frames[i];
              if !f.used { return i as u32; }
@@ -1987,7 +1991,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
              let t = (f.vpn as usize) & (TLB_SIZE - 1);
              if f.referenced {
                  // second chance; drop the TLB entry so the next access marks it again
-@@ -293,14 +329,23 @@
+@@ -625,14 +661,23 @@
                  if self.tlb[t].tag == f.vpn { self.tlb[t].tag = u64::MAX; }
                  continue;
              }
@@ -2017,19 +2021,19 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
              pte.frame = NONE;
              self.sh.frames[i].used = false;
              return i as u32;
-@@ -359,7 +404,7 @@
+@@ -694,7 +739,7 @@
              } else {
                  self.sh.pool[off..off + PAGE as usize].fill(0);
              }
--            self.sh.frames[f as usize] = Frame { vpn, used: true, referenced: false, dirty: false, asid: self.sh.asid };
-+            self.sh.frames[f as usize] = Frame { vpn, used: true, referenced: false, dirty: false, asid: self.sh.cur };
+-            self.sh.frames[f as usize] = Frame { vpn, used: true, referenced: false, dirty: false, asid: self.sh.asid, protect: 4 };
++            self.sh.frames[f as usize] = Frame { vpn, used: true, referenced: false, dirty: false, asid: self.sh.cur, protect: 4 };
              self.sh.table.get_mut(&vpn).unwrap().frame = f;
              f
          };
 diff -ruN -x target -x .gitignore -x Cargo.lock a/src/sched.rs b/src/sched.rs
---- a/src/sched.rs	2026-11-14 16:19:45.000000000 +0000
-+++ b/src/sched.rs	2026-11-14 17:02:14.961150846 +0000
-@@ -511,8 +511,33 @@
+--- a/src/sched.rs	2026-11-20 13:02:23.000000000 +0000
++++ b/src/sched.rs	2026-11-20 13:30:27.149433942 +0000
+@@ -517,8 +517,33 @@
          crate::lock::kick();
          id
      }
@@ -2065,7 +2069,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/sched.rs b/src/sched.rs
          let id = MAIN_TID + 4 * self.s.sched.th.len() as u32;
          self.s.sched.th.push(Thread {
              id,
-@@ -536,6 +561,7 @@
+@@ -542,6 +567,7 @@
          if self.s.sched.th.len() == 2 {
              self.slice = SLICE;
          }
@@ -2073,7 +2077,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/sched.rs b/src/sched.rs
      }
      /// The current Linux thread waits (its rip is back on the syscall instruction).
      pub fn block_linux(&mut self, c: crate::linux::Cond, ms: Option<f64>) {
-@@ -626,15 +652,16 @@
+@@ -632,15 +658,16 @@
                  St::Wait if matches!(t.wait, Some(W::Lx(_))) => {
                      let Some(W::Lx(c)) = t.wait.clone() else { unreachable!() };
                      let dl = t.deadline;

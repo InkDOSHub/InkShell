@@ -13,7 +13,8 @@
 Alpine Linux 3.21 (x86-64) runs on [InkSoC](https://github.com/InkDOSHub/InkSoC), our own engine, which plays the part of the Linux kernel (system calls in WebAssembly, WSL 1 style) and runs Alpine's real programs with a JIT.
 
 - First start creates your user and password (`sudo` works); type `help` for the guide.
-- `apk` and internet through a public WebSocket tunnel (wisp), or no network.
+- `apk` and internet through a public WebSocket tunnel (wisp); when it cannot be reached, through the InkDOS Hub's own relay (`/net/wisp/` on hub.inkdos.workers.dev, which cannot reach sites hosted on Cloudflare). Or no network.
+- Inside InkOS (`?inkos=1`) it is the Terminal app: Linux starts at once and the page's header steps aside.
 - Programs see 8 GB; real RAM follows this device's calibrated limit and the rest goes to swap in the browser storage.
 - Your files stay in this browser between visits; ⇡ and ⇣ send and download files.
 

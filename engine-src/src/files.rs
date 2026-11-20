@@ -115,6 +115,8 @@ pub struct Files {
     pub paths: HashMap<u64, (String, bool)>,
     /// named events, mutexes and semaphores (lowercase name -> handle)
     pub named: HashMap<String, u64>,
+    /// NtQueryDirectoryFile: per folder handle, the entries matched and how many were returned
+    pub scans: HashMap<u64, (Vec<String>, usize)>,
     /// the registry (in memory)
     pub reg: crate::registry::Registry,
     /// files that came from the saved drive C: (to notice the ones a program deletes)
@@ -220,7 +222,7 @@ pub fn key_of(path: &str) -> Option<String> {
     case_of(path).map(|s| s.to_ascii_lowercase())
 }
 
-fn wild(p: &[u8], s: &[u8]) -> bool {
+pub(crate) fn wild(p: &[u8], s: &[u8]) -> bool {
     match (p.first(), s.first()) {
         (None, None) => true,
         (Some(b'*'), _) => wild(&p[1..], s) || (!s.is_empty() && wild(p, &s[1..])),
@@ -243,6 +245,7 @@ impl Engine {
 
     /// CloseHandle/NtClose: drops one reference; the object goes with the last one.
     pub fn close_handle(&mut self, h: u64) -> bool {
+        self.s.fs.scans.remove(&h);
         if let Some(n) = self.s.fs.refs.get_mut(&h) {
             *n -= 1;
             if *n == 0 {
@@ -299,6 +302,11 @@ impl Engine {
     }
     /// DuplicateHandle: the same handle, one more reference.
     pub fn dup_handle(&mut self, h: u64) -> u64 {
+        // GetCurrentThread() is only "me": the copy names this thread for everyone
+        if h as u32 == 0xFFFF_FFFE {
+            let tid = self.cur_tid();
+            return self.new_handle(Handle::Thread { tid });
+        }
         if self.s.fs.handles.contains_key(&h) {
             *self.s.fs.refs.entry(h).or_insert(0) += 1;
         }
@@ -454,6 +462,11 @@ impl Engine {
         let pos = at.unwrap_or(pos) as usize;
         if !k.starts_with('|') {
             self.s.fs.written.insert(k.clone());
+        }
+        // a big file is written where it lives on disk, not grown in memory
+        if self.s.files.write_at(&k, pos as u64, v) {
+            self.set_pos(h, (pos + v.len()) as u64);
+            return true;
         }
         let d = self.s.files.entry_or_default(k);
         let end = pos + v.len();
@@ -667,7 +680,12 @@ pub fn call(e: &mut Engine, name: &str) -> Option<u64> {
             let (access, disp, flags) = (e.arg(1) as u32, e.arg(4) as u32, e.arg(5) as u32);
             let Some(k) = key_of(&p) else {
                 if flags & 0x0200_0000 != 0 {
-                    return Some(e.new_handle(Handle::Dir));
+                    // C:\InkSoC (key "") or C:\ (key "c:"), as NtCreateFile keeps them
+                    let h = e.new_handle(Handle::Dir);
+                    let t = p.trim_end_matches(|c| c == '\\' || c == '.');
+                    let key = if t.len() <= 2 && t.ends_with(':') { "c:" } else { "" };
+                    e.s.fs.paths.insert(h, (key.to_string(), false));
+                    return Some(h);
                 }
                 e.set_last_error(5);
                 return Some(INVALID);
@@ -686,7 +704,9 @@ pub fn call(e: &mut Engine, name: &str) -> Option<u64> {
             }
             if e.is_dir(&k) {
                 if flags & 0x0200_0000 != 0 {
-                    return Some(e.new_handle(Handle::Dir));
+                    let h = e.new_handle(Handle::Dir);
+                    e.s.fs.paths.insert(h, (k, false));
+                    return Some(h);
                 }
                 e.set_last_error(5);
                 return Some(INVALID);
@@ -735,7 +755,11 @@ pub fn call(e: &mut Engine, name: &str) -> Option<u64> {
                 let ov = e.arg(4);
                 return Some(e.np_win32(true, a0, buf, n, done, ov));
             }
-            // no keyboard yet: reading the console fails like a closed pipe
+            // typing on (the page's Command Prompt): a typed line, or a wait for one
+            if a0 == 3 && e.s.con_live {
+                return crate::winapi::console_read(e, name);
+            }
+            // no keyboard: reading the console fails like a closed pipe
             if a0 == 3 {
                 if done != 0 {
                     e.w32(done, 0);
@@ -1141,8 +1165,12 @@ pub fn call(e: &mut Engine, name: &str) -> Option<u64> {
             0
         }
         "FormatMessageW" | "FormatMessageA" => {
-            // system messages only (FORMAT_MESSAGE_FROM_SYSTEM)
+            // system messages only (FORMAT_MESSAGE_FROM_SYSTEM); a message from a string or a
+            // module's own table (cmd.exe's texts) goes on to Wine's kernelbase, which formats it
             let (flags, full_id, buf, size) = (a0 as u32, e.arg(2) as u32, e.arg(4), e.arg(5));
+            if flags & 0x1000 == 0 {
+                return None;
+            }
             let id = if full_id >> 16 == 0x8007 || full_id >> 16 == 0 { full_id & 0xFFFF } else { full_id };
             let other;
             let text = match id {

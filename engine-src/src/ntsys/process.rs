@@ -281,8 +281,181 @@ pub(super) fn call(e: &mut Engine, name: &str) -> Option<u64> {
             }
             OK
         }
-        "NtQueryObject" => INVALID_INFO_CLASS,
+        "NtQueryObject" => query_object(e),
+        "NtQuerySecurityObject" => query_security(e),
+        // objects keep no security of their own here (like Wine's for most objects): accepted
+        "NtSetSecurityObject" => OK,
         "NtDisplayString" => OK,
+        // CreateProcess from Wine's kernelbase (a 32-bit program's, through WoW64)
+        "NtCreateUserProcess" => create_user_process(e),
+        // kernel transactions (CreateTransaction): like Wine, a placeholder handle, and
+        // commit or rollback do nothing (the file changes were made directly)
+        "NtCreateTransaction" => {
+            let h = e.new_handle(crate::files::Handle::Event { set: true, manual: true });
+            e.w64(a0, h);
+            OK
+        }
+        "NtCommitTransaction" | "NtRollbackTransaction" => OK,
         _ => return e.not_mine(),
     })
+}
+
+/// NtQuerySecurityObject(handle, info, descriptor, length, &needed): like Wine's default for
+/// objects without their own security, a self-relative descriptor owned by Administrators
+/// whose DACL lets Everyone in; only the parts asked for (1 owner, 2 group, 4 DACL).
+/// (A NULL DACL is legal, but installers read the ACL itself: OBS's crashed at 0x2.)
+fn query_security(e: &mut Engine) -> u64 {
+    let (info, buf, len, ret) = (e.arg(1) as u32, e.arg(2), e.arg(3) as u32, e.arg(4));
+    // S-1-5-32-544 (BUILTIN\Administrators), S-1-1-0 (Everyone)
+    let admins: [u8; 16] = [1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 0x20, 2, 0, 0];
+    let everyone: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0];
+    // ACL (revision 2, size 28, one ACE) + ACCESS_ALLOWED_ACE (size 20, all access) + SID
+    let mut acl = vec![2u8, 0, 28, 0, 1, 0, 0, 0, 0, 0, 20, 0, 0xFF, 0x01, 0x1F, 0x00];
+    acl.extend_from_slice(&everyone);
+    let mut parts: Vec<(u64, &[u8])> = Vec::new();
+    if info & 1 != 0 { parts.push((4, &admins)); }
+    if info & 2 != 0 { parts.push((8, &admins)); }
+    if info & 4 != 0 { parts.push((16, &acl)); }
+    let need = 20 + parts.iter().map(|p| p.1.len() as u32).sum::<u32>();
+    e.w32(ret, need);
+    if len < need { return crate::status::BUFFER_TOO_SMALL; }
+    e.zero_n(buf, need as u64);
+    e.w8(buf, 1);
+    // SE_SELF_RELATIVE, and SE_DACL_PRESENT when the DACL is there
+    e.w16(buf + 2, 0x8000 | if info & 4 != 0 { 4 } else { 0 });
+    let mut at = 20u32;
+    for (field, bytes) in parts {
+        e.w32(buf + field, at);
+        let _ = e.mmu.write_bytes(buf + at as u64, bytes);
+        at += bytes.len() as u32;
+    }
+    OK
+}
+
+/// NtQueryObject(handle, class, buffer, length, &needed): basic information (0) and, for
+/// files and folders, the name (1) as "\\??\\C:\\..." (GetFinalPathNameByHandleW reads it).
+fn query_object(e: &mut Engine) -> u64 {
+    let (h, class, buf, len, ret) = (e.arg(0), e.arg(1) as u32, e.arg(2), e.arg(3) as u32 as u64, e.arg(4));
+    match class {
+        0 => {
+            // ObjectBasicInformation: attributes, access, handle count, pointer count, ...
+            if len < 56 {
+                e.w32(ret, 56);
+                return INFO_LENGTH_MISMATCH;
+            }
+            e.zero_n(buf, 56);
+            e.w32(buf + 4, 0x1F01FF);
+            e.w32(buf + 8, 1);
+            e.w32(buf + 12, 1);
+            e.w32(ret, 56);
+            OK
+        }
+        1 => {
+            let key = match e.s.fs.handles.get(&h) {
+                Some(Handle::File { name, .. }) => Some(name.clone()),
+                Some(Handle::Dir) => e.s.fs.paths.get(&h).map(|p| p.0.clone()),
+                _ => None,
+            };
+            let name = match key {
+                Some(k) => {
+                    let cased = e.s.names.get(&k).cloned().unwrap_or(k);
+                    let full = if cased == "c:" { "C:\\".to_string() } else { crate::files::win_path(&cased) };
+                    format!("\\??\\{}", full.trim_end_matches('\\'))
+                }
+                None => String::new(),
+            };
+            let w: Vec<u16> = name.encode_utf16().collect();
+            let need = 16 + 2 * w.len() as u64 + if w.is_empty() { 0 } else { 2 };
+            e.w32(ret, need as u32);
+            if len < 16 {
+                return INFO_LENGTH_MISMATCH;
+            }
+            if len < need {
+                return BUFFER_OVERFLOW;
+            }
+            e.zero_n(buf, 16);
+            if !w.is_empty() {
+                e.w16(buf, 2 * w.len() as u16);
+                e.w16(buf + 2, 2 * w.len() as u16 + 2);
+                e.w64(buf + 8, buf + 16);
+                for (i, c) in w.iter().enumerate() {
+                    e.w16(buf + 16 + 2 * i as u64, *c);
+                }
+                e.w16(buf + 16 + 2 * w.len() as u64, 0);
+            }
+            OK
+        }
+        _ => INVALID_INFO_CLASS,
+    }
+}
+
+/// NtCreateUserProcess(&process, &thread, access, access, attr, attr, process_flags,
+/// thread_flags, params, create_info, attribute_list): the program and its command line
+/// come from the process parameters; the attribute list asks for the ids and image info.
+fn create_user_process(e: &mut Engine) -> u64 {
+    let (ph_out, th_out) = (e.arg(0), e.arg(1));
+    let (tflags, params, attrs) = (e.arg(7) as u32, e.arg(8), e.arg(10));
+    // the parameters may hold offsets instead of pointers (not normalized)
+    let base = if e.r32(params + 8) & 1 == 0 { params } else { 0 };
+    let ustr = |e: &mut Engine, at: u64| -> String {
+        let len = e.r16(at) as u64 / 2;
+        let buf = e.r64(at + 8);
+        if buf == 0 { return String::new(); }
+        let buf = buf + base;
+        let v: Vec<u16> = (0..len).map(|i| e.r16(buf + 2 * i)).collect();
+        String::from_utf16_lossy(&v)
+    };
+    let image = ustr(e, params + 0x60);
+    let cmd = ustr(e, params + 0x70);
+    let image = image.strip_prefix("\\??\\").unwrap_or(&image).to_string();
+    let envp = e.r64(params + 0x80);
+    let env: Vec<u16> = if envp == 0 { e.env_vec() } else {
+        let envp = envp + base;
+        let n = e.r64(params + 0x3F0) / 2;
+        let mut v: Vec<u16> = (0..n).map(|i| e.r16(envp + 2 * i)).collect();
+        while v.len() >= 2 && v[v.len() - 1] == 0 && v[v.len() - 2] == 0 && v.len() > 2 { v.pop(); }
+        if v.len() < 2 || v[v.len() - 1] != 0 || v[v.len() - 2] != 0 { v.push(0); v.push(0); }
+        v
+    };
+    let std = [e.r64(params + 0x20), e.r64(params + 0x28), e.r64(params + 0x30)];
+    let image = crate::pe::norm(&image);
+    let Some(bytes) = e.s.files.get(&image).cloned() else {
+        if unsafe { crate::WINE_DEBUG } > 0 { crate::console(&format!("[inksoc] CreateProcess: {} not found\n", image)); }
+        return 0xC000_0034; // OBJECT_NAME_NOT_FOUND
+    };
+    let (pid, tid, th) = match e.create_process(&image, &cmd, env, std, tflags & 1 != 0) {
+        Ok(r) => r,
+        Err(m) => {
+            crate::console(&format!("[inksoc] CreateProcess {}: {}\n", image, m));
+            return 0xC000_0034;
+        }
+    };
+    if unsafe { crate::WINE_DEBUG } > 1 { crate::console(&format!("[inksoc] CreateProcess {} -> pid {} tid {}\n", cmd, pid, tid)); }
+    let ph = e.new_handle(Handle::Process { pid });
+    e.w64(ph_out, ph);
+    e.w64(th_out, th);
+    // the attribute list: ULONG_PTR total length, then {attribute, size, value, return length}
+    if attrs != 0 {
+        let total = e.r64(attrs);
+        let mut a = attrs + 8;
+        while a + 32 <= attrs + total {
+            let (kind, size, val) = (e.r64(a), e.r64(a + 8), e.r64(a + 16));
+            match kind & 0xFFFF {
+                3 if size >= 16 => { e.w64(val, pid as u64); e.w64(val + 8, tid as u64); } // client id
+                6 if size >= 0x40 => { // SECTION_IMAGE_INFORMATION
+                    e.zero_n(val, 0x40);
+                    e.w64(val + 0x10, 0x10_0000);
+                    e.w64(val + 0x18, 0x1000);
+                    e.w32(val + 0x20, crate::pe::subsystem(&bytes).unwrap_or(2) as u32);
+                    e.w16(val + 0x26, 6);
+                    e.w16(val + 0x30, if crate::wow64::is_pe32(&bytes) { 0x14C } else { 0x8664 });
+                    e.w8(val + 0x32, 1);
+                    e.w32(val + 0x38, bytes.len() as u32);
+                }
+                _ => {}
+            }
+            a += 32;
+        }
+    }
+    OK
 }

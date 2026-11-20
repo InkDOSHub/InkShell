@@ -70,6 +70,8 @@ pub enum W {
     MsgOrObjs {
         hs: Vec<u64>,
     },
+    /// ReadConsole: until the page sends a typed line (then the call runs again)
+    ConIn,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -219,7 +221,10 @@ impl Engine {
             Some(Handle::Timer { due, .. }) => crate::now_ms() >= *due,
             Some(Handle::Process { pid }) => self.s.pinfo.get(pid).map_or(true, |i| i.exit.is_some()),
             Some(Handle::NPipe { .. }) => self.np_idle(h),
-            _ => true,
+            other => {
+                if unsafe { crate::WINE_DEBUG } > 1 { crate::console(&format!("[wait] handle {:x} counts as signaled: {}\n", h, other.map_or("none", |_| "other kind"))); }
+                true
+            }
         }
     }
     pub(crate) fn acquire(&mut self, h: u64, me: u32) {
@@ -340,6 +345,7 @@ impl Engine {
                     None
                 }
             }
+            W::ConIn => (!self.s.con_in.is_empty()).then_some(RETRY),
             W::Pipe(id) => match self.s.fs.pipes.get(id) {
                 Some(p) if p.buf.is_empty() && p.writers > 0 => None,
                 _ => Some(RETRY),
@@ -700,7 +706,7 @@ impl Engine {
                     }
                     soonest = soonest.min(dl);
                     // a window thread: page input can come at any time, timers are due later
-                    if matches!(w, W::Msg { .. } | W::MsgOrObjs { .. }) {
+                    if matches!(w, W::Msg { .. } | W::MsgOrObjs { .. } | W::ConIn) {
                         soonest = soonest.min((t_now + 30.0).min(self.next_timer(id)));
                     }
                     // a waitable timer in the wait: wake up when it is due
@@ -731,7 +737,26 @@ impl Engine {
         if soonest.is_finite() || busy {
             self.idle_ms = if soonest.is_finite() { (soonest - t_now).max(0.0).min(50.0) } else { 50.0 };
         } else if !self.s.exited {
-            self.set_error("all threads are waiting for each other (deadlock)".into());
+            // what each thread waits on, so the report shows the cycle
+            let mut why = String::new();
+            for t in self.s.sched.th.iter().filter(|t| t.st != St::Done) {
+                let w = match &t.wait {
+                    None => "-".to_string(),
+                    Some(W::Objs { hs, all }) => format!("objects {:x?}{}", hs, if *all { " (all)" } else { "" }),
+                    Some(W::MsgOrObjs { hs }) => format!("message or objects {:x?}", hs),
+                    Some(W::Cs(a)) => format!("critical section {:#x}", a),
+                    Some(W::SrwEx(a)) | Some(W::SrwSh(a)) => format!("SRW lock {:#x}", a),
+                    Some(W::Addr { addr, .. }) => format!("address {:#x}", addr),
+                    Some(W::Keyed(k)) => format!("keyed event {:#x}", k),
+                    Some(W::Msg { .. }) => "a window message".to_string(),
+                    Some(W::NpWait(n)) => format!("pipe {}", n),
+                    Some(W::NPipe { h, .. }) => format!("pipe handle {:#x}", h),
+                    Some(W::Port { h, .. }) => format!("completion port {:#x}", h),
+                    Some(_) => "other".to_string(),
+                };
+                why += &format!("\n  thread {} (rip {:#x}): {}", t.id, t.cpu.rip, w);
+            }
+            self.set_error(format!("all threads are waiting for each other (deadlock){}", why));
         }
         false
     }

@@ -52,7 +52,7 @@ $('calib').onclick = () => {
   if (!confirm('Calibrating fills memory until the browser says no. The tab may reload once; that is expected and gives the limit. Continue?')) return;
   $('calib').disabled = true;
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=16');
+  const c = new Worker('worker.js?v=17');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -76,7 +76,7 @@ async function showData() {
 showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
-  const r = new Worker('worker.js?v=16');
+  const r = new Worker('worker.js?v=17');
   r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
   r.postMessage({ type: 'reset' });
 };
@@ -91,7 +91,7 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=16');
+  w = new Worker('worker.js?v=17');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;
@@ -178,4 +178,10 @@ if (vv) {
 // no auto-capitals or auto-correct in the terminal
 const ta = document.querySelector('.xterm-helper-textarea');
 if (ta) { ta.setAttribute('autocapitalize', 'off'); ta.setAttribute('autocorrect', 'off'); ta.setAttribute('spellcheck', 'false'); ta.setAttribute('autocomplete', 'off'); }
-// nothing runs before Start (like the Wine app)
+// nothing runs before Start (like the Wine app), except inside InkOS (?inkos=1): there the
+// window is the terminal, so Linux starts at once with the saved choices and the page's
+// own header (back link, title) steps aside
+if (new URLSearchParams(location.search).has('inkos')) {
+  document.body.classList.add('embed');
+  $('start').click();
+}
