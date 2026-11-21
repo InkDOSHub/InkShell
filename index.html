@@ -3,7 +3,7 @@
 <head><script src="/assets/endereco.js?v=2"></script><script src="/assets/inkos-bridge.js?v=1"></script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-<link rel="icon" type="image/png" sizes="32x32" href="/assets/inkdoshub-icone-32.png?v=8">
+<link rel="icon" type="image/svg+xml" href="/assets/icones-inkdos/terminal.svg?v=3">
 <title>Alpine Linux · InkDOS Hub</title>
 <link rel="stylesheet" href="vendor/xterm.css?v=1">
 <style>
@@ -46,7 +46,7 @@
 </style>
 </head>
 <body class="panel">
-<header><a href="/">&lt; InkDOS Hub</a><b>Alpine Linux</b><button id="up" title="Send a file to your home folder">⇡</button><button id="down" title="Download a file">⇣</button><button id="i" title="About">i</button><button id="menu" title="Menu">☰</button></header>
+<header><a href="/">&lt; InkDOS Hub</a><b><img src="/assets/icones-inkdos/terminal.svg?v=3" alt="" style="width:22px;height:22px;vertical-align:-5px;margin-right:6px">Alpine Linux</b><button id="up" title="Send a file to your home folder">⇡</button><button id="down" title="Download a file">⇣</button><button id="i" title="About">i</button><button id="menu" title="Menu">☰</button></header>
 <div id="info">Alpine Linux 3.21 (x86-64) on InkSoC, our own engine: it plays the part of the Linux kernel, like WSL 1, and runs Alpine's real programs. The first start creates your user and password. Your files are kept in this browser between visits. Type <code>help</code> for the guide. Network: <b>wisp</b> = a public wisp server (the one used by v86 Linux terminals), or none. Memory follows InkSoC: programs see 8 GB, the real RAM in use is half of this device's limit (Calibrate memory), and the rest goes to a swap file in this browser. ⇡ sends files to your home folder, ⇣ downloads one. BusyBox is GPL-2.0 (busybox.net); Alpine's packages keep their own licenses (alpinelinux.org).</div>
 <div id="menubox"><button id="save">Save files now</button></div>
 <div id="box"><div id="term"></div>
