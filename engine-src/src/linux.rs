@@ -37,7 +37,7 @@ pub enum Fd {
 
 /// What a waiting Linux thread waits for.
 #[derive(Clone)]
-pub enum Cond { PipeRead(u32), Child { parent: u32, pid: i64 }, Stdin, Until, Socks(Vec<u32>), Fds(Vec<(Fd, u16)>), Futex { addr: u64 }, Signal, SigWait(u64) }
+pub enum Cond { PipeRead(u32), Child { parent: u32, pid: i64 }, Stdin, Until, Socks(Vec<u32>), Fds(Vec<(Fd, u16)>), Futex { addr: u64 }, Signal, SigWait(u64), Fetch(String) }
 
 /// A process that is not running right now keeps its state here.
 pub struct Saved {
@@ -483,7 +483,7 @@ fn open(e: &mut Engine, path: &str, flags: u64, mode: u64) -> i64 {
         else {
             if !l.fetch.contains(&p) { l.fetch.push(p.clone()); }
             e.cpu.rip -= 2; // the page reads the file from the device; open runs again then
-            e.block_linux(Cond::Until, Some(15.0));
+            e.block_linux(Cond::Fetch(p), None);
             return NORET;
         }
     }
@@ -1413,6 +1413,7 @@ pub fn ready(e: &mut Engine, c: &Cond, pid: u32, tid: u32) -> bool {
         Cond::Fds(v) => v.iter().any(|(f, m)| { let (r, w, h) = fd_state(l, f); (r && m & 0x41 != 0) || (w && m & 0x104 != 0) || h }),
         Cond::Futex { .. } | Cond::Signal => false,
         Cond::SigWait(set) => l.pend.get(&pid).map_or(false, |p| p & set != 0),
+        Cond::Fetch(p) => !l.stubs.contains_key(p), // the page sent the file of a mounted folder
     }
 }
 

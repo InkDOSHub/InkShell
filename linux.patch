@@ -1,6 +1,6 @@
 diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 --- a/src/linux.rs	2026-11-20 13:02:23.000000000 +0000
-+++ b/src/linux.rs	2026-11-22 18:51:56.728541986 +0000
++++ b/src/linux.rs	2026-11-22 18:55:01.513048078 +0000
 @@ -28,11 +28,16 @@
      Pipe { id: u32, w: bool },
      Sock { id: u32 },
@@ -15,7 +15,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  /// What a waiting Linux thread waits for.
  #[derive(Clone)]
 -pub enum Cond { PipeRead(u32), Child { parent: u32, pid: i64 }, Stdin, Until, Socks(Vec<u32>), Poll { socks: Vec<u32>, stdin: bool, pipes: Vec<u32> } }
-+pub enum Cond { PipeRead(u32), Child { parent: u32, pid: i64 }, Stdin, Until, Socks(Vec<u32>), Fds(Vec<(Fd, u16)>), Futex { addr: u64 }, Signal, SigWait(u64) }
++pub enum Cond { PipeRead(u32), Child { parent: u32, pid: i64 }, Stdin, Until, Socks(Vec<u32>), Fds(Vec<(Fd, u16)>), Futex { addr: u64 }, Signal, SigWait(u64), Fetch(String) }
  
  /// A process that is not running right now keeps its state here.
  pub struct Saved {
@@ -222,7 +222,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +        else {
 +            if !l.fetch.contains(&p) { l.fetch.push(p.clone()); }
 +            e.cpu.rip -= 2; // the page reads the file from the device; open runs again then
-+            e.block_linux(Cond::Until, Some(15.0));
++            e.block_linux(Cond::Fetch(p), None);
 +            return NORET;
 +        }
 +    }
@@ -895,7 +895,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      match c {
          Cond::PipeRead(id) => l.pipes.get(id).map_or(true, |b| !b.is_empty()) || !has_end(l, *id, true),
          Cond::Child { parent, pid } => {
-@@ -937,12 +1410,17 @@
+@@ -937,12 +1410,18 @@
          Cond::Stdin => !l.stdin.is_empty() || l.stdin_eof,
          Cond::Until => false,
          Cond::Socks(ids) => ids.iter().any(|i| l.socks.get(i).map_or(true, |s| !s.rx.is_empty() || !s.dgrams.is_empty() || s.closed)),
@@ -905,6 +905,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +        Cond::Fds(v) => v.iter().any(|(f, m)| { let (r, w, h) = fd_state(l, f); (r && m & 0x41 != 0) || (w && m & 0x104 != 0) || h }),
 +        Cond::Futex { .. } | Cond::Signal => false,
 +        Cond::SigWait(set) => l.pend.get(&pid).map_or(false, |p| p & set != 0),
++        Cond::Fetch(p) => !l.stubs.contains_key(p), // the page sent the file of a mounted folder
      }
  }
  
@@ -916,7 +917,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  /// Makes process `pid` the running one (its memory, files and compiled code).
  pub fn enter(e: &mut Engine, pid: u32) {
      if pid == 0 || lx(e).pid == pid { return; }
-@@ -977,10 +1455,15 @@
+@@ -977,10 +1456,15 @@
          brk_start: l.brk_start, brk: l.brk, mmap_next: l.mmap_next, exe: l.exe.clone(), ids: l.ids, space, jit,
      };
      let me = l.pid;
@@ -934,7 +935,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      pid as i64
  }
  
-@@ -996,6 +1479,7 @@
+@@ -996,6 +1480,7 @@
      l.fds.clear(); l.cloexec.clear();
      for p in l.procs.values_mut() { if p.ppid == pid { p.ppid = 1; } }
      if let Some(p) = l.procs.get_mut(&pid) { p.zombie = Some(status); }
@@ -942,7 +943,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      e.mmu.free_space();
      { let on = e.jit.on; e.jit = Default::default(); e.jit.on = on; }
      e.end_linux(pid);
-@@ -1008,9 +1492,21 @@
+@@ -1008,9 +1493,21 @@
      let saved = p.saved.take();
      for q in l.procs.values_mut() { if q.ppid == pid { q.ppid = 1; } }
      if let Some(s) = saved { e.mmu.free_saved(s.space); }
@@ -964,7 +965,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  fn wait4(e: &mut Engine, pid: i64, status: u64, opts: u64) -> i64 {
      let l = lx(e);
      let me = l.pid;
-@@ -1053,6 +1549,8 @@
+@@ -1053,6 +1550,8 @@
      let cx: Vec<i32> = l.cloexec.iter().copied().collect();
      for fd in cx { l.fds.remove(&fd); }
      l.cloexec.clear();
@@ -973,7 +974,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      e.mmu.free_space();
      { let on = e.jit.on; e.jit = Default::default(); e.jit.on = on; }
      match e.load_elf(&data, &p, &args, &env) {
-@@ -1061,6 +1559,299 @@
+@@ -1061,6 +1560,299 @@
      }
  }
  
@@ -1273,7 +1274,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  /// A child process hit a fatal error: it ends with a signal and the others go on.
  /// false = it is the first process (the whole run stops with the error).
  pub fn crash(e: &mut Engine, m: &str) -> bool {
-@@ -1080,7 +1871,14 @@
+@@ -1080,7 +1872,14 @@
  
  #[no_mangle]
  pub extern "C" fn linux_winsize(rows: u32, cols: u32) {
@@ -1289,7 +1290,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  }
  
  /// Ctrl+D: the next read of the terminal returns 0 (end of input).
-@@ -1093,10 +1891,13 @@
+@@ -1093,10 +1892,13 @@
      let e = crate::eng();
      let Some(l) = e.s.lx.as_mut() else { return };
      l.stdin.clear();
@@ -1306,7 +1307,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      }
      crate::lock::kick();
  }
-@@ -1112,8 +1913,86 @@
+@@ -1112,8 +1914,86 @@
      // relative names go to the user's home (the Alpine terminal keeps the user name in /etc/inksoc/user)
      let home = match l.fs.get("/etc/inksoc/user") { Some(Node::File(d)) if !d.is_empty() => format!("/home/{}", String::from_utf8_lossy(d).trim()), _ => "/root".to_string() };
      let path = l.abs(&if name.starts_with('/') { name } else { format!("{}/{}", home, name) });
@@ -1394,7 +1395,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  }
  
  /// Reads a file of the tree (path in the buffer) for the page to download; its size, or -1.
-@@ -1190,42 +2069,470 @@
+@@ -1190,42 +2070,470 @@
      Some(r)
  }
  
@@ -1887,7 +1888,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  fn read_addr(e: &mut Engine, a: u64, len: u64) -> Option<[u8; 16]> {
      if a == 0 || len < 8 { return None; }
      let mut b = [0u8; 28];
-@@ -1249,6 +2556,7 @@
+@@ -1249,6 +2557,7 @@
  }
  
  fn net_call(e: &mut Engine, nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i64 {
@@ -1895,7 +1896,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      let fd = a0 as i32;
      let sid = match lx(e).fds.get(&fd) { Some(Fd::Sock { id }) => Some(*id), _ => None };
      match nr {
-@@ -1328,10 +2636,23 @@
+@@ -1328,10 +2637,23 @@
              write_addr(e, a1, a2, &ad);
              0
          }
@@ -1922,7 +1923,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
              if a4 != 0 { e.w32(a4, 4); }
              0
          }
-@@ -1376,16 +2697,16 @@
+@@ -1376,16 +2698,16 @@
  pub extern "C" fn linux_save_tar() -> u32 {
      let Some(l) = crate::eng().s.lx.as_ref() else { return 0 };
      let mut t: Vec<u8> = Vec::new();
@@ -1942,7 +1943,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          h[124..136].copy_from_slice(format!("{:011o}\0", size).as_bytes());
          h[136..148].copy_from_slice(b"00000000000\0");
          h[156] = ty;
-@@ -1398,14 +2719,15 @@
+@@ -1398,14 +2720,15 @@
      }
      for (p, n) in l.fs.iter() {
          if p.starts_with("/proc") || p.starts_with("/dev") || p.starts_with("/tmp/") { continue; }
