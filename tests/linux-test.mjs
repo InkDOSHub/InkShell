@@ -44,11 +44,22 @@ async function settle(maxMs = 120000) {
   const t0 = Date.now();
   for (let idle = 0; Date.now() - t0 < maxMs;) {
     const st = x.run(2000000);
+    serveMount();
     if (st === 1 || st === 2) return st;
     // waiting: a timer due soon (sleep, a timeout) is not idle; only waiting for the terminal is
     if (st === 3) { const ms = x.stat(17); if (ms >= 30 && !(x.linux_timer_ms?.() >= 0) && ++idle > 20) return 3; await new Promise((r) => setTimeout(r, Math.min(ms, 30) || 2)); } else idle = 0;
   }
   return 0;
+}
+// a device folder mounted at /mnt/t (the page's part: files are sent when a program opens them)
+const devFiles = new Map([['/mnt/t/a.txt', 'hello-dev\n'], ['/mnt/t/sub/b.txt', 'B']]);
+function serveMount() {
+  const n = x.linux_mount_fetch();
+  if (!n) return;
+  for (const p of dec.decode(new Uint8Array(mem.buffer, x.out_ptr(), n).slice()).split('\n')) {
+    const nm = enc.encode(p), d = enc.encode(devFiles.get(p) || ''), b = new Uint8Array(nm.length + 1 + d.length);
+    b.set(nm); b.set(d, nm.length + 1); put(b); x.linux_put_file();
+  }
 }
 const results = [];
 async function step(input, expect, name) {
@@ -81,6 +92,14 @@ await step('/root/stage1 threads\n', /threads 200000/, 'threads, mutex and condi
 await step('/root/stage1 signals\n', /signals 10 7 15/, 'signal handlers, pause, kill');
 await step('/root/stage1 sockets\n', /sockets ping pong 0 tcp-ok/, 'socketpair, unix server, TCP on 127.0.0.1');
 await step('/root/stage1 sockopt\n', /sockopt 1 2 6/, 'getsockopt SO_TYPE/SO_PROTOCOL on internet sockets (Python ssl)');
+put(enc.encode('/mnt/t\nF\t/mnt/t/a.txt\t10\nD\t/mnt/t/sub\nF\t/mnt/t/sub/b.txt\t1')); x.linux_mount();
+await step('stat -c %s /mnt/t/sub/b.txt; cat /mnt/t/a.txt; echo new > /mnt/t/n.txt; mv /mnt/t/sub/b.txt /mnt/t/c.txt; rm /mnt/t/a.txt; echo mount-done\n', /^1\s*$[\s\S]*hello-dev[\s\S]*mount-done/m, 'device folder: size before reading, read on open, write, move, remove');
+{
+  put(enc.encode('/mnt/t')); const n = x.linux_mount_scan();
+  const sc = dec.decode(new Uint8Array(mem.buffer, x.out_ptr(), n).slice());
+  const ok = /F\t\/mnt\/t\/n\.txt\t4\t1/.test(sc) && /F\t\/mnt\/t\/c\.txt\t1\t0/.test(sc) && !/a\.txt/.test(sc);
+  results.push(ok); console.log((ok ? 'PASS' : 'FAIL') + ' device folder: changes listed for the page' + (ok ? '' : '\n' + sc));
+}
 await step('/root/stage1 epoll\n', /epoll 0 1 22 1 11 5 select 0 1/, 'epoll, eventfd, select');
 await step('/root/stage1 timers\n', /timers 14 1 fd 10 14/, 'alarm, setitimer, timerfd, timer_create; SIGALRM ends a process');
 await step('/root/stage1 pty\n', /pty size tty line \^C sig 2/, 'pseudo-terminal: size, tty name, line mode, Ctrl+C');
