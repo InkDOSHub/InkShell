@@ -76,6 +76,14 @@ int main(int argc, char **argv) {
     char tr[16] = {0}; int n = 0, k; while ((k = read(tc, tr + n, sizeof tr - 1 - n)) > 0) n += k; wait(0);
     printf("sockets %s %s %d %s\n", b, r, e, tr); // ping pong 0 tcp-ok
   }
+  if (!strcmp(only, "all") || !strcmp(only, "sockopt")) { // Python's ssl checks SO_TYPE before TLS
+    int t = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0), u = socket(AF_INET, SOCK_DGRAM, 0), a = 0, b = 0, p = 0;
+    socklen_t n = sizeof a; getsockopt(t, SOL_SOCKET, SO_TYPE, &a, &n);
+    n = sizeof b; getsockopt(u, SOL_SOCKET, SO_TYPE, &b, &n);
+    n = sizeof p; getsockopt(t, SOL_SOCKET, SO_PROTOCOL, &p, &n);
+    printf("sockopt %d %d %d\n", a, b, p); // 1 2 6
+    close(t); close(u);
+  }
   if (!strcmp(only, "all") || !strcmp(only, "epoll")) {
     int ep = epoll_create1(0), ev = eventfd(0, 0), p[2]; pipe(p);
     struct epoll_event x = {.events = EPOLLIN, .data.u64 = 11}; epoll_ctl(ep, EPOLL_CTL_ADD, ev, &x);
