@@ -1,0 +1,127 @@
+name: Terminal benchmark
+# Performance of the Linux terminal (engine in node = same WebAssembly as the page) against the
+# runner itself: CPU (tests/src/cpubench.c), Python, copy/sha256/zip/unzip of 64 MB and 1 GB,
+# peak memory. Plus phase-2 pre-tests: WASI programs (probe, cpubench, CPython) in node.
+# Results: the run's summary page; logs: the artifacts.
+on:
+  push:
+    paths: ['.github/workflows/bench.yml', 'tests/bench/**', 'tests/bench-engine.mjs', 'tests/src/cpubench.c']
+  workflow_dispatch:
+    inputs:
+      big_mb: { description: 'Big file size (MB)', default: '1024' }
+jobs:
+  engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      BIG: ${{ inputs.big_mb || '1024' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Alpine 3.21 parts (cpubench, python3, zip, unzip)
+        run: |
+          mkdir -p out
+          docker run --rm -v "$PWD":/w -w /w alpine:3.21 sh -c '
+            apk add -q gcc musl-dev &&
+            gcc -O2 -static -o out/cpubench tests/src/cpubench.c &&
+            mkdir /x && apk add -q --root /x --initdb --allow-untrusted --no-scripts \
+              --repositories-file /etc/apk/repositories python3 zip unzip &&
+            tar -C /x -cf out/zpkgs.tar usr/bin usr/lib lib etc/ssl 2>/dev/null; ls -la out'
+          cp tests/bench/bench.sh tests/bench/pybench.py out/
+      - name: Build the engine
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cd engine-src && cargo build --release --target wasm32-unknown-unknown
+          cp target/wasm32-unknown-unknown/release/inksoc.wasm ../out/engine.wasm
+      - name: Native (runner)
+        run: |
+          sudo apt-get install -y -qq zip unzip time >/dev/null || true
+          python3 --version
+          for s in "cpu" "py" "io 64" "io $BIG"; do
+            n=$(echo $s | tr ' ' -)
+            BENCH_STAMP=1 BENCH_DIR=$RUNNER_TEMP/b /usr/bin/time -v -o out/native-$n.time sh out/bench.sh $s 2>&1 | node tests/bench/stamp.mjs | tee out/native-$n.log
+          done
+      - name: Engine
+        run: |
+          E="node tests/bench-engine.mjs out/engine.wasm cpubench=out/cpubench bench.sh=out/bench.sh pybench.py=out/pybench.py zpkgs.tar=out/zpkgs.tar --"
+          for s in "cpu" "py" "io 64" "io $BIG"; do
+            n=$(echo $s | tr ' ' -)
+            echo "::group::engine $s"
+            /usr/bin/time -v -o out/engine-$n.time timeout 1800 $E sh /root/bench.sh $s 2>&1 | tee out/engine-$n.log
+            grep -q '@@T done' out/engine-$n.log || echo "- motor \`$s\`: não terminou (ver engine-$n.log)" | tee -a out/engine-fails.txt
+            echo "::endgroup::"
+          done
+      - name: Report
+        if: always()
+        run: |
+          cd out
+          node ../tests/bench/report.mjs \
+            native=$(ls native-*.log | paste -sd,) engine=$(ls engine-*.log | paste -sd,) \
+            native.time=$(ls native-*.time | paste -sd,) > report.md || true
+          { echo "## Terminal: motor vs nativo (runner)"; echo; cat report.md; echo; cat engine-fails.txt 2>/dev/null; } | tee -a $GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-engine
+          path: |
+            out/*.log
+            out/*.time
+            out/*.md
+            out/*.json
+            out/*.txt
+  wasi:
+    # phase 2 pre-test: what running WASI programs directly (no x86 emulation) would give
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: wasi-sdk
+        run: |
+          curl -fsSL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz | tar -xz -C $RUNNER_TEMP
+          echo "CC=$RUNNER_TEMP/wasi-sdk-24.0-x86_64-linux/bin/clang" >> $GITHUB_ENV
+      - name: Build probe and cpubench (WASI)
+        run: |
+          mkdir -p out
+          $CC -O2 -o out/probe.wasm tests/bench/wasi/probe.c
+          $CC -O2 -o out/cpubench.wasm tests/src/cpubench.c
+          gcc -O2 -static -o out/cpubench tests/src/cpubench.c
+          ls -la out
+      - name: Probe (WASI calls a tool needs)
+        run: |
+          mkdir -p $RUNNER_TEMP/w
+          echo hello | WASI_DIR=$RUNNER_TEMP/w node tests/bench/wasi/run.mjs out/probe.wasm arg1 2> out/probe.err | tee out/probe.log
+          cat out/probe.err
+      - name: cpubench native vs WASI
+        run: |
+          out/cpubench | node tests/bench/stamp.mjs | tee out/native-cpu.log
+          node tests/bench/wasi/run.mjs out/cpubench.wasm 2> out/wasi-cpu.err | node tests/bench/stamp.mjs | tee out/wasi-cpu.log
+          grep @@MEM out/wasi-cpu.err >> out/wasi-cpu.log; cat out/wasi-cpu.err
+      - name: CPython WASI (prebuilt, VMware Labs)
+        continue-on-error: true
+        run: |
+          curl -fsSL -o out/python.wasm 'https://github.com/vmware-labs/webassembly-language-runtimes/releases/download/python%2F3.12.0%2B20231211-040d5a6/python-3.12.0.wasm'
+          ls -la out/python.wasm
+          mkdir -p $RUNNER_TEMP/p && cp tests/bench/pybench.py $RUNNER_TEMP/p/
+          (echo '@@T begin:py-start'; WASI_DIR=$RUNNER_TEMP/p node tests/bench/wasi/run.mjs out/python.wasm -c pass; echo '@@T end:py-start'; \
+           echo '@@T begin:py-bench'; WASI_DIR=$RUNNER_TEMP/p node tests/bench/wasi/run.mjs out/python.wasm /w/pybench.py; echo '@@T end:py-bench') \
+            2> out/wasi-py.err | node tests/bench/stamp.mjs | tee out/wasi-py.log
+          grep @@MEM out/wasi-py.err >> out/wasi-py.log; cat out/wasi-py.err
+          (cd out && cp ../tests/bench/pybench.py . && BENCH_STAMP=1 sh ../tests/bench/bench.sh py) | node tests/bench/stamp.mjs | tee out/native-py.log
+      - name: Report
+        if: always()
+        run: |
+          cd out
+          node ../tests/bench/report.mjs native=native-cpu.log,native-py.log wasi=wasi-cpu.log,wasi-py.log > report.md || true
+          { echo "## Fase 2 (pré-teste): WASI direto em node vs nativo"; echo; cat report.md; echo; echo '**Probe WASI**'; echo '```'; cat probe.log; grep -h @@IMPORTS probe.err wasi-py.err 2>/dev/null | cut -c1-1500; echo '```'; } | tee -a $GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-wasi
+          path: |
+            out/*.log
+            out/*.err
+            out/*.md
+            out/*.json
