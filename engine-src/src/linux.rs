@@ -37,7 +37,7 @@ pub enum Fd {
 
 /// What a waiting Linux thread waits for.
 #[derive(Clone)]
-pub enum Cond { PipeRead(u32), Child { parent: u32, pid: i64 }, Stdin, Until, Socks(Vec<u32>), Fds(Vec<(Fd, u16)>), Futex { addr: u64 }, Signal, SigWait(u64) }
+pub enum Cond { PipeRead(u32), Child { parent: u32, pid: i64 }, Stdin, Until, Socks(Vec<u32>), Fds(Vec<(Fd, u16)>), Futex { addr: u64 }, Signal, SigWait(u64), Fetch(String) }
 
 /// A process that is not running right now keeps its state here.
 pub struct Saved {
@@ -72,6 +72,11 @@ pub struct Lx {
     pub termios: Option<Vec<u8>>,
     pub winsize: (u16, u16), // rows, columns
     pub written: BTreeSet<String>,
+    // folders of the device mounted by the page (/mnt/NAME): files listed but not read yet are
+    // empty here with their real size in `stubs`; opening one asks the page for it (`fetch`)
+    pub mounts: BTreeSet<String>,
+    pub stubs: BTreeMap<String, u64>,
+    pub fetch: Vec<String>,
     pub unknown: BTreeSet<u64>,
     want: Option<Cond>,
     // network: sockets go out through the page (wisp tunnel on our server)
@@ -439,7 +444,7 @@ fn stat_path(e: &mut Engine, path: &str, a: u64, follow: bool) -> i64 {
     let (mode, size) = match l.fs.get(&p) {
         _ if p == "/" => (0o040000, 4096),
         Some(Node::Dir) => (0o040000, 4096),
-        Some(Node::File(d)) => (if p.starts_with("/dev/") { 0o020000 } else if l.us_names.contains_key(&p) { 0o140000 } else { 0o100000 }, d.len() as u64),
+        Some(Node::File(d)) => (if p.starts_with("/dev/") { 0o020000 } else if l.us_names.contains_key(&p) { 0o140000 } else { 0o100000 }, l.stubs.get(&p).copied().unwrap_or(d.len() as u64)),
         Some(Node::Link(t)) => (0o120777, t.len() as u64),
         None => return -ENOENT,
     };
@@ -473,6 +478,15 @@ fn open(e: &mut Engine, path: &str, flags: u64, mode: u64) -> i64 {
     let p = l.resolve(path, true);
     let p = if p.starts_with("/proc/") { let q = p.clone(); proc_file(e, &q); q } else { p };
     let l = lx(e);
+    if l.stubs.contains_key(&p) {
+        if flags & 0x200 != 0 && flags & 3 != 0 { l.stubs.remove(&p); } // truncated anyway: no need to read it
+        else {
+            if !l.fetch.contains(&p) { l.fetch.push(p.clone()); }
+            e.cpu.rip -= 2; // the page reads the file from the device; open runs again then
+            e.block_linux(Cond::Fetch(p), None);
+            return NORET;
+        }
+    }
     let exists = p == "/" || l.fs.contains_key(&p);
     if l.is_dir(&p) {
         if flags & 3 != 0 { return -EISDIR; }
@@ -985,7 +999,7 @@ pub fn syscall(e: &mut Engine) {
             let (f, t) = if nr == 82 { (e.read_cstr(a0, 4096), e.read_cstr(a1, 4096)) } else { (path_at(e, a0, a1), path_at(e, a2, a3)) };
             let l = lx(e); let (f, t) = (l.resolve(&f, false), l.resolve(&t, false));
             let keys: Vec<String> = l.fs.keys().filter(|k| **k == f || k.starts_with(&format!("{}/", f))).cloned().collect();
-            if keys.is_empty() { -ENOENT } else { for k in keys { let n = l.fs.remove(&k).unwrap(); let nk = format!("{}{}", t, &k[f.len()..]); l.written.remove(&k); if let Some(m) = l.meta.remove(&k) { l.meta.insert(nk.clone(), m); } if matches!(n, Node::File(_)) { l.written.insert(nk.clone()); } l.fs.insert(nk, n); } 0 }
+            if keys.is_empty() { -ENOENT } else { for k in keys { let n = l.fs.remove(&k).unwrap(); let nk = format!("{}{}", t, &k[f.len()..]); l.written.remove(&k); if let Some(m) = l.meta.remove(&k) { l.meta.insert(nk.clone(), m); } if let Some(z) = l.stubs.remove(&k) { l.stubs.insert(nk.clone(), z); } if matches!(n, Node::File(_)) && !l.stubs.contains_key(&nk) { l.written.insert(nk.clone()); } l.fs.insert(nk, n); } 0 }
         }
         83 | 258 => { // mkdir / mkdirat
             let (p, m) = if nr == 83 { (e.read_cstr(a0, 4096), a1) } else { (path_at(e, a0, a1), a2) };
@@ -1001,7 +1015,7 @@ pub fn syscall(e: &mut Engine) {
                 Some(Node::Dir) if !l.children(&q).is_empty() => -ENOTEMPTY,
                 Some(Node::Dir) => { l.fs.remove(&q); 0 }
                 Some(_) if dir => -ENOTDIR,
-                Some(_) => { l.fs.remove(&q); l.written.remove(&q); l.us_names.remove(&q); l.meta.remove(&q); 0 }
+                Some(_) => { l.fs.remove(&q); l.written.remove(&q); l.stubs.remove(&q); l.us_names.remove(&q); l.meta.remove(&q); 0 }
             }
         }
         86 | 88 | 265 | 266 => { // link / symlink / linkat / symlinkat
@@ -1399,6 +1413,7 @@ pub fn ready(e: &mut Engine, c: &Cond, pid: u32, tid: u32) -> bool {
         Cond::Fds(v) => v.iter().any(|(f, m)| { let (r, w, h) = fd_state(l, f); (r && m & 0x41 != 0) || (w && m & 0x104 != 0) || h }),
         Cond::Futex { .. } | Cond::Signal => false,
         Cond::SigWait(set) => l.pend.get(&pid).map_or(false, |p| p & set != 0),
+        Cond::Fetch(p) => !l.stubs.contains_key(p), // the page sent the file of a mounted folder
     }
 }
 
@@ -1899,8 +1914,86 @@ pub extern "C" fn linux_put_file() {
     // relative names go to the user's home (the Alpine terminal keeps the user name in /etc/inksoc/user)
     let home = match l.fs.get("/etc/inksoc/user") { Some(Node::File(d)) if !d.is_empty() => format!("/home/{}", String::from_utf8_lossy(d).trim()), _ => "/root".to_string() };
     let path = l.abs(&if name.starts_with('/') { name } else { format!("{}/{}", home, name) });
+    let fetched = l.stubs.remove(&path).is_some();
     l.put(&path, b.get(nl + 1..).unwrap_or(&[]).to_vec());
-    l.dirty = true;
+    if !fetched { l.dirty = true; }
+}
+
+/// Mounts a folder of the device. Buffer: the mount point, then lines "D\tpath" or
+/// "F\tpath\tsize" (paths absolute). Files stay empty until a program opens them.
+#[no_mangle]
+pub extern "C" fn linux_mount() {
+    let b = unsafe { crate::take_buf() };
+    let Some(l) = crate::eng().s.lx.as_mut() else { return };
+    let t = String::from_utf8_lossy(&b).into_owned();
+    let mut lines = t.split('\n');
+    let root = lines.next().unwrap_or("").to_string();
+    if !root.starts_with("/mnt/") || root.len() < 6 { return; }
+    let pre = format!("{}/", root);
+    let old: Vec<String> = l.fs.range(pre.clone()..).take_while(|(k, _)| k.starts_with(&pre)).map(|(k, _)| k.clone()).collect();
+    for k in old { l.fs.remove(&k); l.stubs.remove(&k); l.written.remove(&k); }
+    l.mkdirs(&root);
+    l.mounts.insert(root.clone());
+    // owned by the terminal's user (the owner of their home folder), open to everyone
+    let own = match l.fs.get("/etc/inksoc/user") { Some(Node::File(d)) if !d.is_empty() => l.meta.get(&format!("/home/{}", String::from_utf8_lossy(d).trim())).map_or((0, 0), |m| (m.1, m.2)), _ => (0, 0) };
+    l.meta.insert(root.clone(), (0o777, own.0, own.1));
+    for ln in lines {
+        let f: Vec<&str> = ln.split('\t').collect();
+        if f.len() < 2 || !f[1].starts_with(&pre) { continue; }
+        match f[0] {
+            "D" => { l.mkdirs(f[1]); l.meta.insert(f[1].to_string(), (0o777, own.0, own.1)); }
+            "F" => { l.put(f[1], Vec::new()); l.stubs.insert(f[1].to_string(), f.get(2).and_then(|n| n.parse().ok()).unwrap_or(0)); l.meta.insert(f[1].to_string(), (0o666, own.0, own.1)); }
+            _ => {}
+        }
+    }
+}
+
+/// Files programs are waiting for (one path per line, in out_ptr()); their total length.
+#[no_mangle]
+pub extern "C" fn linux_mount_fetch() -> u32 {
+    let Some(l) = crate::eng().s.lx.as_mut() else { return 0 };
+    if l.fetch.is_empty() { return 0; }
+    let v = std::mem::take(&mut l.fetch).join("\n").into_bytes();
+    crate::set_out(v)
+}
+
+/// What a mounted folder holds now: lines "D\tpath", "F\tpath\tsize\tchanged" (changed = written
+/// since the last scan). Path of the mount point in the buffer; the length in out_ptr().
+#[no_mangle]
+pub extern "C" fn linux_mount_scan() -> u32 {
+    let b = unsafe { crate::take_buf() };
+    let Some(l) = crate::eng().s.lx.as_mut() else { return 0 };
+    let pre = format!("{}/", String::from_utf8_lossy(&b));
+    let mut o = String::new();
+    let keys: Vec<String> = l.fs.range(pre.clone()..).take_while(|(k, _)| k.starts_with(&pre)).map(|(k, _)| k.clone()).collect();
+    for k in keys {
+        match l.fs.get(&k) {
+            Some(Node::Dir) => { o.push_str("D\t"); o.push_str(&k); o.push('\n'); }
+            Some(Node::File(d)) => {
+                let size = l.stubs.get(&k).copied().unwrap_or(d.len() as u64);
+                let ch = l.written.remove(&k);
+                o.push_str(&format!("F\t{}\t{}\t{}\n", k, size, ch as u8));
+            }
+            _ => {}
+        }
+    }
+    crate::set_out(o.into_bytes())
+}
+
+/// Frees a mounted file that was read but not changed (it becomes a stub again) if no process
+/// has it open. Path in the buffer; 1 when freed.
+#[no_mangle]
+pub extern "C" fn linux_mount_evict() -> u32 {
+    let b = unsafe { crate::take_buf() };
+    let Some(l) = crate::eng().s.lx.as_mut() else { return 0 };
+    let p = String::from_utf8_lossy(&b).into_owned();
+    if l.stubs.contains_key(&p) || l.written.contains(&p) { return 0; }
+    let is = |f: &Fd| matches!(f, Fd::File { path, .. } if *path == p);
+    if l.shared.iter().any(|m| m.3 == p) { return 0; }
+    if l.fds.values().any(is) || l.procs.values().any(|q| q.saved.as_ref().map_or(false, |s| s.fds.values().any(is))) { return 0; }
+    let size = match l.fs.get_mut(&p) { Some(Node::File(d)) => { let n = d.len() as u64; *d = Vec::new(); n } _ => return 0 };
+    l.stubs.insert(p, size);
+    1
 }
 
 /// Reads a file of the tree (path in the buffer) for the page to download; its size, or -1.
@@ -2627,6 +2720,7 @@ pub extern "C" fn linux_save_tar() -> u32 {
     }
     for (p, n) in l.fs.iter() {
         if p.starts_with("/proc") || p.starts_with("/dev") || p.starts_with("/tmp/") { continue; }
+        if l.mounts.iter().any(|m| p == m || p.starts_with(&format!("{}/", m))) { continue; } // the device's own folder: not kept here
         let name = &p[1..];
         match n {
             Node::Dir => { let (m, u, g) = perm(l, p, true); hdr(&mut t, &format!("{}/", name), b'5', 0, "", m, (u, g)) }

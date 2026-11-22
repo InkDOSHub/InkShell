@@ -29,6 +29,12 @@ ${b}Users${n}
 
 ${b}Files${n}
   The ⇡ button sends files from this device to your home folder; ⇣ downloads one.
+  ☰ Mount a folder: a folder of this device (iCloud Drive, On My iPad, a disk)
+  appears at /mnt/NAME. Files are read when a program opens them; what you
+  change or create there goes back into the real folder (read-only where the
+  browser does not let pages write to folders, e.g. Safari on iPhone).
+  Media:  sudo apk add ffmpeg   then e.g.  ffmpeg -i in.mov -c copy out.mp4
+  Copying streams (-c copy) is quick; re-encoding video is slow in this engine.
   The start panel's "Erase and start from zero" gives you a clean Alpine again.
 
 ${b}Speed${n}

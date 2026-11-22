@@ -122,8 +122,8 @@ async function run({ rows, cols, network, poolMb, targetMb }) {
   };
   const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(u + ': ' + r.status); return r; });
   const [wasm, busybox, overlay, saved] = await Promise.all([
-    get('engine.wasm?v=18').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
-    get('overlay.tar?v=5').then((r) => r.arrayBuffer()), loadSaved()]);
+    get('engine.wasm?v=19').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
+    get('overlay.tar?v=6').then((r) => r.arrayBuffer()), loadSaved()]);
   let rootfs = saved;
   if (!rootfs) {
     out('\x1b[2mDownloading Alpine Linux 3.21 (3.5 MB)…\x1b[0m\r\n');
@@ -149,7 +149,9 @@ async function run({ rows, cols, network, poolMb, targetMb }) {
     resize(r, c) { x.linux_winsize(r, c); },
     put(name, data) { const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 1 + d.length); b.set(nm); b.set(d, nm.length + 1); put(b); x.linux_put_file(); },
     get(path) { put(enc.encode(path)); const n = x.linux_get_file(); return n < 0 ? null : new Uint8Array(mem.buffer, x.out_ptr(), n).slice(); },
+    text(n) { return n ? dec.decode(new Uint8Array(mem.buffer, x.out_ptr(), n)) : ''; },
   };
+  while (pendingMounts.length) mount(pendingMounts.shift());
   while (pendingPuts.length) { const f = pendingPuts.shift(); lx.put(f.name, f.data); }
   const feed = () => {
     while (keys.length) {
@@ -172,18 +174,21 @@ async function run({ rows, cols, network, poolMb, targetMb }) {
       }
     }
   };
-  let st, lastSave = performance.now();
+  let st, lastSave = performance.now(), lastSync = 0;
   while (true) {
     feed();
     st = x.run(2000000);
     pumpNet();
+    if (mounts.size) { const n = x.linux_mount_fetch(); if (n) postMessage({ type: 'mfetch', paths: lx.text(n).split('\n') }); }
     if (st === 1 || st === 2) break;
     if (st === 3) {
       const t = performance.now();
+      if (mounts.size && t - lastSync > 1500) { lastSync = t; syncMounts(); }
       if (t - lastSave > 3000 && x.linux_dirty()) { lastSave = t; await save(); }
       await new Promise((r) => setTimeout(r, Math.min(30, Math.max(0, x.stat(17)))));
     } else await yieldNow();
   }
+  if (mounts.size) syncMounts();
   if (x.linux_dirty()) await save();
   lx = null;
   postMessage({ type: 'done', error: st === 2 ? dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()).slice()) : '' });
@@ -193,10 +198,11 @@ onmessage = async (ev) => {
   const d = ev.data;
   if (d.type === 'key') { keys.push(d.data); return; }
   if (d.type === 'resize') { if (lx) lx.resize(d.rows, d.cols); return; }
-  if (d.type === 'put') { if (lx) lx.put(d.name, d.data); else pendingPuts.push({ name: d.name, data: d.data }); return; }
+  if (d.type === 'put') { if (lx) { lx.put(d.name, d.data); loaded(d.name, d.data.byteLength); } else pendingPuts.push({ name: d.name, data: d.data }); return; }
+  if (d.type === 'mount') { if (lx) mount(d); else pendingMounts.push(d); return; }
   if (d.type === 'get') { postMessage({ type: 'file', path: d.path, data: lx ? lx.get(d.path) : null }); return; }
   if (d.type === 'net') { net = d.network; wsUrl = null; if (ws) { try { ws.close(); } catch (e) {} ws = null; } return; }
-  if (d.type === 'save') { if (lx) { await save(); } postMessage({ type: 'saved' }); return; }
+  if (d.type === 'save') { if (lx) { if (mounts.size) syncMounts(); await save(); } postMessage({ type: 'saved' }); return; }
   if (d.type === 'reset') { const root = await opfs(); if (root) { try { await root.removeEntry(SAVE); } catch (e) {} } postMessage({ type: 'reset' }); return; }
   if (d.type === 'calibrate') { calibrate(); return; }
   if (d.type === 'start') { try { await run(d); } catch (e) { postMessage({ type: 'done', error: e.message }); } }
@@ -221,4 +227,55 @@ async function calibrate() {
     await new Promise((r) => setTimeout(r, 50));
   }
   postMessage({ type: 'calib', mb, done: true });
+}
+
+/* Device folders mounted at /mnt/NAME (the page holds the folder; see app.js). The engine lists
+   every file but reads one only when a program opens it (the page sends it). Every 1.5 s of
+   quiet, what programs changed goes back to the page, which writes it into the real folder.
+   Files only read are dropped again when more than MOUNT_RAM bytes are held. */
+const mounts = new Map(); // root -> Map(path -> 'D' | size)
+const pendingMounts = [];
+const MOUNT_RAM = 192 * 1048576;
+let held = new Map(); // mounted files read into memory: path -> size (oldest first)
+function mount(d) {
+  put(enc.encode(d.root + '\n' + d.list)); x.linux_mount();
+  mounts.set(d.root, scan(d.root));
+}
+function scan(root) {
+  put(enc.encode(root));
+  const m = new Map();
+  for (const ln of lx.text(x.linux_mount_scan()).split('\n')) {
+    const f = ln.split('\t');
+    if (f[0] === 'D') m.set(f[1], 'D'); else if (f[0] === 'F') m.set(f[1], { size: +f[2], changed: f[3] === '1' });
+  }
+  return m;
+}
+function loaded(path, size) {
+  for (const root of mounts.keys()) if (path.startsWith(root + '/')) { held.delete(path); held.set(path, size); return; }
+}
+function syncMounts() {
+  for (const [root, prev] of mounts) {
+    const cur = scan(root), ops = [], buf = [];
+    const gone = [...prev.keys()].filter((p) => !cur.has(p));
+    for (const [p, v] of cur) {
+      if (v === 'D') { if (prev.get(p) !== 'D') ops.push({ op: 'mkdir', path: p }); continue; }
+      const old = prev.get(p);
+      if (!v.changed && old && old !== 'D') continue;
+      if (!v.changed && !old) { // a file not read yet that moved (mv): the page moves it in the real folder
+        const i = gone.findIndex((g) => prev.get(g) !== 'D' && prev.get(g).size === v.size);
+        if (i >= 0) { ops.push({ op: 'move', from: gone[i], path: p }); gone.splice(i, 1); continue; }
+      }
+      const data = lx.get(p);
+      if (data) { ops.push({ op: 'write', path: p, data: data.buffer }); buf.push(data.buffer); loaded(p, data.length); }
+    }
+    for (const p of gone.sort((a, b) => b.length - a.length)) ops.push({ op: 'remove', path: p, dir: prev.get(p) === 'D' });
+    for (const [p, v] of cur) if (v !== 'D') v.changed = false;
+    mounts.set(root, cur);
+    if (ops.length) postMessage({ type: 'msync', root, ops }, buf);
+  }
+  let total = 0; for (const v of held.values()) total += v;
+  for (const [p, size] of held) {
+    if (total <= MOUNT_RAM) break;
+    put(enc.encode(p)); if (x.linux_mount_evict()) { held.delete(p); total -= size; }
+  }
 }

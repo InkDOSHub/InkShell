@@ -53,7 +53,7 @@ $('calib').onclick = async () => {
   $('calib').disabled = true;
   await stop(true);
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=18');
+  const c = new Worker('worker.js?v=19');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -78,7 +78,7 @@ showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
   stop(false).then(() => {
-    const r = new Worker('worker.js?v=18');
+    const r = new Worker('worker.js?v=19');
     r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
     r.postMessage({ type: 'reset' });
   });
@@ -111,7 +111,7 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=18');
+  w = new Worker('worker.js?v=19');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;
@@ -123,7 +123,9 @@ function start() {
       a.download = m.path.split('/').pop() || 'file';
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-    } else if (m.type === 'saved') term.write('\r\n\x1b[2m[files saved]\x1b[0m\r\n');
+    } else if (m.type === 'mfetch') mountFetch(m.paths);
+    else if (m.type === 'msync') mountSync(m.root, m.ops);
+    else if (m.type === 'saved') term.write('\r\n\x1b[2m[files saved]\x1b[0m\r\n');
     else if (m.type === 'info') { pref.set('alpine-user', m.user || ''); }
     else if (m.type === 'done') {
       term.write('\r\n\x1b[2m[' + (m.error ? 'stopped: ' + m.error : 'Linux ended') + ']\x1b[0m\r\n');
@@ -134,6 +136,7 @@ function start() {
   };
   fit();
   w.postMessage({ type: 'start', rows: term.rows, cols: term.cols, network, poolMb: budget().pool, targetMb: 8192 });
+  for (const [root, m] of mounted) w.postMessage({ type: 'mount', root, list: m.list }); // mounted before a restart
 }
 
 let lastEnter = 0;
@@ -190,6 +193,116 @@ $('down').onclick = () => {
   const p = prompt('File to download (path, e.g. /home/you/notes.txt):', '/home/');
   if (p && w) w.postMessage({ type: 'get', path: p });
 };
+
+/* ---- device folders at /mnt/NAME ----
+   showDirectoryPicker (Chrome, Edge, Brave on computers; XeOS on iPad adds its own) gives a folder
+   that can be read and, where the browser allows it, written. Elsewhere (Safari on iPhone) the
+   folder input gives a read-only copy of the files. The worker asks for a file when a program
+   opens it (mfetch) and sends back what programs changed (msync). */
+const mounted = new Map(); // root -> { dir, files: Map(path -> handle or File), list, ro }
+const note = (t) => term.write('\r\n\x1b[2m[' + t + ']\x1b[0m\r\n');
+const safeName = (n) => (n || 'folder').replace(/[\/\\\0\n\t]/g, '_').replace(/^\.+/, '') || 'folder';
+async function entries(dir) {
+  const out = [];
+  if (dir.values) { for await (const e of dir.values()) out.push(e); }
+  else if (dir.entries) { for await (const [, e] of dir.entries()) out.push(e); }
+  return out;
+}
+async function mountDir(dir) {
+  const root = '/mnt/' + safeName(dir.name);
+  const files = new Map(), lines = [];
+  let count = 0;
+  const walk = async (d, path) => {
+    for (const e of await entries(d)) {
+      if (++count > 50000) return;
+      const p = path + '/' + safeName(e.name);
+      if (e.kind === 'directory') { lines.push('D\t' + p); await walk(e, p); }
+      else { let size = 0; try { size = (await e.getFile()).size; } catch (er) {} files.set(p, e); lines.push('F\t' + p + '\t' + size); }
+    }
+  };
+  note('reading the folder list of ' + dir.name + '…');
+  await walk(dir, root);
+  let ro = true;
+  try { ro = dir.queryPermission ? (await dir.queryPermission({ mode: 'readwrite' })) === 'denied' : false; } catch (er) { ro = false; }
+  if (!ro && !(window.FileSystemFileHandle && FileSystemFileHandle.prototype.createWritable) && !dir.getFileHandle) ro = true;
+  return { root, dir, files, list: lines.join('\n'), ro };
+}
+function mountFiles(list) { // the folder input: a read-only copy
+  const first = list[0] && list[0].webkitRelativePath ? list[0].webkitRelativePath.split('/')[0] : 'folder';
+  const root = '/mnt/' + safeName(first), files = new Map(), dirs = new Set(), lines = [];
+  for (const f of list) {
+    const parts = (f.webkitRelativePath || f.name).split('/').map(safeName);
+    parts.shift();
+    let p = root;
+    for (const d of parts.slice(0, -1)) { p += '/' + d; if (!dirs.has(p)) { dirs.add(p); lines.push('D\t' + p); } }
+    p += '/' + parts[parts.length - 1];
+    files.set(p, f); lines.push('F\t' + p + '\t' + f.size);
+  }
+  return { root, dir: null, files, list: lines.join('\n'), ro: true };
+}
+function addMount(m) {
+  mounted.set(m.root, m);
+  if (!w) $('start').click();
+  if (w) w.postMessage({ type: 'mount', root: m.root, list: m.list });
+  note(m.root + ': ' + m.files.size + ' files' + (m.ro ? ', read-only (this browser does not let pages write to folders; ☰ Download brings results out)' : ', changes go back to the folder') + '.  cd ' + m.root);
+}
+$('mount').onclick = async () => {
+  if (window.showDirectoryPicker) {
+    try { addMount(await mountDir(await window.showDirectoryPicker({ mode: 'readwrite' }))); }
+    catch (er) { if (er && er.name !== 'AbortError') note('could not mount: ' + er.message); }
+  } else $('mountdir').click();
+};
+$('mountdir').onchange = () => { const l = [...$('mountdir').files]; $('mountdir').value = ''; if (l.length) addMount(mountFiles(l)); };
+const rootOf = (p) => { for (const r of mounted.keys()) if (p.startsWith(r + '/')) return r; return null; };
+async function mountFetch(paths) {
+  for (const p of paths) {
+    const m = mounted.get(rootOf(p));
+    let data = new ArrayBuffer(0);
+    try { const h = m && m.files.get(p); const f = h && (h.getFile ? await h.getFile() : h); if (f) data = await f.arrayBuffer(); else note(p + ': not found in the device folder'); }
+    catch (er) { note(p + ': could not read (' + er.message + ')'); }
+    if (w) w.postMessage({ type: 'put', name: p, data }, [data]);
+  }
+}
+async function dirFor(m, path, create) { // the device folder holding path
+  let d = m.dir;
+  for (const s of path.slice(m.root.length + 1).split('/').slice(0, -1)) d = await d.getDirectoryHandle(s, { create });
+  return d;
+}
+let roWarned = false;
+async function mountSync(root, ops) {
+  const m = mounted.get(root);
+  if (!m) return;
+  if (m.ro || !m.dir) { if (!roWarned) { roWarned = true; note(root + ' is read-only here: changes stay in Linux only (☰ Download brings them out)'); } return; }
+  for (const o of ops) {
+    const base = o.path.split('/').pop();
+    try {
+      if (o.op === 'mkdir') { await dirFor(m, o.path + '/x', true); }
+      else if (o.op === 'write') {
+        const fh = await (await dirFor(m, o.path, true)).getFileHandle(base, { create: true });
+        const wr = await fh.createWritable(); await wr.write(o.data); await wr.close();
+        m.files.set(o.path, fh);
+      } else if (o.op === 'move') {
+        const src = m.files.get(o.from);
+        if (src && src.move) await src.move(await dirFor(m, o.path, true), base);
+        else { // copy, then remove the old one
+          const f = src.getFile ? await src.getFile() : src;
+          const fh = await (await dirFor(m, o.path, true)).getFileHandle(base, { create: true });
+          const wr = await fh.createWritable(); await wr.write(f); await wr.close();
+          await (await dirFor(m, o.from, false)).removeEntry(o.from.split('/').pop());
+          m.files.set(o.path, fh); m.files.delete(o.from); continue;
+        }
+        m.files.set(o.path, src); m.files.delete(o.from);
+      } else if (o.op === 'remove') {
+        await (await dirFor(m, o.path, false)).removeEntry(base, { recursive: !!o.dir });
+        m.files.delete(o.path);
+      }
+    } catch (er) {
+      if (er && er.name === 'NotFoundError' && o.op === 'remove') continue;
+      note(o.path + ': could not ' + o.op + ' in the device folder (' + (er && er.message) + ')');
+      if (er instanceof TypeError) { m.ro = true; note(root + ': this browser cannot write to the folder; it is read-only from now on'); return; }
+    }
+  }
+}
 
 addEventListener('resize', () => fit());
 // iPhone/iPad: the on-screen keyboard covers the page; shrink it to the visible area so the key bar stays above the keyboard
