@@ -1,6 +1,6 @@
 diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 --- a/src/linux.rs	2026-11-20 13:02:23.000000000 +0000
-+++ b/src/linux.rs	2026-11-20 13:30:27.150985627 +0000
++++ b/src/linux.rs	2026-11-22 18:16:02.281800916 +0000
 @@ -28,11 +28,16 @@
      Pipe { id: u32, w: bool },
      Sock { id: u32 },
@@ -1786,7 +1786,34 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      let fd = a0 as i32;
      let sid = match lx(e).fds.get(&fd) { Some(Fd::Sock { id }) => Some(*id), _ => None };
      match nr {
-@@ -1376,16 +2592,16 @@
+@@ -1328,10 +2544,23 @@
+             write_addr(e, a1, a2, &ad);
+             0
+         }
+-        55 => { // getsockopt: SO_ERROR and the rest read as 0
++        55 => { // getsockopt: SO_TYPE/SO_PROTOCOL/SO_DOMAIN must be right (Python's ssl refuses a socket whose SO_TYPE is not SOCK_STREAM)
+             let id = sid.unwrap();
+-            let err = if lx(e).socks.get(&id).map_or(false, |s| s.failed) { ECONNREFUSED } else { 0 };
+-            if a3 != 0 { e.w32(a3, err as u32); }
++            let (failed, udp) = lx(e).socks.get(&id).map_or((false, false), |s| (s.failed, s.udp));
++            if a1 == 1 && (a2 == 20 || a2 == 21) { // SO_RCVTIMEO / SO_SNDTIMEO: a zero timeval
++                if a3 != 0 { let _ = e.mmu.write_bytes(a3, &[0u8; 16]); }
++                if a4 != 0 { e.w32(a4, 16); }
++                return 0;
++            }
++            let v: i64 = if a1 != 1 { 0 } else { match a2 {
++                3 => if udp { 2 } else { 1 },          // SO_TYPE
++                4 => if failed { ECONNREFUSED } else { 0 }, // SO_ERROR
++                38 => if udp { 17 } else { 6 },        // SO_PROTOCOL
++                39 => 2,                               // SO_DOMAIN
++                7 | 8 => 212992,                       // SO_SNDBUF / SO_RCVBUF
++                _ => 0,
++            } };
++            if a3 != 0 { e.w32(a3, v as u32); }
+             if a4 != 0 { e.w32(a4, 4); }
+             0
+         }
+@@ -1376,16 +2605,16 @@
  pub extern "C" fn linux_save_tar() -> u32 {
      let Some(l) = crate::eng().s.lx.as_ref() else { return 0 };
      let mut t: Vec<u8> = Vec::new();
@@ -1806,7 +1833,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          h[124..136].copy_from_slice(format!("{:011o}\0", size).as_bytes());
          h[136..148].copy_from_slice(b"00000000000\0");
          h[156] = ty;
-@@ -1400,12 +2616,12 @@
+@@ -1400,12 +2629,12 @@
          if p.starts_with("/proc") || p.starts_with("/dev") || p.starts_with("/tmp/") { continue; }
          let name = &p[1..];
          match n {
@@ -1825,7 +1852,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      t.extend_from_slice(&[0u8; 1024]);
 diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
 --- a/src/mmu.rs	2026-11-20 13:02:23.000000000 +0000
-+++ b/src/mmu.rs	2026-11-20 13:30:27.149373448 +0000
++++ b/src/mmu.rs	2026-11-22 18:14:14.406577568 +0000
 @@ -160,7 +160,6 @@
  
  /// What every core shares: the frames of real RAM and the page table.
@@ -2032,7 +2059,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
          };
 diff -ruN -x target -x .gitignore -x Cargo.lock a/src/sched.rs b/src/sched.rs
 --- a/src/sched.rs	2026-11-20 13:02:23.000000000 +0000
-+++ b/src/sched.rs	2026-11-20 13:30:27.149433942 +0000
++++ b/src/sched.rs	2026-11-22 18:14:14.410577568 +0000
 @@ -517,8 +517,33 @@
          crate::lock::kick();
          id

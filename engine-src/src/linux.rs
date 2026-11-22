@@ -2544,10 +2544,23 @@ fn net_call(e: &mut Engine, nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64
             write_addr(e, a1, a2, &ad);
             0
         }
-        55 => { // getsockopt: SO_ERROR and the rest read as 0
+        55 => { // getsockopt: SO_TYPE/SO_PROTOCOL/SO_DOMAIN must be right (Python's ssl refuses a socket whose SO_TYPE is not SOCK_STREAM)
             let id = sid.unwrap();
-            let err = if lx(e).socks.get(&id).map_or(false, |s| s.failed) { ECONNREFUSED } else { 0 };
-            if a3 != 0 { e.w32(a3, err as u32); }
+            let (failed, udp) = lx(e).socks.get(&id).map_or((false, false), |s| (s.failed, s.udp));
+            if a1 == 1 && (a2 == 20 || a2 == 21) { // SO_RCVTIMEO / SO_SNDTIMEO: a zero timeval
+                if a3 != 0 { let _ = e.mmu.write_bytes(a3, &[0u8; 16]); }
+                if a4 != 0 { e.w32(a4, 16); }
+                return 0;
+            }
+            let v: i64 = if a1 != 1 { 0 } else { match a2 {
+                3 => if udp { 2 } else { 1 },          // SO_TYPE
+                4 => if failed { ECONNREFUSED } else { 0 }, // SO_ERROR
+                38 => if udp { 17 } else { 6 },        // SO_PROTOCOL
+                39 => 2,                               // SO_DOMAIN
+                7 | 8 => 212992,                       // SO_SNDBUF / SO_RCVBUF
+                _ => 0,
+            } };
+            if a3 != 0 { e.w32(a3, v as u32); }
             if a4 != 0 { e.w32(a4, 4); }
             0
         }

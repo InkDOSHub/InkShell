@@ -1,0 +1,14 @@
+#!/bin/sh
+# apk for this terminal: commands that change the system (add, del, update...) need root,
+# so for a normal user they go through sudo (asks your password), as "sudo apk ..." would.
+# Run as a user, apk could not set the owners of the folders it creates ("errors updating directory permissions").
+if [ "$(id -u)" -ne 0 ]; then
+  for a in "$@"; do
+    case "$a" in
+      -*) ;;
+      add|del|update|upgrade|fix|cache|audit) exec sudo /sbin/apk "$@" ;;
+      *) break ;;
+    esac
+  done
+fi
+exec /sbin/apk "$@"
