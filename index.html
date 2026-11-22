@@ -5,53 +5,70 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <link rel="icon" type="image/svg+xml" href="/assets/icones-inkdos/terminal.svg?v=3">
 <title>Alpine Linux · InkDOS Hub</title>
+<script src="/assets/tema.js?v=1"></script>
+<link rel="stylesheet" href="/assets/barra.css?v=5">
+<script src="/assets/barra.js?v=5" defer></script>
+<script src="/assets/icones.js?v=2" defer></script>
 <link rel="stylesheet" href="vendor/xterm.css?v=1">
 <style>
-  :root{--bg:#fff;--fg:#111;--muted:#666;--border:#ddd;--accent:#7c3aed;--term:#0b0b0d}
-  @media (prefers-color-scheme:dark){:root{--bg:#111;--fg:#eee;--muted:#999;--border:#333}}
+  :root{--term:#0b0b0d;--perigo:#e5484d}
   *{box-sizing:border-box}
   html,body{height:100%;overflow:hidden}
-  body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 -apple-system,system-ui,sans-serif;display:flex;flex-direction:column}
-  header{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border)}
-  header a{color:var(--accent);text-decoration:none;white-space:nowrap}
-  header b{flex:1;text-align:center}
-  header button{font:inherit;background:none;border:0;color:var(--accent);cursor:pointer;padding:4px 6px}
+  body{display:flex;flex-direction:column;font-size:15px;line-height:1.4}
   #box{flex:1;min-height:0;overflow:hidden;background:var(--term);padding:6px;position:relative}
-  #panel{position:absolute;inset:0;overflow:auto;background:var(--bg);color:var(--fg);padding:20px 16px}
+  #term{width:100%;height:100%}
+  #keys{display:flex;gap:4px;padding:6px;overflow-x:auto;background:var(--term);border-top:1px solid #222}
+  #keys button{font:13px ui-monospace,Menlo,monospace;background:#26262b;color:#ddd;border:0;border-radius:6px;padding:6px 10px;min-width:40px}
+  #keys button.on{background:#7c3aed;color:#fff}
+  #info{display:none;padding:10px 14px;font-size:13px;color:var(--muted);background:var(--card);border-bottom:1px solid var(--border)}
+  #info.show{display:block}
+  #info code{font-size:12px}
+  /* Settings: a page of its own over the terminal; its bar has only a small red X back to the terminal */
+  #panel{position:fixed;inset:0;z-index:2000;display:flex;flex-direction:column;background:var(--bg);color:var(--text);padding:env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left)}
   #panel[hidden]{display:none}
-  body.panel #keys{display:none}
+  #panel .barra{flex:none;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;min-height:44px;padding:4px 10px;background:var(--card);border-bottom:1px solid var(--border)}
+  #panel .barra b{grid-column:2;font-weight:600;font-size:14px}
+  #panel .barra #fechar{grid-column:3;justify-self:end;display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border:0;border-radius:50%;background:var(--perigo);color:#fff;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  #panel .barra #fechar svg{width:12px;height:12px}
+  #panel .rolar{flex:1;min-height:0;overflow:auto;padding:20px 16px}
   #panel .card{max-width:520px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
-  #panel h2{margin:0;font-size:20px}
-  #panel fieldset{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:0}
+  #panel fieldset{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:0;background:var(--card)}
   #panel legend{font-weight:600;padding:0 4px}
   #panel label{display:flex;gap:8px;align-items:baseline;padding:4px 0}
   #panel .nota{color:var(--muted);font-size:13px}
   #panel .linha{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
-  #panel button{font:inherit;font-size:14px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--fg);padding:6px 12px;cursor:pointer}
-  #panel button.perigo{color:#d33}
-  #panel #start{background:var(--accent);border-color:var(--accent);color:#fff;font-size:16px;padding:10px;font-weight:600}
-  #term{width:100%;height:100%}
-  #keys{display:flex;gap:4px;padding:6px;overflow-x:auto;background:var(--term);border-top:1px solid #222}
-  #keys button{font:13px ui-monospace,Menlo,monospace;background:#26262b;color:#ddd;border:0;border-radius:6px;padding:6px 10px;min-width:40px}
-  #keys button.on{background:var(--accent);color:#fff}
-  #info{display:none;padding:10px 14px;font-size:13px;color:var(--muted);border-bottom:1px solid var(--border)}
-  #info.show{display:block}
-  #info code{font-size:12px}
-  #menubox{display:none;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border)}
-  #menubox.show{display:flex}
-  #menubox button{font:inherit;font-size:14px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--fg);padding:6px 10px;cursor:pointer}
-  #menubox #reset{color:#d33}
-  body.embed header>a,body.embed header>b{display:none}
-  body.embed header{justify-content:flex-end;padding:2px 8px;background:#0b0b0d;border-color:#222}
+  #panel .linha button{font:inherit;font-size:14px;background:var(--btn);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:6px 12px;cursor:pointer}
+  #panel .linha button.perigo{color:var(--perigo)}
+  #panel button:disabled{opacity:.45;cursor:default}
+  #panel #start{font:inherit;background:var(--accent);border:1px solid var(--accent);border-radius:8px;color:#0d1117;font-size:16px;padding:10px;font-weight:600;cursor:pointer}
+  #panel #start[hidden]{display:none}
+  /* inside InkOS (?inkos=1) the window is the terminal: only the menu stays in the bar */
+  body.embed .ink-esq,body.embed .ink-meio{visibility:hidden}
+  body.embed .ink-bar{min-height:34px;padding:2px 8px}
 </style>
 </head>
-<body class="panel">
-<header><a href="/">&lt; InkDOS Hub</a><b><img src="/assets/icones-inkdos/terminal.svg?v=3" alt="" style="width:22px;height:22px;vertical-align:-5px;margin-right:6px">Alpine Linux</b><button id="up" title="Send a file to your home folder">⇡</button><button id="down" title="Download a file">⇣</button><button id="i" title="About">i</button><button id="menu" title="Menu">☰</button></header>
-<div id="info">Alpine Linux 3.21 (x86-64) on InkSoC, our own engine: it plays the part of the Linux kernel, like WSL 1, and runs Alpine's real programs. The first start creates your user and password. Your files are kept in this browser between visits. Type <code>help</code> for the guide. Network: <b>wisp</b> = a public wisp server (the one used by v86 Linux terminals), or none. Memory follows InkSoC: programs see 8 GB, the real RAM in use is half of this device's limit (Calibrate memory), and the rest goes to a swap file in this browser. ⇡ sends files to your home folder, ⇣ downloads one. BusyBox is GPL-2.0 (busybox.net); Alpine's packages keep their own licenses (alpinelinux.org).</div>
-<div id="menubox"><button id="save">Save files now</button></div>
+<body class="ink-app">
+<header class="ink-bar">
+  <a class="ink-home" href="/" data-icone="voltar">InkDOS Hub</a>
+  <span class="ink-title"><img src="/assets/icones-inkdos/terminal.svg?v=3" alt="" style="width:22px;height:22px;vertical-align:-5px;margin-right:6px">Alpine Linux</span>
+  <button class="ink-btn" id="up" type="button">Send a file to your home folder</button>
+  <button class="ink-btn" id="down" type="button">Download a file</button>
+  <button class="ink-btn" id="save" type="button">Save files now</button>
+  <button class="ink-btn" id="settings" type="button">Settings</button>
+  <button class="ink-btn" id="i" type="button">About</button>
+</header>
+<div id="info">Alpine Linux 3.21 (x86-64) on InkSoC, our own engine: it plays the part of the Linux kernel, like WSL 1, and runs Alpine's real programs. The first start creates your user and password. Your files are kept in this browser between visits. Type <code>help</code> for the guide. Network: <b>wisp</b> = a public wisp server (the one used by v86 Linux terminals), or none. Memory follows InkSoC: programs see 8 GB, the real RAM in use is half of this device's limit (Calibrate memory), and the rest goes to a swap file in this browser. The ☰ menu sends files to your home folder and downloads them. BusyBox is GPL-2.0 (busybox.net); Alpine's packages keep their own licenses (alpinelinux.org).</div>
 <div id="box"><div id="term"></div>
-<div id="panel"><div class="card">
-  <h2>Alpine Linux</h2>
+</div>
+<div id="keys">
+  <button data-k="esc">esc</button><button data-k="tab">tab</button><button data-k="ctrl" id="ctrl">ctrl</button>
+  <button data-k="^C">^C</button><button data-k="^D">^D</button>
+  <button data-k="up">↑</button><button data-k="down">↓</button><button data-k="left">←</button><button data-k="right">→</button>
+  <button data-k="|">|</button><button data-k="~">~</button><button data-k="/">/</button><button data-k="-">-</button>
+</div>
+<div id="panel" hidden>
+<div class="barra"><b>Settings</b><button id="fechar" type="button" title="Back to the terminal" aria-label="Back to the terminal"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 2l8 8M10 2l-8 8"/></svg></button></div>
+<div class="rolar"><div class="card">
   <fieldset><legend>System</legend>
     <label><input type="radio" name="sys" value="3.21" checked><span><strong>Alpine 3.21</strong> <span class="nota">x86-64 · stable</span></span></label>
     <div class="nota" id="engine-text">Engine: InkSoC</div>
@@ -68,17 +85,11 @@
     <div class="nota" id="data-text"></div>
     <div class="linha"><button id="erase" class="perigo" type="button">Erase and start from zero</button></div>
   </fieldset>
-  <button id="start" type="button">Start</button>
+  <button id="start" type="button" hidden>Start</button>
 </div></div>
-</div>
-<div id="keys">
-  <button data-k="esc">esc</button><button data-k="tab">tab</button><button data-k="ctrl" id="ctrl">ctrl</button>
-  <button data-k="^C">^C</button><button data-k="^D">^D</button>
-  <button data-k="up">↑</button><button data-k="down">↓</button><button data-k="left">←</button><button data-k="right">→</button>
-  <button data-k="|">|</button><button data-k="~">~</button><button data-k="/">/</button><button data-k="-">-</button>
 </div>
 <input type="file" id="file" multiple hidden>
 <script src="vendor/xterm.js?v=1"></script>
-<script src="app.js?v=19"></script>
+<script src="app.js?v=20"></script>
 </body>
 </html>

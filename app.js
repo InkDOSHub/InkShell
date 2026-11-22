@@ -30,7 +30,7 @@ const pref = { get(k, d) { try { return localStorage.getItem(k) || d; } catch (e
 let network = pref.get('alpine-net', 'wisp');
 if (!NETS.includes(network)) network = 'wisp';
 document.querySelector('input[name=net][value=' + network + ']').checked = true;
-for (const r of document.querySelectorAll('input[name=net]')) r.onchange = () => { network = r.value; pref.set('alpine-net', network); };
+for (const r of document.querySelectorAll('input[name=net]')) r.onchange = () => { network = r.value; pref.set('alpine-net', network); if (w) w.postMessage({ type: 'net', network }); };
 
 // InkSoC's memory limits (same site, same storage): the lowest tab limit seen on this device
 const LS = 'inksoc-limits';
@@ -48,9 +48,10 @@ function budget() {
 }
 const showMem = () => { $('mem-text').textContent = budget().text; };
 showMem();
-$('calib').onclick = () => {
-  if (!confirm('Calibrating fills memory until the browser says no. The tab may reload once; that is expected and gives the limit. Continue?')) return;
+$('calib').onclick = async () => {
+  if (!confirm('Calibrating fills memory until the browser says no. The tab may reload once; that is expected and gives the limit.' + (w ? ' Linux saves your files and stops first.' : '') + ' Continue?')) return;
   $('calib').disabled = true;
+  await stop(true);
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
   const c = new Worker('worker.js?v=17');
   c.onmessage = (ev) => {
@@ -76,12 +77,31 @@ async function showData() {
 showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
-  const r = new Worker('worker.js?v=17');
-  r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
-  r.postMessage({ type: 'reset' });
+  stop(false).then(() => {
+    const r = new Worker('worker.js?v=17');
+    r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
+    r.postMessage({ type: 'reset' });
+  });
 };
 fetch('engine-version.txt?x=' + Date.now()).then((r) => r.text()).then((v) => { $('engine-text').textContent = 'Engine: InkSoC ' + v.trim() + ' (the Windows engine version, plus the Linux part)'; }).catch(() => {});
-$('start').onclick = () => { $('panel').hidden = true; document.body.classList.remove('panel'); fit(); term.reset(); start(); term.focus(); };
+$('start').onclick = () => { $('panel').hidden = true; fit(); term.reset(); start(); term.focus(); };
+// Settings page: opened from the ☰ menu; the red X goes back to the terminal (and starts Linux if it is not running)
+const openSettings = () => { $('info').classList.remove('show'); showMem(); showData(); $('start').hidden = !!w; $('panel').hidden = false; };
+$('settings').onclick = openSettings;
+$('fechar').onclick = () => { if (!w) { $('start').click(); return; } $('panel').hidden = true; fit(); term.focus(); };
+// stops a running Linux; save = true lets it write the files first
+function stop(save) {
+  if (!w) return Promise.resolve();
+  const old = w; w = null;
+  return new Promise((res) => {
+    let done = false;
+    const end = () => { if (done) return; done = true; old.terminate(); $('start').hidden = false; term.write('\r\n\x1b[2m[Linux stopped]\x1b[0m\r\n'); res(); };
+    if (!save) { end(); return; }
+    old.onmessage = (ev) => { if (ev.data.type === 'saved') end(); };
+    old.postMessage({ type: 'save' });
+    setTimeout(end, 5000);
+  });
+}
 
 let w = null, starting = false;
 let ctrl = false;
@@ -109,15 +129,21 @@ function start() {
       term.write('\r\n\x1b[2m[' + (m.error ? 'stopped: ' + m.error : 'Linux ended') + ']\x1b[0m\r\n');
       if (w) w.terminate();
       w = null;
-      setTimeout(() => { $('panel').hidden = false; document.body.classList.add('panel'); showData(); }, 1500);
+      setTimeout(() => { if (!w) openSettings(); }, 1500);
     }
   };
   fit();
   w.postMessage({ type: 'start', rows: term.rows, cols: term.cols, network, poolMb: budget().pool, targetMb: 8192 });
 }
 
+let lastEnter = 0;
 term.onData((d) => {
   if (!w) return;
+  if (/^[\r\n]+$/.test(d)) { // one Enter (\r, \n or \r\n); iOS can send it twice for one tap
+    const t = performance.now();
+    if (t - lastEnter < 150) return;
+    lastEnter = t; d = '\r';
+  }
   if (ctrl && d.length === 1) {
     const c = d.toUpperCase().charCodeAt(0);
     if (c >= 64 && c < 96) d = String.fromCharCode(c - 64);
@@ -137,8 +163,7 @@ $('keys').addEventListener('click', (ev) => {
 });
 
 $('i').onclick = () => $('info').classList.toggle('show');
-$('menu').onclick = () => $('menubox').classList.toggle('show');
-$('save').onclick = () => { $('menubox').classList.remove('show'); if (w) w.postMessage({ type: 'save' }); };
+$('save').onclick = () => { if (w) w.postMessage({ type: 'save' }); };
 $('up').onclick = () => $('file').click();
 // A file from the InkOS Finder (Hub assets/inkos-bridge.js): same as the upload
 // button. Linux starts if it is not running; the worker keeps the file until
