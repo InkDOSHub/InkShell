@@ -33,7 +33,7 @@ Metas: fim sem 1 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 2
 | Data | Sem | Item | PR | Pts |
 |---|---|---|---|---|
 | 2026-11-23 | 0 | Processo: CLAUDE.md, graph.yml, fila | — | 0 (infra) |
-| 2026-11-23 | 0 | 1: bench em todo PR + comparação c/ main | claude/bench-every-pr | 1 |
+| 2026-11-23 | 0 | 1: bench em todo PR + comparação c/ main | #14 | 1 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
