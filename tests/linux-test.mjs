@@ -121,7 +121,7 @@ if (hasWasi) {
   await step('apk add --no-network hello-wasm zz-no-such-pkg; echo add-rc=$?\n', /Password/, 'catalog: apk add asks sudo');
   await step('pw1\n', /OK: hello-wasm installed[\s\S]*(no such package|unable to select)[\s\S]*add-rc=[1-9]/, 'catalog: apk add installs WebAssembly build, other name reaches real apk');
   await step('hello-wasm X < /dev/null; echo rc=$?\n', /wasi argc=2 arg1=X in=\(eof\)[\s\S]*rc=3/, 'catalog: installed program runs from PATH');
-  await step('apk del hello-wasm; command -v hello-wasm || echo gone\n', /Password/, 'catalog: apk del asks sudo');
+  await step('apk del hello-wasm; test -e /usr/local/bin/hello-wasm || echo gone\n', /Password/, 'catalog: apk del asks sudo');
   await step('pw1\n', /WebAssembly build removed[\s\S]*gone/, 'catalog: apk del removes it');
 } else console.log('(engine without WebAssembly programs: published engine.wasm older than the kernel source)');
 await step('trap "echo caught-usr1" USR1; kill -USR1 $$\n', /caught-usr1/, 'shell trap');
