@@ -1,6 +1,6 @@
 diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 --- a/src/linux.rs	2026-11-20 13:02:23.000000000 +0000
-+++ b/src/linux.rs	2026-11-22 18:55:01.513048078 +0000
++++ b/src/linux.rs	2026-11-23 03:16:47.082413131 +0000
 @@ -28,11 +28,16 @@
      Pipe { id: u32, w: bool },
      Sock { id: u32 },
@@ -188,8 +188,9 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 -    stat_buf(e, a, mode, size, ino)
 +    let (bits, uid, gid) = if mode == 0o120777 { (0, 0, 0) } else { perm(l, &p, mode == 0o040000) };
 +    stat_buf_own(e, a, mode | bits, size, ino, (uid, gid))
-+}
-+
+ }
+ 
+-fn open(e: &mut Engine, path: &str, flags: u64) -> i64 {
 +/// /proc files made when opened (memory, CPU, uptime) so free, top and htop have something to read.
 +fn proc_file(e: &mut Engine, p: &str) {
 +    let total_kb = e.mmu.sh.target_bytes >> 10;
@@ -209,9 +210,8 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
 +    let l = lx(e);
 +    l.mkdirs("/proc");
 +    l.fs.insert(p.to_string(), Node::File(text.into_bytes()));
- }
- 
--fn open(e: &mut Engine, path: &str, flags: u64) -> i64 {
++}
++
 +fn open(e: &mut Engine, path: &str, flags: u64, mode: u64) -> i64 {
      let l = lx(e);
      let p = l.resolve(path, true);
@@ -1307,14 +1307,29 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      }
      crate::lock::kick();
  }
-@@ -1112,8 +1914,86 @@
+@@ -1112,8 +1914,102 @@
      // relative names go to the user's home (the Alpine terminal keeps the user name in /etc/inksoc/user)
      let home = match l.fs.get("/etc/inksoc/user") { Some(Node::File(d)) if !d.is_empty() => format!("/home/{}", String::from_utf8_lossy(d).trim()), _ => "/root".to_string() };
      let path = l.abs(&if name.starts_with('/') { name } else { format!("{}/{}", home, name) });
 +    let fetched = l.stubs.remove(&path).is_some();
      l.put(&path, b.get(nl + 1..).unwrap_or(&[]).to_vec());
--    l.dirty = true;
 +    if !fetched { l.dirty = true; }
++}
++
++/// Removes a file or a folder with everything in it (path in the buffer), for the page's
++/// Files view. 1 when something was removed.
++#[no_mangle]
++pub extern "C" fn linux_remove() -> u32 {
++    let b = unsafe { crate::take_buf() };
++    let Some(l) = crate::eng().s.lx.as_mut() else { return 0 };
++    let p = l.abs(&String::from_utf8_lossy(&b));
++    if p == "/" { return 0; }
++    let pre = format!("{}/", p);
++    let keys: Vec<String> = l.fs.keys().filter(|k| **k == p || k.starts_with(&pre)).cloned().collect();
++    if keys.is_empty() { return 0; }
++    for k in keys { l.fs.remove(&k); l.written.remove(&k); l.stubs.remove(&k); l.us_names.remove(&k); l.meta.remove(&k); }
+     l.dirty = true;
++    1
 +}
 +
 +/// Mounts a folder of the device. Buffer: the mount point, then lines "D\tpath" or
@@ -1395,7 +1410,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  }
  
  /// Reads a file of the tree (path in the buffer) for the page to download; its size, or -1.
-@@ -1190,42 +2070,470 @@
+@@ -1190,42 +2086,470 @@
      Some(r)
  }
  
@@ -1888,7 +1903,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
  fn read_addr(e: &mut Engine, a: u64, len: u64) -> Option<[u8; 16]> {
      if a == 0 || len < 8 { return None; }
      let mut b = [0u8; 28];
-@@ -1249,6 +2557,7 @@
+@@ -1249,6 +2573,7 @@
  }
  
  fn net_call(e: &mut Engine, nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i64 {
@@ -1896,7 +1911,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      let fd = a0 as i32;
      let sid = match lx(e).fds.get(&fd) { Some(Fd::Sock { id }) => Some(*id), _ => None };
      match nr {
-@@ -1328,10 +2637,23 @@
+@@ -1328,10 +2653,23 @@
              write_addr(e, a1, a2, &ad);
              0
          }
@@ -1923,7 +1938,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
              if a4 != 0 { e.w32(a4, 4); }
              0
          }
-@@ -1376,16 +2698,16 @@
+@@ -1376,16 +2714,16 @@
  pub extern "C" fn linux_save_tar() -> u32 {
      let Some(l) = crate::eng().s.lx.as_ref() else { return 0 };
      let mut t: Vec<u8> = Vec::new();
@@ -1943,7 +1958,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
          h[124..136].copy_from_slice(format!("{:011o}\0", size).as_bytes());
          h[136..148].copy_from_slice(b"00000000000\0");
          h[156] = ty;
-@@ -1398,14 +2720,15 @@
+@@ -1398,14 +2736,15 @@
      }
      for (p, n) in l.fs.iter() {
          if p.starts_with("/proc") || p.starts_with("/dev") || p.starts_with("/tmp/") { continue; }
@@ -1965,7 +1980,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/linux.rs b/src/linux.rs
      t.extend_from_slice(&[0u8; 1024]);
 diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
 --- a/src/mmu.rs	2026-11-20 13:02:23.000000000 +0000
-+++ b/src/mmu.rs	2026-11-22 18:48:14.820710596 +0000
++++ b/src/mmu.rs	2026-11-23 02:33:52.424761362 +0000
 @@ -160,7 +160,6 @@
  
  /// What every core shares: the frames of real RAM and the page table.
@@ -2172,7 +2187,7 @@ diff -ruN -x target -x .gitignore -x Cargo.lock a/src/mmu.rs b/src/mmu.rs
          };
 diff -ruN -x target -x .gitignore -x Cargo.lock a/src/sched.rs b/src/sched.rs
 --- a/src/sched.rs	2026-11-20 13:02:23.000000000 +0000
-+++ b/src/sched.rs	2026-11-22 18:48:14.824710597 +0000
++++ b/src/sched.rs	2026-11-23 02:33:52.429997700 +0000
 @@ -517,8 +517,33 @@
          crate::lock::kick();
          id

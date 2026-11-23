@@ -53,7 +53,7 @@ $('calib').onclick = async () => {
   $('calib').disabled = true;
   await stop(true);
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=21');
+  const c = new Worker('worker.js?v=22');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -78,7 +78,7 @@ showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
   stop(false).then(() => {
-    const r = new Worker('worker.js?v=21');
+    const r = new Worker('worker.js?v=22');
     r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
     r.postMessage({ type: 'reset' });
   });
@@ -111,7 +111,7 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=21');
+  w = new Worker('worker.js?v=22');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;
@@ -230,10 +230,40 @@ function dlShow(m) {
     b.innerHTML = ICON(it.dir ? 'ic-folder' : 'ic-file');
     const n = document.createElement('span'); n.className = 'n'; n.textContent = it.name; b.append(n);
     if (!it.dir) { const t = document.createElement('span'); t.className = 't'; t.textContent = human(it.size || 0); b.append(t); }
-    b.onclick = () => (it.dir ? dlReq(p) : dlPick(p, b));
+    b.onclick = () => { if (b.dataset.held) { delete b.dataset.held; return; } it.dir ? dlReq(p) : dlPick(p, b); };
+    if (dlCanDelete(p)) {
+      b.oncontextmenu = (ev) => { ev.preventDefault(); dlMenu(p, it, ev.clientX, ev.clientY); };
+      let t = null; // touch: hold the icon (iPhone/iPad without a mouse)
+      b.addEventListener('touchstart', (ev) => { const q = ev.touches[0]; t = setTimeout(() => { t = null; b.dataset.held = '1'; dlMenu(p, it, q.clientX, q.clientY); }, 550); }, { passive: true });
+      const stop = () => { if (t) { clearTimeout(t); t = null; } };
+      b.addEventListener('touchmove', stop, { passive: true }); b.addEventListener('touchend', stop); b.addEventListener('touchcancel', stop);
+    }
     g.append(b);
   }
 }
+// Only your own files can be deleted (home folder, /root, /tmp, inside mounted folders); the worker checks it again.
+function dlCanDelete(p) {
+  if (rootOf(p)) return true;
+  return [dlHome, '/root', '/tmp'].some((r) => r && p.startsWith(r + '/'));
+}
+function dlMenu(path, it, x, y) {
+  const mnu = $('dl-menu'); mnu.textContent = '';
+  const t = document.createElement('div'); t.className = 't'; t.textContent = it.name; mnu.append(t);
+  if (!it.dir) { const o = document.createElement('button'); o.type = 'button'; o.textContent = 'Save…'; o.onclick = () => { mnu.hidden = true; const el = [...$('dl-list').children].find((c) => c.querySelector('.n') && c.querySelector('.n').textContent === it.name); dlPick(path, el || document.createElement('div')); }; mnu.append(o); }
+  const d = document.createElement('button'); d.type = 'button'; d.className = 'perigo';
+  d.textContent = it.dir ? 'Delete folder' : 'Delete';
+  d.onclick = () => {
+    if (!d.classList.contains('sim')) { d.classList.add('sim'); d.textContent = 'Tap again to delete' + (rootOf(path) ? ' (also on the device)' : ''); return; }
+    mnu.hidden = true;
+    if (w) w.postMessage({ type: 'rm', path });
+  };
+  mnu.append(d);
+  mnu.hidden = false;
+  const r = mnu.getBoundingClientRect();
+  mnu.style.left = Math.max(8, Math.min(x, innerWidth - r.width - 8)) + 'px';
+  mnu.style.top = Math.max(8, Math.min(y, innerHeight - r.height - 8)) + 'px';
+}
+document.addEventListener('pointerdown', (ev) => { const mnu = $('dl-menu'); if (!mnu.hidden && !mnu.contains(ev.target)) mnu.hidden = true; }, true);
 $('dl-up').onclick = () => { if (dlPath && dlPath !== '/') dlReq(dlPath.replace(/\/[^/]*$/, '') || '/'); };
 async function dlPick(path, el) {
   for (const o of $('dl-list').querySelectorAll('.item.on')) o.classList.remove('on');
