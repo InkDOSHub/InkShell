@@ -42,7 +42,7 @@
   .pg button:disabled{opacity:.45;cursor:default}
   .pg #start{font:inherit;background:var(--accent);border:1px solid var(--accent);border-radius:8px;color:#0d1117;font-size:16px;padding:10px;font-weight:600;cursor:pointer}
   .pg #start[hidden]{display:none}
-  /* Download: a Finder-like page (sidebar, path bar, grid of macOS-style folder and file icons) */
+  /* Files: a Finder-like page (sidebar, path bar, grid of macOS-style folder and file icons) */
   #dl .rolar{padding:0;display:flex;min-height:0}
   #dl .lado{flex:none;width:190px;padding:14px 8px;border-right:1px solid var(--border);background:var(--card);overflow:auto}
   #dl .lado h4{margin:4px 10px 6px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
@@ -92,13 +92,13 @@
   <a class="ink-home" href="/" data-icone="voltar">InkDOS Hub</a>
   <span class="ink-title"><img src="/assets/icones-inkdos/terminal.svg?v=3" alt="" style="width:22px;height:22px;vertical-align:-5px;margin-right:6px">Alpine Linux</span>
   <button class="ink-btn" id="up" type="button">Send a file to your home folder</button>
-  <button class="ink-btn" id="down" type="button">Download a file</button>
+  <button class="ink-btn" id="down" type="button">Files</button>
   <button class="ink-btn" id="mount" type="button">Mount a folder of this device</button>
   <button class="ink-btn" id="save" type="button">Save files now</button>
   <button class="ink-btn" id="settings" type="button">Settings</button>
   <button class="ink-btn" id="i" type="button">About</button>
 </header>
-<div id="info">Alpine Linux 3.21 (x86-64) on InkSoC, our own engine: it plays the part of the Linux kernel, like WSL 1, and runs Alpine's real programs. The first start creates your user and password. Your files are kept in this browser between visits. Type <code>help</code> for the guide. Network: <b>wisp</b> = a public wisp server (the one used by v86 Linux terminals), or none. Memory follows InkSoC: programs see 8 GB, the real RAM in use is half of this device's limit (Calibrate memory), and the rest goes to a swap file in this browser. The ☰ menu sends files to your home folder and downloads them. <b>Mount a folder</b> shows a folder of this device (iCloud Drive, On My iPad, a disk) at <code>/mnt/NAME</code>: programs read its files when they open them, and what they change or create goes back into the real folder within two seconds (where the browser lets a page write to folders; otherwise the folder is read-only and ☰ Download brings results out). BusyBox is GPL-2.0 (busybox.net); Alpine's packages keep their own licenses (alpinelinux.org).</div>
+<div id="info">Alpine Linux 3.21 (x86-64) on InkSoC, our own engine: it plays the part of the Linux kernel, like WSL 1, and runs Alpine's real programs. The first start creates your user and password. Your files are kept in this browser between visits. Type <code>help</code> for the guide. Network: <b>wisp</b> = a public wisp server (the one used by v86 Linux terminals), or none. Memory follows InkSoC: programs see 8 GB, the real RAM in use is half of this device's limit (Calibrate memory), and the rest goes to a swap file in this browser. The ☰ menu sends files to your home folder; ☰ Files shows them and saves them to this device. <b>Mount a folder</b> shows a folder of this device (iCloud Drive, On My iPad, a disk) at <code>/mnt/NAME</code>: programs read its files when they open them, and what they change or create goes back into the real folder within two seconds (where the browser lets a page write to folders; otherwise the folder is read-only and ☰ Files brings results out). BusyBox is GPL-2.0 (busybox.net); Alpine's packages keep their own licenses (alpinelinux.org).</div>
 <div id="box"><div id="term"></div>
 </div>
 <div id="keys">
@@ -156,6 +156,6 @@
 <input type="file" id="file" multiple hidden>
 <input type="file" id="mountdir" webkitdirectory multiple hidden>
 <script src="vendor/xterm.js?v=1"></script>
-<script src="app.js?v=25"></script>
+<script src="app.js?v=26"></script>
 </body>
 </html>
