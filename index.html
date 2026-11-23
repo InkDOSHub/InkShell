@@ -42,16 +42,46 @@
   .pg button:disabled{opacity:.45;cursor:default}
   .pg #start{font:inherit;background:var(--accent);border:1px solid var(--accent);border-radius:8px;color:#0d1117;font-size:16px;padding:10px;font-weight:600;cursor:pointer}
   .pg #start[hidden]{display:none}
-  /* Download: the same kind of page, a list of your Linux files */
-  #dl .caminho{font:13px ui-monospace,Menlo,monospace;color:var(--muted);word-break:break-all}
-  #dl ul{list-style:none;margin:0;padding:0;border:1px solid var(--border);border-radius:10px;background:var(--card);overflow:hidden}
-  #dl li{display:flex;align-items:center;gap:8px;padding:10px 12px;border-top:1px solid var(--border);cursor:pointer;-webkit-tap-highlight-color:transparent}
-  #dl li:first-child{border-top:0}
-  #dl li .n{flex:1;min-width:0;overflow-wrap:anywhere}
-  #dl li .t{color:var(--muted);font-size:12px;white-space:nowrap}
-  #dl .acoes{display:flex;gap:8px;flex-wrap:wrap;padding:0 12px 10px;border:0}
-  #dl .acoes a,#dl .acoes button{font:inherit;font-size:14px;background:var(--accent);border:1px solid var(--accent);border-radius:8px;color:#0d1117;padding:6px 12px;text-decoration:none;cursor:pointer}
+  /* Download: a Finder-like page (sidebar, path bar, grid of macOS-style folder and file icons) */
+  #dl .rolar{padding:0;display:flex;min-height:0}
+  #dl .lado{flex:none;width:190px;padding:14px 8px;border-right:1px solid var(--border);background:var(--card);overflow:auto}
+  #dl .lado h4{margin:4px 10px 6px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+  #dl .lado button{display:flex;align-items:center;gap:8px;width:100%;font:inherit;font-size:14px;text-align:left;background:none;border:0;border-radius:7px;color:var(--text);padding:6px 10px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  #dl .lado button.on{background:var(--accent-soft,rgba(0,122,255,.18))}
+  #dl .lado svg{width:20px;height:20px;flex:none}
+  #dl .main{flex:1;min-width:0;display:flex;flex-direction:column}
+  #dl .barrap{flex:none;display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border)}
+  #dl .barrap button{font:inherit;width:30px;height:28px;border:1px solid var(--border);border-radius:7px;background:var(--btn);color:var(--text);cursor:pointer}
+  #dl .barrap button:disabled{opacity:.35}
+  #dl .caminho{flex:1;min-width:0;font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #dl .grade{flex:1;min-height:0;overflow:auto;padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(98px,1fr));gap:6px;align-content:start}
+  #dl .item{display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;border:0;border-radius:10px;background:none;color:var(--text);font:inherit;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  #dl .item svg{width:64px;height:64px}
+  #dl .item .n{font-size:12px;line-height:1.25;text-align:center;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;padding:1px 5px;border-radius:5px}
+  #dl .item .t{font-size:11px;color:var(--muted)}
+  #dl .item.on{background:rgba(127,127,127,.16)}
+  #dl .item.on .n{background:#0a64d8;color:#fff}
+  #dl .vazio{grid-column:1/-1;text-align:center;color:var(--muted);padding:40px 0;font-size:14px}
+  #dl .acoes{flex:none;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--border);background:var(--card)}
+  #dl .acoes[hidden]{display:none}
+  #dl .acoes .nome{flex:1;min-width:120px;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #dl .acoes a,#dl .acoes button{font:inherit;font-size:14px;background:#0a64d8;border:1px solid #0a64d8;border-radius:8px;color:#fff;padding:6px 14px;text-decoration:none;cursor:pointer}
   #dl .acoes button.sec{background:var(--btn);border-color:var(--border);color:var(--text)}
+  #dl-menu{position:fixed;z-index:2100;min-width:190px;padding:5px;border-radius:10px;background:var(--card);border:1px solid var(--border);box-shadow:0 10px 30px rgba(0,0,0,.35)}
+  #dl-menu[hidden]{display:none}
+  #dl-menu .t{font-size:12px;color:var(--muted);padding:4px 10px 6px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #dl-menu button{display:block;width:100%;text-align:left;font:inherit;font-size:14px;background:none;border:0;border-radius:6px;color:var(--text);padding:7px 10px;cursor:pointer}
+  #dl-menu button:hover{background:rgba(127,127,127,.18)}
+  #dl-menu button.perigo{color:var(--perigo)}
+  #dl-menu button.perigo.sim{background:var(--perigo);color:#fff}
+  #dl .item{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+  @media (max-width:560px){
+    #dl .rolar{flex-direction:column}
+    #dl .lado{width:auto;display:flex;gap:4px;padding:8px;border-right:0;border-bottom:1px solid var(--border);overflow-x:auto}
+    #dl .lado h4{display:none}
+    #dl .lado button{width:auto;white-space:nowrap}
+    #dl .grade{grid-template-columns:repeat(auto-fill,minmax(86px,1fr))}
+  }
   /* inside InkOS (?inkos=1) the window is the terminal: only the menu stays in the bar */
   body.embed .ink-esq,body.embed .ink-meio{visibility:hidden}
   body.embed .ink-bar{min-height:34px;padding:2px 8px}
@@ -99,17 +129,33 @@
   <button id="start" type="button" hidden>Start</button>
 </div></div>
 </div>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="fo-b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4fa8f0"/><stop offset="1" stop-color="#2f8de4"/></linearGradient>
+    <linearGradient id="fo-f" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8ccdfb"/><stop offset="1" stop-color="#5fb3f6"/></linearGradient>
+    <linearGradient id="do-g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#eef0f3"/></linearGradient>
+  </defs>
+  <symbol id="ic-folder" viewBox="0 0 64 64"><path d="M6 15a4 4 0 0 1 4-4h14.5a4 4 0 0 1 2.9 1.2l2.6 2.8H54a4 4 0 0 1 4 4v29a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z" fill="url(#fo-b)"/><path d="M6 22.5a3.5 3.5 0 0 1 3.5-3.5h45a3.5 3.5 0 0 1 3.5 3.5V48a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z" fill="url(#fo-f)"/><path d="M6.5 23.5h51" stroke="#b8e0fd" stroke-width="1" opacity=".8"/></symbol>
+  <symbol id="ic-file" viewBox="0 0 64 64"><path d="M15 5h24l12 12v40a2.5 2.5 0 0 1-2.5 2.5h-33A2.5 2.5 0 0 1 13 57V7.5A2.5 2.5 0 0 1 15.5 5z" fill="url(#do-g)" stroke="#c7ccd3" stroke-width="1.2"/><path d="M39 5v9.5a2.5 2.5 0 0 0 2.5 2.5H51" fill="#e3e6ea" stroke="#c7ccd3" stroke-width="1.2" stroke-linejoin="round"/><path d="M20 24h22M20 29h22M20 34h22M20 39h14" stroke="#d3d7dd" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  <symbol id="ic-home" viewBox="0 0 20 20"><path d="M3 9.2 10 3l7 6.2V17a1 1 0 0 1-1 1h-3.6v-5H7.6v5H4a1 1 0 0 1-1-1z" fill="none" stroke="#0a84ff" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+  <symbol id="ic-disk" viewBox="0 0 20 20"><rect x="2.5" y="5" width="15" height="10" rx="2" fill="none" stroke="#8e8e93" stroke-width="1.6"/><circle cx="14" cy="12" r="1" fill="#8e8e93"/></symbol>
+  <symbol id="ic-side-folder" viewBox="0 0 20 20"><path d="M2.5 5.5a1.5 1.5 0 0 1 1.5-1.5h4l1.6 1.8H16a1.5 1.5 0 0 1 1.5 1.5v7.7a1.5 1.5 0 0 1-1.5 1.5H4a1.5 1.5 0 0 1-1.5-1.5z" fill="none" stroke="#0a84ff" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+</svg>
 <div id="dl" class="pg" hidden>
-<div class="barra"><b>Download a file</b><button class="fechar" id="dl-x" type="button" title="Back to the terminal" aria-label="Back to the terminal"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 2l8 8M10 2l-8 8"/></svg></button></div>
-<div class="rolar"><div class="card">
-  <div class="caminho" id="dl-path"></div>
-  <ul id="dl-list"></ul>
-  <div class="nota">Tap a file, then Save. Save to Files / Share uses the system sheet (iPhone, iPad).</div>
-</div></div>
+<div class="barra"><b>Files</b><button class="fechar" id="dl-x" type="button" title="Back to the terminal" aria-label="Back to the terminal"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 2l8 8M10 2l-8 8"/></svg></button></div>
+<div class="rolar">
+  <nav class="lado" id="dl-side"></nav>
+  <div class="main">
+    <div class="barrap"><button id="dl-up" type="button" title="Up" aria-label="Up">↑</button><div class="caminho" id="dl-path"></div></div>
+    <div class="grade" id="dl-list"></div>
+    <div class="acoes" id="dl-acts" hidden></div>
+  </div>
+</div>
+<div id="dl-menu" hidden></div>
 </div>
 <input type="file" id="file" multiple hidden>
 <input type="file" id="mountdir" webkitdirectory multiple hidden>
 <script src="vendor/xterm.js?v=1"></script>
-<script src="app.js?v=23"></script>
+<script src="app.js?v=25"></script>
 </body>
 </html>

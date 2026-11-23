@@ -122,7 +122,7 @@ async function run({ rows, cols, network, poolMb, targetMb }) {
   };
   const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(u + ': ' + r.status); return r; });
   const [wasm, busybox, overlay, saved] = await Promise.all([
-    get('engine.wasm?v=19').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
+    get('engine.wasm?v=20').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
     get('overlay.tar?v=6').then((r) => r.arrayBuffer()), loadSaved()]);
   let rootfs = saved;
   if (!rootfs) {
@@ -202,6 +202,14 @@ onmessage = async (ev) => {
   if (d.type === 'put') { if (lx) { lx.put(d.name, d.data); loaded(d.name, d.data.byteLength); } else pendingPuts.push({ name: d.name, data: d.data }); return; }
   if (d.type === 'mount') { if (lx) mount(d); else pendingMounts.push(d); return; }
   if (d.type === 'get') { const data = lx ? lx.get(d.path) : null; postMessage({ type: 'file', path: d.path, data, to: d.to }, data ? [data.buffer] : []); return; }
+  if (d.type === 'rm') { // the Files view: only your own files (home, /root, /tmp, mounted folders), never the system
+    if (!lx) return;
+    const parent = d.path.replace(/\/[^/]*$/, '') || '/';
+    let ok = 0;
+    if (userPath(d.path)) { put(enc.encode(d.path)); ok = x.linux_remove(); for (const p of [...held.keys()]) if (p === d.path || p.startsWith(d.path + '/')) held.delete(p); }
+    postMessage({ type: 'ls', ...list(parent), removed: ok ? d.path : null });
+    return;
+  }
   if (d.type === 'ls') { if (lx) postMessage({ type: 'ls', ...list(d.path) }); else pendingLs = d.path || ''; return; }
   if (d.type === 'net') { net = d.network; wsUrl = null; if (ws) { try { ws.close(); } catch (e) {} ws = null; } return; }
   if (d.type === 'save') { if (lx) { if (mounts.size) syncMounts(); await save(); } postMessage({ type: 'saved' }); return; }
@@ -283,11 +291,19 @@ function syncMounts() {
   }
 }
 
+function homeDir() { const u = lx.get('/etc/inksoc/user'), n = u ? dec.decode(u).trim() : ''; return n && n !== 'root' ? '/home/' + n : '/root'; }
+function userPath(p) {
+  if (!p || p.includes('/../') || p.endsWith('/..')) return false;
+  for (const r of mounts.keys()) if (p.startsWith(r + '/')) return true;
+  return [homeDir(), '/root', '/tmp'].some((r) => p.startsWith(r + '/'));
+}
+
 /* The page's Download list: the folders and files right inside one folder (your home folder
    when none is given). scan() also clears the "changed" marks of mounted files, so what changed
    in mounted folders is sent to the page first. */
 function list(path) {
-  if (!path) { const u = lx.get('/etc/inksoc/user'); const n = u ? dec.decode(u).trim() : ''; path = n && n !== 'root' ? '/home/' + n : '/root'; }
+  const home = homeDir();
+  if (!path) path = home;
   path = path.replace(/\/+$/, '') || '/';
   const pre = path === '/' ? '/' : path + '/';
   if (mounts.size) syncMounts();
@@ -303,5 +319,5 @@ function list(path) {
   }
   if (path === '/' || path === '/mnt') for (const r of mounts.keys()) { const n = r.slice(pre.length); if (r.startsWith(pre) && n && !n.includes('/') && !items.some((i) => i.name === n)) items.push({ name: n, dir: true }); }
   items.sort((a, b) => (b.dir ? 1 : 0) - (a.dir ? 1 : 0) || a.name.localeCompare(b.name));
-  return { path, items };
+  return { path, items, home };
 }

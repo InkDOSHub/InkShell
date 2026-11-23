@@ -1919,6 +1919,22 @@ pub extern "C" fn linux_put_file() {
     if !fetched { l.dirty = true; }
 }
 
+/// Removes a file or a folder with everything in it (path in the buffer), for the page's
+/// Files view. 1 when something was removed.
+#[no_mangle]
+pub extern "C" fn linux_remove() -> u32 {
+    let b = unsafe { crate::take_buf() };
+    let Some(l) = crate::eng().s.lx.as_mut() else { return 0 };
+    let p = l.abs(&String::from_utf8_lossy(&b));
+    if p == "/" { return 0; }
+    let pre = format!("{}/", p);
+    let keys: Vec<String> = l.fs.keys().filter(|k| **k == p || k.starts_with(&pre)).cloned().collect();
+    if keys.is_empty() { return 0; }
+    for k in keys { l.fs.remove(&k); l.written.remove(&k); l.stubs.remove(&k); l.us_names.remove(&k); l.meta.remove(&k); }
+    l.dirty = true;
+    1
+}
+
 /// Mounts a folder of the device. Buffer: the mount point, then lines "D\tpath" or
 /// "F\tpath\tsize" (paths absolute). Files stay empty until a program opens them.
 #[no_mangle]
