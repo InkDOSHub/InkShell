@@ -245,9 +245,13 @@ impl Lx {
             self.fs.entry(cur.clone()).or_insert(Node::Dir);
         }
     }
-    pub fn put(&mut self, path: &str, data: Vec<u8>) {
+    /// A file with these bytes (one already there is replaced and its blocks go back to the swap).
+    pub fn put(&mut self, m: &mut crate::mmu::Mmu, path: &str, data: Vec<u8>) {
         if let Some((dir, _)) = path.rsplit_once('/') { self.mkdirs(dir); }
-        self.fs.insert(path.to_string(), Node::File(data.into()));
+        self.set_file(m, path.to_string(), data.into());
+    }
+    fn set_file(&mut self, m: &mut crate::mmu::Mmu, path: String, d: Data) {
+        if let Some(Node::File(mut old)) = self.fs.insert(path, Node::File(d)) { old.clear(&mut self.bc, m); }
     }
     fn is_dir(&self, p: &str) -> bool { p == "/" || matches!(self.fs.get(p), Some(Node::Dir)) }
     fn children(&self, dir: &str) -> Vec<String> {
@@ -256,63 +260,130 @@ impl Lx {
             .filter(|(k, _)| !k[pre.len()..].contains('/')).map(|(k, _)| k[pre.len()..].to_string()).collect()
     }
     /// Unpacks a tar archive (ustar, GNU long names, pax paths) at /.
-    pub fn untar(&mut self, t: &[u8]) {
-        let num = |b: &[u8]| -> usize {
-            if b[0] & 0x80 != 0 { return b[1..].iter().fold(0usize, |a, &c| (a << 8) | c as usize); }
-            let s = String::from_utf8_lossy(b); usize::from_str_radix(s.trim_matches(|c: char| c == '\0' || c == ' '), 8).unwrap_or(0)
-        };
-        let cstr = |b: &[u8]| String::from_utf8_lossy(&b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())]).to_string();
-        let (mut o, mut long, mut longlink) = (0usize, None::<String>, None::<String>);
-        while o + 512 <= t.len() {
-            let h = &t[o..o + 512];
-            if h.iter().all(|&c| c == 0) { break; }
-            let size = num(&h[124..136]);
-            let ty = h[156];
-            let data = &t[(o + 512).min(t.len())..(o + 512 + size).min(t.len())];
-            o += 512 + (size + 511) / 512 * 512;
-            let mut name = cstr(&h[0..100]);
-            if &h[257..262] == b"ustar" { let pre = cstr(&h[345..500]); if !pre.is_empty() { name = format!("{}/{}", pre, name); } }
-            let mut link = cstr(&h[157..257]);
-            match ty {
-                b'L' => { long = Some(cstr(data)); continue; }
-                b'K' => { longlink = Some(cstr(data)); continue; }
-                b'x' => {
-                    for rec in String::from_utf8_lossy(data).lines() {
-                        if let Some((_, kv)) = rec.split_once(' ') {
-                            if let Some(p) = kv.strip_prefix("path=") { long = Some(p.to_string()); }
-                            if let Some(p) = kv.strip_prefix("linkpath=") { longlink = Some(p.to_string()); }
-                        }
-                    }
-                    continue;
-                }
-                b'g' => continue,
-                _ => {}
-            }
-            if let Some(n) = long.take() { name = n; }
-            if let Some(n) = longlink.take() { link = n; }
-            let path = self.abs(&format!("/{}", name));
-            if path == "/" { continue; }
-            if matches!(ty, b'5' | b'0' | 0 | b'7' | b'1') {
-                let (m, u, g) = (num(&h[100..108]) as u32 & 0o7777, num(&h[108..116]) as u32, num(&h[116..124]) as u32);
-                let dflt = if ty == b'5' { 0o755 } else if path.starts_with("/bin/") || path.starts_with("/usr/bin/") || path.starts_with("/sbin/") || path.starts_with("/usr/sbin/") { 0o755 } else { 0o644 };
-                if m != 0 && (m != dflt || u != 0 || g != 0) { self.meta.insert(path.clone(), (m, u, g)); } else { self.meta.remove(&path); }
-            }
-            if let Some((dir, _)) = path.rsplit_once('/') { self.mkdirs(dir); }
-            match ty {
-                b'5' => { self.mkdirs(&path); }
-                b'2' => { self.fs.insert(path, Node::Link(link)); }
-                b'1' => { let src = self.abs(&format!("/{}", link)); if let Some(Node::File(d)) = self.fs.get(&src) { let d = d.mem().to_vec(); self.fs.insert(path, Node::File(d.into())); } } // unpacked files are in memory
-                b'0' | 0 | b'7' => { self.fs.insert(path, Node::File(data.to_vec().into())); }
-                _ => {}
-            }
-        }
-    }
+    pub fn untar(&mut self, m: &mut crate::mmu::Mmu, t: &[u8]) { Untar::default().feed(self, m, t); }
     fn new_fd(&mut self, f: Fd) -> i32 {
         let mut n = 0;
         while self.fds.contains_key(&n) { n += 1; }
         self.fds.insert(n, f);
         n
     }
+}
+
+/// Unpacking a tar (ustar, GNU long names, pax paths) at / as it comes, piece by piece
+/// (linux_load_chunk; Lx::untar gives it whole). A file bigger than lxdata::BIG goes straight to
+/// blocks as its bytes arrive, so a saved 1 GB file never sits whole in the engine's memory.
+#[derive(Default)]
+pub struct Untar {
+    h: Vec<u8>,
+    /// the entry whose bytes are coming: its header, bytes still to come, bytes so far (small
+    /// entries) or the big file they go to (path, offset)
+    body: Option<([u8; 512], u64, Vec<u8>, Option<(String, u64)>)>,
+    pad: u64,
+    long: Option<String>,
+    longlink: Option<String>,
+    end: bool,
+}
+
+fn tar_num(b: &[u8]) -> u64 {
+    if b[0] & 0x80 != 0 { return b[1..].iter().fold(0u64, |a, &c| (a << 8) | c as u64); }
+    let s = String::from_utf8_lossy(b); u64::from_str_radix(s.trim_matches(|c: char| c == '\0' || c == ' '), 8).unwrap_or(0)
+}
+fn tar_cstr(b: &[u8]) -> String { String::from_utf8_lossy(&b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())]).to_string() }
+
+impl Untar {
+    pub fn feed(&mut self, l: &mut Lx, m: &mut crate::mmu::Mmu, mut t: &[u8]) {
+        while !t.is_empty() && !self.end {
+            if let Some(b) = self.body.as_mut() {
+                let k = (b.1 as usize).min(t.len());
+                match b.3.as_mut() {
+                    Some((p, off)) => { if let Some(Node::File(d)) = l.fs.get_mut(p.as_str()) { d.write(&mut l.bc, m, *off, &t[..k]); } *off += k as u64; }
+                    None => b.2.extend_from_slice(&t[..k]),
+                }
+                b.1 -= k as u64; t = &t[k..];
+                if b.1 == 0 { let (h, _, d, big) = self.body.take().unwrap(); if big.is_none() { self.entry(l, m, &h, Some(d)); } }
+                continue;
+            }
+            if self.pad > 0 { let k = (self.pad as usize).min(t.len()); self.pad -= k as u64; t = &t[k..]; continue; }
+            let k = (512 - self.h.len()).min(t.len());
+            self.h.extend_from_slice(&t[..k]); t = &t[k..];
+            if self.h.len() < 512 { break; }
+            let mut h = [0u8; 512]; h.copy_from_slice(&self.h); self.h.clear();
+            if h.iter().all(|&c| c == 0) { self.end = true; break; }
+            let size = tar_num(&h[124..136]);
+            self.pad = (512 - size % 512) % 512;
+            let big = matches!(h[156], b'0' | 0 | b'7') && size > crate::lxdata::BIG;
+            if size == 0 { self.entry(l, m, &h, Some(Vec::new())); }
+            else if big { let p = self.entry(l, m, &h, None); self.body = Some((h, size, Vec::new(), Some((p.unwrap_or_default(), 0)))); }
+            else { self.body = Some((h, size, Vec::with_capacity(size.min(1 << 20) as usize), None)); }
+        }
+    }
+    /// One entry: its header and its bytes (None: a big file, made empty in blocks; its path).
+    fn entry(&mut self, l: &mut Lx, m: &mut crate::mmu::Mmu, h: &[u8; 512], data: Option<Vec<u8>>) -> Option<String> {
+        let ty = h[156];
+        let mut name = tar_cstr(&h[0..100]);
+        if &h[257..262] == b"ustar" { let pre = tar_cstr(&h[345..500]); if !pre.is_empty() { name = format!("{}/{}", pre, name); } }
+        let mut link = tar_cstr(&h[157..257]);
+        match ty {
+            b'L' => { self.long = Some(tar_cstr(data.as_deref().unwrap_or(&[]))); return None; }
+            b'K' => { self.longlink = Some(tar_cstr(data.as_deref().unwrap_or(&[]))); return None; }
+            b'x' => {
+                for rec in String::from_utf8_lossy(data.as_deref().unwrap_or(&[])).lines() {
+                    if let Some((_, kv)) = rec.split_once(' ') {
+                        if let Some(p) = kv.strip_prefix("path=") { self.long = Some(p.to_string()); }
+                        if let Some(p) = kv.strip_prefix("linkpath=") { self.longlink = Some(p.to_string()); }
+                    }
+                }
+                return None;
+            }
+            b'g' => return None,
+            _ => {}
+        }
+        if let Some(n) = self.long.take() { name = n; }
+        if let Some(n) = self.longlink.take() { link = n; }
+        let path = l.abs(&format!("/{}", name));
+        if path == "/" { return None; }
+        if matches!(ty, b'5' | b'0' | 0 | b'7' | b'1') {
+            let num = |b: &[u8]| tar_num(b) as u32;
+            let (md, u, g) = (num(&h[100..108]) & 0o7777, num(&h[108..116]), num(&h[116..124]));
+            let dflt = if ty == b'5' { 0o755 } else if path.starts_with("/bin/") || path.starts_with("/usr/bin/") || path.starts_with("/sbin/") || path.starts_with("/usr/sbin/") { 0o755 } else { 0o644 };
+            if md != 0 && (md != dflt || u != 0 || g != 0) { l.meta.insert(path.clone(), (md, u, g)); } else { l.meta.remove(&path); }
+        }
+        if let Some((dir, _)) = path.rsplit_once('/') { l.mkdirs(dir); }
+        match ty {
+            b'5' => { l.mkdirs(&path); }
+            b'2' => { if let Some(Node::File(mut old)) = l.fs.insert(path, Node::Link(link)) { old.clear(&mut l.bc, m); } }
+            b'1' => {
+                let src = l.abs(&format!("/{}", link));
+                let d = match l.fs.get(&src) { Some(Node::File(d)) => Some(d.dup(&mut l.bc, m)), _ => None };
+                if let Some(d) = d { l.set_file(m, path, d); }
+            }
+            b'0' | 0 | b'7' => match data {
+                Some(d) => l.set_file(m, path, d.into()),
+                None => { l.set_file(m, path.clone(), Data::new_blk()); return Some(path); }
+            },
+            _ => {}
+        }
+        None
+    }
+}
+
+/// The saved tree being loaded before Linux starts (linux_load_begin / linux_load_chunk); boot
+/// takes it as the root file system.
+static mut LOAD: Option<(Box<Lx>, Untar)> = None;
+
+/// Starts loading a saved tar in pieces (the page streams it from OPFS): linux_load_chunk takes
+/// each piece from buffer(); the next start() boots with it as the root file system.
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub extern "C" fn linux_load_begin() { unsafe { LOAD = Some((Box::default(), Untar::default())); } }
+
+/// The next piece of the saved tar (in buffer()).
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub extern "C" fn linux_load_chunk() {
+    let b = unsafe { crate::take_buf() };
+    let e = crate::eng();
+    if let Some((l, u)) = unsafe { LOAD.as_mut() } { u.feed(l, &mut e.mmu, &b); }
 }
 
 fn lx(e: &mut Engine) -> &mut Lx { e.s.lx.as_mut().unwrap() }
@@ -338,10 +409,18 @@ impl Engine {
         // a .tar is a root file system (e.g. Alpine's minirootfs): it is unpacked at /
         let mut files = files;
         files.sort_by_key(|(k, _)| (!k.starts_with("rootfs"), k.clone())); // the root file system first, overlays after
-        for (k, v) in files { if k.ends_with(".tar") { l.untar(&v); } else if k != name { l.put(&format!("/root/{}", k), v); } }
+        // a saved tree loaded in pieces (linux_load_chunk) comes first, as the root file system
+        #[allow(static_mut_refs)]
+        if let Some((pre, _)) = unsafe { LOAD.take() } {
+            let pre = *pre;
+            l.bc = pre.bc;
+            for (k, v) in pre.fs { if let Some(Node::File(mut old)) = l.fs.insert(k, v) { old.clear(&mut l.bc, &mut self.mmu); } }
+            l.meta.extend(pre.meta);
+        }
+        for (k, v) in files { if k.ends_with(".tar") { l.untar(&mut self.mmu, &v); } else if k != name { l.put(&mut self.mmu, &format!("/root/{}", k), v); } }
         l.fs.insert("/etc/resolv.conf".into(), Node::File(b"nameserver 10.0.2.3\n".to_vec().into()));
         let exe = format!("/bin/{}", name);
-        l.put(&exe, bytes.clone());
+        l.put(&mut self.mmu, &exe, bytes.clone());
         l.fds.insert(0, Fd::Tty); l.fds.insert(1, Fd::Tty); l.fds.insert(2, Fd::Tty);
         l.fs.insert("/proc/self/exe".into(), Node::Link(exe.clone()));
         if name == "busybox" || name.starts_with("busybox") {
@@ -1984,7 +2063,7 @@ pub extern "C" fn linux_put_file() {
     let home = match l.fs.get("/etc/inksoc/user") { Some(Node::File(d)) if !d.is_empty() => format!("/home/{}", String::from_utf8_lossy(d.mem()).trim()), _ => "/root".to_string() };
     let path = l.abs(&if name.starts_with('/') { name } else { format!("{}/{}", home, name) });
     let fetched = l.stubs.remove(&path).is_some();
-    l.put(&path, b.get(nl + 1..).unwrap_or(&[]).to_vec());
+    l.put(&mut e.mmu, &path, b.get(nl + 1..).unwrap_or(&[]).to_vec());
     if !fetched { l.dirty = true; }
 }
 
@@ -2009,14 +2088,15 @@ pub extern "C" fn linux_remove() -> u32 {
 #[no_mangle]
 pub extern "C" fn linux_mount() {
     let b = unsafe { crate::take_buf() };
-    let Some(l) = crate::eng().s.lx.as_mut() else { return };
+    let e = crate::eng();
+    let Some(l) = e.s.lx.as_mut() else { return };
     let t = String::from_utf8_lossy(&b).into_owned();
     let mut lines = t.split('\n');
     let root = lines.next().unwrap_or("").to_string();
     if !root.starts_with("/mnt/") || root.len() < 6 { return; }
     let pre = format!("{}/", root);
     let old: Vec<String> = l.fs.range(pre.clone()..).take_while(|(k, _)| k.starts_with(&pre)).map(|(k, _)| k.clone()).collect();
-    for k in old { l.fs.remove(&k); l.stubs.remove(&k); l.written.remove(&k); }
+    for k in old { if let Some(Node::File(mut d)) = l.fs.remove(&k) { d.clear(&mut l.bc, &mut e.mmu); } l.stubs.remove(&k); l.written.remove(&k); }
     l.mkdirs(&root);
     l.mounts.insert(root.clone());
     // owned by the terminal's user (the owner of their home folder), open to everyone
@@ -2027,7 +2107,7 @@ pub extern "C" fn linux_mount() {
         if f.len() < 2 || !f[1].starts_with(&pre) { continue; }
         match f[0] {
             "D" => { l.mkdirs(f[1]); l.meta.insert(f[1].to_string(), (0o777, own.0, own.1)); }
-            "F" => { l.put(f[1], Vec::new()); l.stubs.insert(f[1].to_string(), f.get(2).and_then(|n| n.parse().ok()).unwrap_or(0)); l.meta.insert(f[1].to_string(), (0o666, own.0, own.1)); }
+            "F" => { l.put(&mut e.mmu, f[1], Vec::new()); l.stubs.insert(f[1].to_string(), f.get(2).and_then(|n| n.parse().ok()).unwrap_or(0)); l.meta.insert(f[1].to_string(), (0o666, own.0, own.1)); }
             _ => {}
         }
     }

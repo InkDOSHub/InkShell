@@ -12,6 +12,9 @@ use std::collections::HashMap;
 extern "C" {
     fn host_swap_write(slot: u32, ptr: *const u8);
     fn host_swap_read(slot: u32, ptr: *mut u8);
+    /// `count` contiguous slots from `slot` in one call (file extents, lxdata.rs)
+    fn host_swap_writev(slot: u32, count: u32, ptr: *const u8);
+    fn host_swap_readv(slot: u32, count: u32, ptr: *mut u8);
 }
 
 // Host tests have no swap file: the swap slots live in memory for the test's own thread
@@ -31,6 +34,22 @@ unsafe fn host_swap_read(slot: u32, ptr: *mut u8) {
         let s = s.borrow();
         let page = s.get(&slot).expect("swap slot read before it was written");
         std::ptr::copy_nonoverlapping(page.as_ptr(), ptr, PAGE as usize);
+    });
+}
+
+#[cfg(test)]
+unsafe fn host_swap_writev(slot: u32, count: u32, ptr: *const u8) {
+    for i in 0..count { host_swap_write(slot + i, ptr.add((i as u64 * PAGE) as usize)); }
+}
+#[cfg(test)]
+unsafe fn host_swap_readv(slot: u32, count: u32, ptr: *mut u8) {
+    // blocks of an extent never written read as zeros (the page's OPFS file reads short there)
+    SWAP.with(|s| {
+        let s = s.borrow();
+        for i in 0..count {
+            let d = std::slice::from_raw_parts_mut(ptr.add((i as u64 * PAGE) as usize), PAGE as usize);
+            match s.get(&(slot + i)) { Some(p) => d.copy_from_slice(p), None => d.fill(0) }
+        }
     });
 }
 
@@ -182,6 +201,8 @@ pub struct MmuShared {
     next_asid: u32,
     saved: HashMap<u32, Saved>,
     free_slots: Vec<u32>,
+    /// runs of contiguous slots given back by the Linux files (lxdata.rs extents, all one size)
+    free_runs: Vec<u32>,
     /// committed ranges: sorted, disjoint, page-aligned; their total is `committed`.
     /// The write check reads these, not `regions`.
     commits: Vec<(u64, u64)>,
@@ -240,7 +261,7 @@ impl Mmu {
             committed: 0,
             target_bytes: target_mb << 20,
             faults: 0, swap_ins: 0, swap_outs: 0, swap_slots: 0, no_evict: false,
-            cur: 0, next_asid: 1, saved: HashMap::new(), free_slots: Vec::new(),
+            cur: 0, next_asid: 1, saved: HashMap::new(), free_slots: Vec::new(), free_runs: Vec::new(),
         }));
         let m = Mmu { tlb: vec![TlbEntry { tag: u64::MAX, add: 0, writable: false }; TLB_SIZE], core: 0, sh, lk: 0, lk_at: (0, 0, 0), lk_snap: None };
         TLBS[0].store(m.tlb.as_ptr() as u32, Release);
@@ -602,6 +623,12 @@ impl Mmu {
     pub fn slot_free(&mut self, s: u32) { self.sh.free_slots.push(s); }
     pub fn slot_read(&mut self, s: u32, b: &mut [u8]) { assert!(b.len() >= PAGE as usize); unsafe { host_swap_read(s, b.as_mut_ptr()); } }
     pub fn slot_write(&mut self, s: u32, b: &[u8]) { assert!(b.len() >= PAGE as usize); unsafe { host_swap_write(s, b.as_ptr()); } }
+    /// `n` contiguous slots (an extent of a Linux file); always the same `n`.
+    pub fn run_new(&mut self, n: u32) -> u32 { self.sh.free_runs.pop().unwrap_or_else(|| { let s = self.sh.swap_slots; self.sh.swap_slots += n; s }) }
+    pub fn run_free(&mut self, s: u32, _n: u32) { self.sh.free_runs.push(s); }
+    /// The slots from `s` (as many as `b` holds pages) in one host call.
+    pub fn slot_readv(&mut self, s: u32, b: &mut [u8]) { let n = b.len() / PAGE as usize; assert!(n > 0 && b.len() % PAGE as usize == 0); unsafe { host_swap_readv(s, n as u32, b.as_mut_ptr()); } }
+    pub fn slot_writev(&mut self, s: u32, b: &[u8]) { let n = b.len() / PAGE as usize; assert!(n > 0 && b.len() % PAGE as usize == 0); unsafe { host_swap_writev(s, n as u32, b.as_ptr()); } }
     /// A full copy of the current address space (fork). Pages go to free frames while there are
     /// some, then straight to swap; pages already in swap are copied slot to slot.
     pub fn clone_space(&mut self) -> Option<Space> {

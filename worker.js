@@ -16,9 +16,10 @@ const enc = new TextEncoder(), dec = new TextDecoder();
 const put = (b) => { const p = x.buffer(b.length); new Uint8Array(mem.buffer, p, b.length).set(b); };
 
 async function opfs() { try { return await navigator.storage.getDirectory(); } catch (e) { return null; } }
+/* the saved files (a File: an engine with linux_load_chunk reads it in pieces, never whole) */
 async function loadSaved() {
   const root = await opfs(); if (!root) return null;
-  try { const f = await (await root.getFileHandle(SAVE)).getFile(); return f.size ? await f.arrayBuffer() : null; } catch (e) { return null; }
+  try { const f = await (await root.getFileHandle(SAVE)).getFile(); return f.size ? f : null; } catch (e) { return null; }
 }
 let saving = false;
 async function save() {
@@ -121,6 +122,16 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
     host_epoch_ms: () => Date.now(),
     host_swap_write: (slot, p) => { if (swap) swap.write(page(p), { at: slot * 4096 }); else ram.set(slot, page(p).slice()); },
     host_swap_read: (slot, p) => { if (swap) swap.read(page(p), { at: slot * 4096 }); else page(p).set(ram.get(slot) || new Uint8Array(4096)); },
+    // n contiguous slots in one call (64 KB extents of big Linux files); never-written ones read as zeros
+    host_swap_writev: (slot, n, p) => {
+      const b = new Uint8Array(mem.buffer, p, n * 4096);
+      if (swap) swap.write(b, { at: slot * 4096 }); else for (let i = 0; i < n; i++) ram.set(slot + i, b.slice(i * 4096, (i + 1) * 4096));
+    },
+    host_swap_readv: (slot, n, p) => {
+      const b = new Uint8Array(mem.buffer, p, n * 4096);
+      if (swap) { const k = swap.read(b, { at: slot * 4096 }); if (k < b.length) b.fill(0, k); }
+      else for (let i = 0; i < n; i++) { const r = ram.get(slot + i); if (r) b.set(r, i * 4096); else b.fill(0, i * 4096, (i + 1) * 4096); }
+    },
     wine_call: () => 0,
     host_random: (p, n) => { const b = new Uint8Array(n); crypto.getRandomValues(b); new Uint8Array(mem.buffer, p, n).set(b); },
     host_audio: () => {}, host_gl: () => 0, host_drive_read: () => 0, host_drive_write: () => 0,
@@ -136,10 +147,10 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   };
   const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(u + ': ' + r.status); return r; });
   const [wasm, busybox, overlay, saved] = await Promise.all([
-    get('engine.wasm?v=22').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
+    get('engine.wasm?v=23').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
     get('overlay.tar?v=8').then((r) => r.arrayBuffer()), loadSaved()]);
-  let rootfs = saved;
-  if (!rootfs) {
+  let rootfs = null;
+  if (!saved) {
     out('\x1b[2mDownloading Alpine Linux 3.21 (3.5 MB)…\x1b[0m\r\n');
     const r = await get('alpine-rootfs.tar.gz?v=1');
     rootfs = await new Response(r.body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
@@ -151,12 +162,17 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
     b.set(nm); b.set(d, nm.length + 1); put(b); x.add_file();
   };
   x.init(poolMb || 256, targetMb || 8192);
-  addFile('busybox', busybox); addFile('rootfs.tar', rootfs); addFile('zoverlay.tar', overlay);
+  addFile('busybox', busybox);
+  if (saved && x.linux_load_chunk) { // the saved tar in 4 MB pieces: big files go straight to swap blocks
+    x.linux_load_begin();
+    for (let a = 0; a < saved.size; a += 4 << 20) { put(new Uint8Array(await saved.slice(a, a + (4 << 20)).arrayBuffer())); x.linux_load_chunk(); }
+  } else addFile('rootfs.tar', rootfs || await saved.arrayBuffer());
+  addFile('zoverlay.tar', overlay);
   put(enc.encode('busybox\0sh /etc/inksoc/start'));
   if (x.start() !== 0) { postMessage({ type: 'done', error: dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()).slice()) }); return; }
   x.linux_winsize(rows || 30, cols || 100);
   x.linux_dirty(); // unpacking is not a change; the first save happens after the first real one
-  info(saved ? saved.byteLength : 0);
+  info(saved ? saved.size : 0);
   let line = '', lastCr = false;
   const send = (t) => { const b = enc.encode(t); put(b); x.linux_stdin(b.length); };
   lx = {
