@@ -21,8 +21,7 @@ jobs:
       - name: x86 test programs (Alpine gcc, static)
         run: |
           docker run --rm -v "$PWD":/w -w /w alpine:3.21 sh -c '
-            apk add -q gcc musl-dev && gcc -O2 -static -pthread -o tests/x86calls tests/src/x86calls.c &&
-            apk add -q binutils && nm -n tests/x86calls | grep -i " t " | head -60 && objdump -d --no-show-raw-insn --start-address=0x401000 --stop-address=0x402400 tests/x86calls'
+            apk add -q gcc musl-dev && gcc -O2 -static -pthread -o tests/x86calls tests/src/x86calls.c'
       - name: python3 from the WebAssembly catalog (URL and sha256 from the catalog)
         run: |
           e=$(awk -F '\t' '$1 == "python3"' overlay/etc/inksoc/wasm-catalog)
@@ -32,21 +31,10 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cd engine-src && cargo build --release --target wasm32-unknown-unknown
-      - name: (debug) main's engine.wasm on the same tests
-        continue-on-error: true
-        run: |
-          git fetch -q --depth=1 origin main && git show FETCH_HEAD:engine.wasm > $RUNNER_TEMP/main.wasm
-          timeout 600 node tests/linux-test.mjs $RUNNER_TEMP/main.wasm 2>&1 | grep -A12 -E "x86|FAIL|passed"
       - name: Test the fresh build
         run: node tests/linux-test.mjs engine-src/target/wasm32-unknown-unknown/release/inksoc.wasm
       - name: Test the published engine.wasm
         run: node tests/linux-test.mjs engine.wasm
-      - name: x86 test programs (kept when a test fails, to read the code at a crash address)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: x86-test-programs
-          path: tests/x86*
   catalog:
     # WebAssembly catalog (apk add): every entry downloads with the listed sha256 and size
     runs-on: ubuntu-latest

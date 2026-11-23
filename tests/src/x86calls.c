@@ -103,7 +103,7 @@ int main(void) {
   int e = 0; for (unsigned n = 0; n < 3000; n++) e += is_even(n) != !(n & 1) || is_odd(n) != (int)(n & 1);
   check("even/odd", (uint64_t)e, 0);
   uint64_t F[40], M[40]; F[0] = 1; M[0] = 0;
-  for (int n = 1; n < 40; n++) { F[n] = (uint64_t)n - M[F[n - 1]]; M[n] = (uint64_t)n - F[M[n - 1]]; }
+  for (int n = 1; n < 40; n++) { M[n] = (uint64_t)n - F[M[n - 1]]; F[n] = (uint64_t)n - M[F[n - 1]]; } // M[n] first: F[n-1] can be n
   e = 0; for (int n = 0; n < 40; n++) e += hof(n) != F[n] || hom(n) != M[n];
   check("hofstadter", (uint64_t)e, 0);
 
