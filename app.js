@@ -53,7 +53,7 @@ $('calib').onclick = async () => {
   $('calib').disabled = true;
   await stop(true);
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=25');
+  const c = new Worker('worker.js?v=26');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -78,7 +78,7 @@ showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
   stop(false).then(() => {
-    const r = new Worker('worker.js?v=25');
+    const r = new Worker('worker.js?v=26');
     r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
     r.postMessage({ type: 'reset' });
   });
@@ -113,7 +113,7 @@ if (navigator.serviceWorker) {
 }
 function wasiEnd(pid) { const b = wasiWorkers.get(pid); if (b) { b.terminate(); wasiWorkers.delete(pid); } }
 function wasiStart(m) {
-  const b = new Worker('wasi-worker.js?v=2', { type: 'module' });
+  const b = new Worker('wasi-worker.js?v=3', { type: 'module' });
   wasiWorkers.set(m.pid, b);
   b.onmessage = (ev) => { if (ev.data.type === 'done') wasiEnd(m.pid); };
   b.onerror = () => wasiEnd(m.pid);
@@ -126,13 +126,14 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=25');
+  w = new Worker('worker.js?v=26');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;
     if (m.type === 'out') term.write(m.text);
     else if (m.type === 'file') dlGot(m);
     else if (m.type === 'ls') dlShow(m);
+    else if (m.type === 'store') stShow(m);
     else if (m.type === 'mfetch') mountFetch(m.paths);
     else if (m.type === 'msync') mountSync(m.root, m.ops);
     else if (m.type === 'saved') term.write('\r\n\x1b[2m[files saved]\x1b[0m\r\n');
@@ -326,6 +327,44 @@ $('down').onclick = () => {
   dlReq(dlPath);
 };
 $('dl-x').onclick = () => { $('dl').hidden = true; fit(); term.focus(); };
+
+/* ---- Store: the WebAssembly catalog (☰ Store) ----
+   Install / Remove run "apk add/del NAME" in Linux through the worker (a root helper there), not in
+   your shell; this page shows the progress and the result. */
+const stReq = () => { if (w) w.postMessage({ type: 'store' }); };
+function stShow(m) {
+  if ($('st').hidden) return;
+  const list = $('st-list'); list.textContent = '';
+  if (!m.items) { list.textContent = 'Linux is starting…'; setTimeout(stReq, 1000); return; }
+  for (const it of m.items) {
+    const row = document.createElement('div'); row.className = 'pkg'; row.dataset.name = it.name;
+    const d = document.createElement('div'); d.className = 'd';
+    const b = document.createElement('b'); b.textContent = it.name;
+    const s = document.createElement('div'); s.className = 'nota';
+    s.textContent = [it.desc, human(it.size), it.license, it.installed ? 'installed' : ''].filter(Boolean).join(' · ');
+    d.append(b, s);
+    const busy = m.busy.includes(it.name);
+    const btn = document.createElement('button'); btn.type = 'button';
+    btn.textContent = busy ? 'Working…' : it.installed ? 'Remove' : 'Install';
+    if (it.installed) btn.className = 'perigo';
+    btn.disabled = busy;
+    btn.onclick = () => { btn.disabled = true; btn.textContent = 'Working…'; if (w) w.postMessage({ type: 'store-do', op: it.installed ? 'del' : 'add', name: it.name }); };
+    row.append(d, btn); list.append(row);
+  }
+  const j = m.job, k = m.done;
+  $('st-msg').textContent = j ? (j.op === 'add' ? 'Installing ' + j.name + '… (downloading it can take a minute)' : 'Removing ' + j.name + '…')
+    : m.busy.length ? (m.ready ? '' : 'Waiting for Linux to be ready… (if it stays, restart Linux)')
+    : k ? (k.rc ? (k.op === 'add' ? 'Could not install ' : 'Could not remove ') + k.name + '.' : k.op === 'add' ? k.name + ' installed: type ' + k.name + ' in the terminal.' : k.name + ' removed.') : '';
+  $('st-log').textContent = m.log || '';
+}
+$('store').onclick = () => {
+  if (!w) $('start').click();
+  $('info').classList.remove('show');
+  $('st').hidden = false;
+  $('st-list').textContent = 'Loading…'; $('st-msg').textContent = ''; $('st-log').textContent = '';
+  stReq();
+};
+$('st-x').onclick = () => { $('st').hidden = true; fit(); term.focus(); };
 
 /* ---- device folders at /mnt/NAME ----
    showDirectoryPicker (Chrome, Edge, Brave on computers; XeOS on iPad adds its own) gives a folder

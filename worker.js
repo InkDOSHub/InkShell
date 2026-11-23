@@ -100,7 +100,7 @@ function info(bytes) {
 async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   if (network in NETS) net = network;
   wasiSw = !!sw; wasiOpen(Math.random().toString(36).slice(2));
-  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=2'); } catch (e) { wasiInline = null; } }
+  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=3'); } catch (e) { wasiInline = null; } }
   const swap = await openSwap(), ram = new Map();
   const page = (p) => new Uint8Array(mem.buffer, p, 4096);
   const env = {
@@ -125,7 +125,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(u + ': ' + r.status); return r; });
   const [wasm, busybox, overlay, saved] = await Promise.all([
     get('engine.wasm?v=21').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
-    get('overlay.tar?v=7').then((r) => r.arrayBuffer()), loadSaved()]);
+    get('overlay.tar?v=8').then((r) => r.arrayBuffer()), loadSaved()]);
   let rootfs = saved;
   if (!rootfs) {
     out('\x1b[2mDownloading Alpine Linux 3.21 (3.5 MB)…\x1b[0m\r\n');
@@ -153,9 +153,11 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
     get(path) { put(enc.encode(path)); const n = x.linux_get_file(); return n < 0 ? null : new Uint8Array(mem.buffer, x.out_ptr(), n).slice(); },
     text(n) { return n ? dec.decode(new Uint8Array(mem.buffer, x.out_ptr(), n)) : ''; },
   };
+  storeArm();
   while (pendingMounts.length) mount(pendingMounts.shift());
   while (pendingPuts.length) { const f = pendingPuts.shift(); lx.put(f.name, f.data); }
   if (pendingLs !== null) { postMessage({ type: 'ls', ...list(pendingLs) }); pendingLs = null; }
+  if (pendingStore) { pendingStore = false; storeSend(); }
   const feed = () => {
     while (keys.length) {
       const s = keys.shift();
@@ -183,7 +185,8 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
     st = x.run(2000000);
     pumpNet();
     if (x.wasi_next) wasiPump();
-    if (mounts.size) { const n = x.linux_mount_fetch(); if (n) postMessage({ type: 'mfetch', paths: lx.text(n).split('\n') }); }
+    { const n = x.linux_mount_fetch(); if (n) { const paths = lx.text(n).split('\n').filter((p) => p !== SREQ || !(storeIdle = true)); if (paths.length) postMessage({ type: 'mfetch', paths }); } }
+    storePump();
     if (st === 1 || st === 2) break;
     if (st === 3) {
       const t = performance.now();
@@ -263,6 +266,8 @@ onmessage = async (ev) => {
     return;
   }
   if (d.type === 'ls') { if (lx) postMessage({ type: 'ls', ...list(d.path) }); else pendingLs = d.path || ''; return; }
+  if (d.type === 'store') { if (lx) storeSend(); else pendingStore = true; return; }
+  if (d.type === 'store-do') { if ((d.op === 'add' || d.op === 'del') && /^[A-Za-z0-9._+][A-Za-z0-9._+-]*$/.test(d.name || '')) storeQ.push({ op: d.op, name: d.name }); if (lx) storeSend(); return; }
   if (d.type === 'net') { net = d.network; wsUrl = null; if (ws) { try { ws.close(); } catch (e) {} ws = null; } return; }
   if (d.type === 'save') { if (lx) { if (mounts.size) syncMounts(); await save(); } postMessage({ type: 'saved' }); return; }
   if (d.type === 'reset') { const root = await opfs(); if (root) { try { await root.removeEntry(SAVE); } catch (e) {} } postMessage({ type: 'reset' }); return; }
@@ -270,6 +275,56 @@ onmessage = async (ev) => {
   if (d.type === 'wasi-sw') { wasiSw = !!d.on; return; }
   if (d.type === 'start') { try { await run(d); } catch (e) { postMessage({ type: 'done', error: e.message }); } }
 };
+
+/* ---- Store (the page's ☰ Store): packages of the WebAssembly catalog, installed or removed with
+   "apk add/del NAME" in Linux but never typed into your shell. A root helper started by
+   /etc/inksoc/start (/usr/local/sbin/inksoc-store) reads SREQ, a file of a mount made here that stays
+   empty and keeps the reader waiting (a stub) until there is a request; the kernel lists the wait
+   (linux_mount_fetch), so storeIdle says the helper is ready. The answer comes back in /run/inksoc;
+   then the file is made to wait again (storeArm). */
+const STORE = '/mnt/.inksoc', SREQ = STORE + '/req';
+let storeIdle = false, storeJob = null, storeLog = '', storeDone = null, storeT = 0, pendingStore = false;
+const storeQ = [];
+function storeArm() { put(enc.encode(STORE + '\nF\t' + SREQ + '\t0')); x.linux_mount(); }
+function storeText(p) { const b = lx.get(p); return b ? dec.decode(b) : ''; }
+function storeList() {
+  const seen = new Set(), items = [];
+  for (const f of ['/etc/inksoc/wasm-catalog.local', '/etc/inksoc/wasm-catalog']) {
+    for (const ln of storeText(f).split('\n')) {
+      const c = ln.split('\t');
+      if (ln[0] === '#' || c.length < 6 || seen.has(c[0])) continue;
+      seen.add(c[0]);
+      items.push({ name: c[0], size: +c[3] || 0, license: c[4], desc: c[6] || '', installed: !!lx.get('/var/lib/inksoc-wasm/' + c[0]) });
+    }
+  }
+  return items;
+}
+function storeSend() {
+  const busy = storeQ.map((j) => j.name); if (storeJob) busy.unshift(storeJob.name);
+  postMessage({ type: 'store', items: storeList(), job: storeJob && { op: storeJob.op, name: storeJob.name }, busy, log: storeLog, done: storeDone, ready: storeIdle });
+}
+function storePump() {
+  if (storeJob) {
+    const t = performance.now();
+    if (t - storeT < 500) return;
+    storeT = t;
+    const rc = storeText('/run/inksoc/store.rc').trim().split(' ');
+    const log = storeText('/run/inksoc/store.log');
+    if (rc[0] === storeJob.id) {
+      storeLog = log; storeDone = { op: storeJob.op, name: storeJob.name, rc: +rc[1] };
+      storeJob = null; storeArm(); storeSend();
+    } else if (log !== storeLog) { storeLog = log; storeSend(); }
+    return;
+  }
+  if (storeQ.length && storeIdle) {
+    storeJob = storeQ.shift();
+    storeJob.id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    storeIdle = false; storeLog = ''; storeDone = null; storeT = performance.now();
+    for (const f of ['/run/inksoc/store.rc', '/run/inksoc/store.log']) { put(enc.encode(f)); x.linux_remove(); }
+    lx.put(SREQ, enc.encode(storeJob.id + ' ' + storeJob.op + ' ' + storeJob.name));
+    storeSend();
+  }
+}
 
 /* Memory calibration, the same as InkSoC's: grow a wasm memory 128 MB at a time, filled with
    random data (iOS compresses empty pages). The page saves each step; if the tab reloads,
@@ -365,7 +420,7 @@ function list(path) {
   if (!all) all = scan(path === '/' ? '' : path);
   const items = [];
   for (const [p, v] of all) {
-    if (!p.startsWith(pre)) continue;
+    if (!p.startsWith(pre) || p === STORE || p.startsWith(STORE + '/')) continue;
     const name = p.slice(pre.length);
     if (!name || name.includes('/')) continue;
     items.push(v === 'D' ? { name, dir: true } : { name, size: v.size });

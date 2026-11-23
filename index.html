@@ -83,6 +83,14 @@
     #dl .grade{grid-template-columns:repeat(auto-fill,minmax(86px,1fr))}
   }
   /* inside InkOS (?inkos=1) the window is the terminal: only the menu stays in the bar */
+  /* Store: the WebAssembly catalog, one row per package */
+  #st-list{display:flex;flex-direction:column;gap:8px}
+  #st .pkg{display:flex;align-items:center;gap:12px;border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--card)}
+  #st .pkg .d{flex:1;min-width:0}
+  #st .pkg button{flex:none;font:inherit;font-size:14px;background:#0a64d8;border:1px solid #0a64d8;border-radius:8px;color:#fff;padding:6px 14px;cursor:pointer}
+  #st .pkg button.perigo{background:var(--btn);border-color:var(--border);color:var(--perigo)}
+  #st-log{margin:0;max-height:200px;overflow:auto;font:12px ui-monospace,Menlo,monospace;white-space:pre-wrap;color:var(--muted)}
+  #st-log:empty{display:none}
   body.embed .ink-esq,body.embed .ink-meio{visibility:hidden}
   body.embed .ink-bar{min-height:34px;padding:2px 8px}
 </style>
@@ -93,12 +101,13 @@
   <span class="ink-title"><img src="/assets/icones-inkdos/terminal.svg?v=3" alt="" style="width:22px;height:22px;vertical-align:-5px;margin-right:6px">Alpine Linux</span>
   <button class="ink-btn" id="up" type="button">Send a file to your home folder</button>
   <button class="ink-btn" id="down" type="button">Files</button>
+  <button class="ink-btn" id="store" type="button">Store</button>
   <button class="ink-btn" id="mount" type="button">Mount a folder of this device</button>
   <button class="ink-btn" id="save" type="button">Save files now</button>
   <button class="ink-btn" id="settings" type="button">Settings</button>
   <button class="ink-btn" id="i" type="button">About</button>
 </header>
-<div id="info">Alpine Linux 3.21 (x86-64) on InkSoC, our own engine: it plays the part of the Linux kernel, like WSL 1, and runs Alpine's real programs. The first start creates your user and password. Your files are kept in this browser between visits. Type <code>help</code> for the guide. Network: <b>wisp</b> = a public wisp server (the one used by v86 Linux terminals), or none. Memory follows InkSoC: programs see 8 GB, the real RAM in use is half of this device's limit (Calibrate memory), and the rest goes to a swap file in this browser. The ☰ menu sends files to your home folder; ☰ Files shows them and saves them to this device. <b>Mount a folder</b> shows a folder of this device (iCloud Drive, On My iPad, a disk) at <code>/mnt/NAME</code>: programs read its files when they open them, and what they change or create goes back into the real folder within two seconds (where the browser lets a page write to folders; otherwise the folder is read-only and ☰ Files brings results out). BusyBox is GPL-2.0 (busybox.net); Alpine's packages keep their own licenses (alpinelinux.org).</div>
+<div id="info">Alpine Linux 3.21 (x86-64) on InkSoC, our own engine: it plays the part of the Linux kernel, like WSL 1, and runs Alpine's real programs. The first start creates your user and password. Your files are kept in this browser between visits. Type <code>help</code> for the guide. Network: <b>wisp</b> = a public wisp server (the one used by v86 Linux terminals), or none. Memory follows InkSoC: programs see 8 GB, the real RAM in use is half of this device's limit (Calibrate memory), and the rest goes to a swap file in this browser. The ☰ menu sends files to your home folder; ☰ Files shows them and saves them to this device; ☰ Store installs WebAssembly programs (python3, ruby). <b>Mount a folder</b> shows a folder of this device (iCloud Drive, On My iPad, a disk) at <code>/mnt/NAME</code>: programs read its files when they open them, and what they change or create goes back into the real folder within two seconds (where the browser lets a page write to folders; otherwise the folder is read-only and ☰ Files brings results out). BusyBox is GPL-2.0 (busybox.net); Alpine's packages keep their own licenses (alpinelinux.org).</div>
 <div id="box"><div id="term"></div>
 </div>
 <div id="keys">
@@ -152,10 +161,19 @@
   </div>
 </div>
 <div id="dl-menu" hidden></div>
+<div id="st" class="pg" hidden>
+<div class="barra"><b>Store</b><button class="fechar" id="st-x" type="button" title="Back to the terminal" aria-label="Back to the terminal"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 2l8 8M10 2l-8 8"/></svg></button></div>
+<div class="rolar"><div class="card">
+  <div class="nota">WebAssembly builds: they run directly in the browser, much faster than x86 programs. Install is the same as <code>apk add NAME</code> in the terminal (your own entries go in <code>/etc/inksoc/wasm-catalog.local</code>).</div>
+  <div id="st-list"></div>
+  <div class="nota" id="st-msg"></div>
+  <pre id="st-log"></pre>
+</div></div>
+</div>
 </div>
 <input type="file" id="file" multiple hidden>
 <input type="file" id="mountdir" webkitdirectory multiple hidden>
 <script src="vendor/xterm.js?v=1"></script>
-<script src="app.js?v=29"></script>
+<script src="app.js?v=30"></script>
 </body>
 </html>

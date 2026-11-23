@@ -5,8 +5,12 @@
 // Calls are synchronous. In node (tests) the module runs in the engine's thread (runWasi); on the
 // page it runs in its own Worker (wasi-worker.js) and each call is a synchronous request that the
 // service worker (sw.js) passes to the engine's worker, which keeps running meanwhile.
-// Limits: wasi-libc has no working directory, so relative paths resolve from "/" (a program argument
-// naming a file in the shell's folder, as in "python3 script.py", is passed as its full path); no sockets.
+// Folders: wasi-libc keeps its own working directory, always "/" at start (preview1 has no initial one),
+// so "x.txt" and "/x.txt" both reach the "/" preopen as "x.txt". To make relative paths follow the
+// shell's folder, "/" is preopened as that folder and each top-level folder ("/tmp", "/usr"...) gets its
+// own preopen: wasi-libc picks the longest matching preopen, so absolute paths still go to the real place.
+// Limits: "/" itself (os.listdir("/")) shows the shell's folder, a relative path that starts with a
+// top-level name ("tmp/x" in /home/u) goes to /tmp/x, os.getcwd() says "/"; no sockets.
 const E = { 1: 63, 2: 44, 4: 27, 5: 29, 9: 8, 11: 6, 12: 48, 13: 2, 17: 20, 18: 75, 20: 54, 21: 31, 22: 28, 24: 33, 28: 51, 29: 70, 30: 69, 32: 64, 36: 37, 38: 52, 39: 55, 40: 32, 95: 58 };
 const errno = (v) => E[-v] ?? 29;
 const ftype = (mode) => ({ 0o040000: 3, 0o100000: 4, 0o020000: 2, 0o060000: 1, 0o120000: 7, 0o140000: 6 })[mode & 0o170000] ?? 0;
@@ -51,14 +55,34 @@ export function runWasi(x, pid, opts = {}) {
 export function runModule({ bytes, args, envs, base: BASE, size: SIZE, sys }) {
   const dec = new TextDecoder(), enc = new TextEncoder();
   const cstr = (s) => { const b = enc.encode(s), o = new Uint8Array(b.length + 1); o.set(b); return o; };
-  // WASI fd -> Linux fd; 3 = "/" (preopened)
+  // WASI fd -> Linux fd; 3... = the preopens (see "Folders" above)
   const fds = new Map([[0, 0], [1, 1], [2, 2]]);
   const pre = new Map();
-  try { const { r } = sys(257, [-100, BASE, 0x10000 | 0x80000], cstr('/')); if (r >= 0) { fds.set(3, r); pre.set(3, '/'); } } catch { return -1; } // ended before it started
-  // a program argument that names a file relative to the shell's folder becomes its full path
+  let nextFd = 3;
+  const opendir = (p) => sys(257, [-100, BASE, 0x10000 | 0x80000], cstr(p)).r;
+  const preopen = (lfd, name) => { if (lfd >= 0) { fds.set(nextFd, lfd); pre.set(nextFd++, name); } };
   try {
     const { r, out } = sys(79, [BASE, 4096], null, 4096);
     const cwd = r > 1 ? dec.decode(out.subarray(0, r - 1)) : '/';
+    if (cwd !== '/') {
+      const root = opendir('/');
+      while (root >= 0) {
+        const { r: n, out: b } = sys(217, [root, BASE, 65536], null, 65536);
+        if (n <= 0) break;
+        const s = new DataView(b.buffer);
+        for (let o = 0; o < n;) {
+          const rl = s.getUint16(o + 16, true), ty = s.getUint8(o + 18);
+          let e = o + 19; while (e < o + rl && b[e]) e++;
+          const name = dec.decode(b.subarray(o + 19, e));
+          if ((ty === 4 || ty === 10) && name !== '.' && name !== '..') preopen(opendir('/' + name), '/' + name);
+          o += rl;
+        }
+      }
+      if (root >= 0) sys(3, [root]);
+    }
+    const c = opendir(cwd);
+    preopen(c >= 0 ? c : opendir('/'), '/');
+    // a program argument that names a file in the shell's folder also becomes its full path
     if (cwd !== '/') {
       args = args.slice();
       for (let i = 1; i < args.length; i++) {
@@ -68,8 +92,7 @@ export function runModule({ bytes, args, envs, base: BASE, size: SIZE, sys }) {
         if (sr === 0 && (new DataView(so.buffer, so.byteOffset + 4096).getUint32(24, true) & 0o170000) === 0o100000) args[i] = cwd.replace(/\/+$/, '') + '/' + a;
       }
     }
-  } catch { return -1; }
-  let nextFd = 4;
+  } catch { return -1; } // ended before it started
   const dirs = new Map(); // fd -> entries read by fd_readdir
   let inst, mem;
   const dv = () => new DataView(mem.buffer);

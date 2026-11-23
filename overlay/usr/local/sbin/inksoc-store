@@ -1,0 +1,32 @@
+#!/bin/sh
+# Helper of the page's Store (☰ Store): runs "apk add NAME" / "apk del NAME" for packages of the
+# WebAssembly catalog when the page asks, without typing into your shell. /etc/inksoc/start runs it
+# as root. The page asks through /mnt/.inksoc/req, a file of a mount the page makes: reading it waits
+# (no CPU) until the page has a request "ID add|del NAME". The answer goes to /run/inksoc/store.log
+# and store.rc ("ID EXITCODE"); then the page makes the file wait again. Only catalog names are run.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+M=/mnt/.inksoc/req R=/run/inksoc
+[ -e "$M" ] || exit 0 # no page (node tests): nothing to do
+mkdir -p "$R" || exit 1
+set -f
+miss=0
+while :; do
+  if [ ! -e "$M" ]; then # the page has not made the file wait again yet
+    miss=$((miss + 1)); [ "$miss" -gt 120 ] && exit 0
+    sleep 1; continue
+  fi
+  miss=0
+  r=$(head -c 200 "$M" 2>/dev/null); rm -f "$M"
+  set -- $r
+  id=$1 op=$2 name=$3
+  case "$id" in ''|*[!0-9a-z]*) continue ;; esac
+  case "$name" in ''|-*|*[!A-Za-z0-9._+-]*) continue ;; esac
+  ok=
+  case "$op" in
+    add) for c in /etc/inksoc/wasm-catalog.local /etc/inksoc/wasm-catalog; do [ -f "$c" ] && cat "$c"; done | awk -F '\t' -v n="$name" '!/^#/ && $1 == n { f = 1 } END { exit !f }' && ok=1 ;;
+    del) [ -f "/var/lib/inksoc-wasm/$name" ] && ok=1 ;;
+  esac
+  if [ -n "$ok" ]; then apk "$op" "$name" > "$R/store.log" 2>&1 < /dev/null; rc=$?
+  else echo "$name: not a WebAssembly catalog package here" > "$R/store.log"; rc=1; fi
+  echo "$id $rc" > "$R/store.rc.new" && mv -f "$R/store.rc.new" "$R/store.rc"
+done

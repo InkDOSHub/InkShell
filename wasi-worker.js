@@ -1,7 +1,7 @@
 /* One WebAssembly (WASI) program of the terminal, in its own Worker (started by app.js when the engine
    lists it). Each WASI call is a synchronous request through the service worker (sw.js) to the engine's
    worker, which makes it a Linux call of the program's process: the engine keeps running meanwhile. */
-import { runModule, parseInfo, pack, unpack, Exit } from './wasi.js?v=2';
+import { runModule, parseInfo, pack, unpack, Exit } from './wasi.js?v=3';
 
 onmessage = (ev) => {
   const { pid, sid, info, bytes, base, size } = ev.data;
