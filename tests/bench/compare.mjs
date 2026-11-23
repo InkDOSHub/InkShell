@@ -13,10 +13,13 @@ let md = `| teste | antes | agora | agora/antes | x nativo antes | x nativo agor
 for (const k of keys) {
   const a = prev[label]?.ms?.[k], b = cur[label]?.ms?.[k];
   const d = a && b ? b / a : null;
-  const mark = d == null ? '—' : `${d.toFixed(2)}x${d > 1.15 ? ' 🔺' : d < 0.87 ? ' 🟢' : ''}`;
   const ra = ratio(prev, k), rb = ratio(cur, k);
+  // the mark follows "x native" (same runner, same moment) when both runs have it: runners differ
+  // up to ~1.5x between runs, which moves raw times but not the ratio to the native run next to them
+  const q = ra && rb ? rb / ra : d;
+  const mark = d == null ? '—' : `${d.toFixed(2)}x${q > 1.15 ? ' 🔺' : q < 0.87 ? ' 🟢' : ''}`;
   md += `| ${k} | ${fmt(a)} | ${fmt(b)} | ${mark} | ${ra ? ra.toFixed(1) + 'x' : '—'} | ${rb ? rb.toFixed(1) + 'x' : '—'} |\n`;
 }
 const pk = (r) => Object.entries(r?.[label]?.peak || {}).map(([k, v]) => `${k} ${v.toFixed(0)} MB`).join(', ') || '—';
-md += `\n**Memória pico ${label}** — antes: ${pk(prev)}; agora: ${pk(cur)}\n\n🔺 = >15% mais lento, 🟢 = >13% mais rápido (ruído do runner ~10%).\n`;
+md += `\n**Memória pico ${label}** — antes: ${pk(prev)}; agora: ${pk(cur)}\n\n🔺/🟢 = \"x nativo\" piorou >15% / melhorou >13% (o runner muda de máquina; o tempo bruto sozinho engana).\n`;
 console.log(md);
