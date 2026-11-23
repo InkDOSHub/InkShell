@@ -26,6 +26,19 @@ jobs:
         run: node tests/linux-test.mjs engine-src/target/wasm32-unknown-unknown/release/inksoc.wasm
       - name: Test the published engine.wasm
         run: node tests/linux-test.mjs engine.wasm
+  catalog:
+    # WebAssembly catalog (apk add): every entry downloads with the listed sha256 and size
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check overlay/etc/inksoc/wasm-catalog
+        run: sh tools/check-wasm-catalog.sh
+      - name: overlay.tar matches overlay/
+        run: |
+          mkdir -p $RUNNER_TEMP/a $RUNNER_TEMP/b
+          tar -xf overlay.tar -C $RUNNER_TEMP/a && (cd overlay && cp -a etc usr $RUNNER_TEMP/b/)
+          diff -r $RUNNER_TEMP/a $RUNNER_TEMP/b && echo "overlay.tar is up to date"
   page:
     # the real page in Chromium: WebAssembly programs in their own Worker through the service worker
     runs-on: ubuntu-latest

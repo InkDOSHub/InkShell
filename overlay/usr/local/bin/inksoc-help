@@ -10,6 +10,8 @@ ${b}Packages (apk)${n}
   sudo apk add python3 git        install programs (search: apk search NAME)
   sudo apk del NAME               remove one
   apk info                        what is installed
+  Some names (python3, ruby) install a WebAssembly build: much faster here.
+  apk search NAME shows them as [wasm]; apk add --x86 NAME gets the x86 one.
   Repositories: /etc/apk/repositories (main and community are on). To add
   edge/testing:  echo https://dl-cdn.alpinelinux.org/alpine/edge/testing | sudo tee -a /etc/apk/repositories
 
