@@ -185,7 +185,7 @@ $('file').onchange = async () => {
   send('');
 };
 
-/* ---- Download: a page like Settings that lists your Linux files ----
+/* ---- Files: a page like Settings that lists your Linux files ----
    No prompt() (apps like XeOS may not show it) and no click from a script after the file
    arrives (Safari drops it once the tap is too old): the file is read first, then the person
    taps Save (a real link) or Save to Files / Share (the system sheet). */
@@ -359,7 +359,7 @@ function addMount(m) {
   mounted.set(m.root, m);
   if (!w) $('start').click();
   if (w) w.postMessage({ type: 'mount', root: m.root, list: m.list });
-  note(m.root + ': ' + m.files.size + ' files' + (m.ro ? ', read-only (this browser does not let pages write to folders; ☰ Download brings results out)' : ', changes go back to the folder') + '.  cd ' + m.root);
+  note(m.root + ': ' + m.files.size + ' files' + (m.ro ? ', read-only (this browser does not let pages write to folders; ☰ Files brings results out)' : ', changes go back to the folder') + '.  cd ' + m.root);
 }
 $('mount').onclick = async () => {
   if (window.showDirectoryPicker) {
@@ -392,7 +392,7 @@ let roWarned = false;
 async function mountSync(root, ops) {
   const m = mounted.get(root);
   if (!m) return;
-  if (m.ro || !m.dir) { if (!roWarned) { roWarned = true; note(root + ' is read-only here: changes stay in Linux only (☰ Download brings them out)'); } return; }
+  if (m.ro || !m.dir) { if (!roWarned) { roWarned = true; note(root + ' is read-only here: changes stay in Linux only (☰ Files brings them out)'); } return; }
   for (const o of ops) {
     const base = o.path.split('/').pop();
     try {
