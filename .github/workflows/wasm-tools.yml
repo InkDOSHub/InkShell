@@ -1,0 +1,59 @@
+name: WebAssembly tools
+# Builds the catalog's WebAssembly (WASI) tools from upstream sources (tools/wasm-tools/build.sh, wasi-sdk-33:
+# C++ exceptions) and publishes them as the GitHub release $TAG of this repo, with the sources (LGPL).
+# The catalog (overlay/etc/inksoc/wasm-catalog) points at the release; a published release is never replaced:
+# change TAG to publish a new build (then update the catalog's sha256/size).
+on:
+  push:
+    branches: ['claude/**']
+    paths: ['tools/wasm-tools/**', '.github/workflows/wasm-tools.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+env:
+  TAG: wasm-tools-1
+concurrency:
+  group: wasm-tools-${{ github.ref }}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: [ffmpeg, magick, qpdf, 7zz]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Already published?
+        id: rel
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: gh release view "$TAG" >/dev/null 2>&1 && echo "done=1" >> "$GITHUB_OUTPUT" || true
+      - name: wasi-sdk-33
+        if: steps.rel.outputs.done != '1'
+        run: |
+          curl -fsSL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-linux.tar.gz | tar -xz -C $RUNNER_TEMP
+          sudo apt-get install -y -qq ninja-build >/dev/null
+      - name: Build ${{ matrix.tool }}
+        if: steps.rel.outputs.done != '1'
+        run: |
+          WASI_SDK=$RUNNER_TEMP/wasi-sdk-33.0-x86_64-linux WORK=$RUNNER_TEMP/work OUT=$PWD/out sh tools/wasm-tools/build.sh ${{ matrix.tool }}
+          cd out && sha256sum *.wasm && wc -c *.wasm
+      - uses: actions/upload-artifact@v4
+        if: steps.rel.outputs.done != '1'
+        with:
+          name: ${{ matrix.tool }}
+          path: out/*
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: out, merge-multiple: true }
+      - name: Publish release ${{ env.TAG }} (once)
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then echo "$TAG already published"; gh release view "$TAG"; exit 0; fi
+          cd out && ls -l && sha256sum * > SHA256SUMS
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "WebAssembly tools ($TAG)" --notes "WASI (wasm32-wasip1) builds for the InkShell catalog (apk add), made by .github/workflows/wasm-tools.yml from tools/wasm-tools/build.sh at $GITHUB_SHA. No GPL code: ffmpeg is LGPL-2.1+ (no --enable-gpl, no external libraries), 7-Zip LGPL-2.1+/BSD-3-Clause without unRAR, qpdf Apache-2.0, ImageMagick under the ImageMagick license (with libpng, libjpeg-turbo, zlib). The src-*.tar.gz files are the exact sources used." *
