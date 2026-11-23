@@ -4,6 +4,7 @@
 // /proc, and the swap (small real RAM, so pages of several processes go out and come back).
 import fs from 'node:fs';
 import zlib from 'node:zlib';
+import crypto from 'node:crypto';
 import { runWasi } from '../wasi.js';
 const wasmPath = process.argv[2] || 'engine.wasm';
 const POOL = 24; // MB of real RAM: small on purpose
@@ -112,6 +113,16 @@ await step('/root/stage1 pty\n', /pty size tty line \^C sig 2/, 'pseudo-terminal
 if (hasWasi) {
   await step('echo piped | /root/hello.wasm A > /tmp/w.out; echo rc=$?; cat /tmp/w.out /tmp/wasi-made.txt\n', /rc=3[\s\S]*wasi argc=2 arg1=A in=piped[\s\S]*made-by-wasm/, 'WebAssembly program: args, pipe in, redirect out, file, exit code');
   await step('/root/hello.wasm B < /dev/null | tr a-z A-Z\n', /WASI ARGC=2 ARG1=B IN=\(EOF\)/, 'WebAssembly program in a pipeline');
+  // WebAssembly catalog: a local entry (file:// mirror) for the test program; apk add installs it, other names go to Alpine's apk (--no-network: the test runs offline)
+  const hb = fs.readFileSync(wasiHello), hsum = crypto.createHash('sha256').update(hb).digest('hex');
+  await step(`sudo sh -c "printf 'hello-wasm\\tfile:///root/hello.wasm\\t${hsum}\\t${hb.length}\\tMIT\\t/usr/local/bin/hello-wasm\\ttest program\\n' > /etc/inksoc/wasm-catalog.local"\n`, /Password/, 'catalog: local entry (sudo asks)');
+  await step('pw1\n', /tester@inksoc/, 'catalog: local entry written');
+  await step('apk search hello-w\n', /hello-wasm \[wasm\] test program/, 'catalog: apk search lists [wasm]');
+  await step('apk add --no-network hello-wasm zz-no-such-pkg; echo add-rc=$?\n', /Password/, 'catalog: apk add asks sudo');
+  await step('pw1\n', /OK: hello-wasm installed[\s\S]*(no such package|unable to select)[\s\S]*add-rc=[1-9]/, 'catalog: apk add installs WebAssembly build, other name reaches real apk');
+  await step('hello-wasm X < /dev/null; echo rc=$?\n', /wasi argc=2 arg1=X in=\(eof\)[\s\S]*rc=3/, 'catalog: installed program runs from PATH');
+  await step('apk del hello-wasm; test -e /usr/local/bin/hello-wasm || echo gone\n', /Password/, 'catalog: apk del asks sudo');
+  await step('pw1\n', /WebAssembly build removed[\s\S]*gone/, 'catalog: apk del removes it');
 } else console.log('(engine without WebAssembly programs: published engine.wasm older than the kernel source)');
 await step('trap "echo caught-usr1" USR1; kill -USR1 $$\n', /caught-usr1/, 'shell trap');
 await step('(nc -l -p 8098 > /tmp/nc.txt &) ; sleep 0.3; echo over-nc | nc 127.0.0.1 8098; sleep 0.3; cat /tmp/nc.txt\n', /^over-nc/m, 'nc server and client on this machine');

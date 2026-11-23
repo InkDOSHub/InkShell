@@ -1,14 +1,86 @@
 #!/bin/sh
-# apk for this terminal: commands that change the system (add, del, update...) need root,
-# so for a normal user they go through sudo (asks your password), as "sudo apk ..." would.
-# Run as a user, apk could not set the owners of the folders it creates ("errors updating directory permissions").
+# apk for this terminal.
+# - Commands that change the system (add, del, update...) need root, so for a normal user they go
+#   through sudo (asks your password), as "sudo apk ..." would. Run as a user, apk could not set the
+#   owners of the folders it creates ("errors updating directory permissions").
+# - WebAssembly catalog (/etc/inksoc/wasm-catalog, and your own /etc/inksoc/wasm-catalog.local):
+#   "apk add NAME" for a name listed there installs its WebAssembly build (runs directly, much faster
+#   than x86 code); other names go to Alpine's apk unchanged. "apk add --x86 NAME" skips the catalog.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CATS="/etc/inksoc/wasm-catalog.local /etc/inksoc/wasm-catalog"
+DB=/var/lib/inksoc-wasm
+cmd=
+for a in "$@"; do case "$a" in -*) ;; *) cmd=$a; break ;; esac; done
 if [ "$(id -u)" -ne 0 ]; then
+  case "$cmd" in add|del|update|upgrade|fix|cache|audit) exec sudo /usr/local/bin/apk "$@" ;; esac
+fi
+entry() { for c in $CATS; do [ -f "$c" ] && cat "$c"; done | awk -F '\t' -v n="$1" '!/^#/ && $1 == n { print; exit }'; }
+field() { printf '%s\n' "$1" | cut -f"$2"; }
+
+install_one() {
+  e=$(entry "$1"); url=$(field "$e" 2); sum=$(field "$e" 3); size=$(field "$e" 4); lic=$(field "$e" 5); files=$(field "$e" 6)
+  main=${files%%,*}
+  if [ -f "$DB/$1" ] && [ "$(head -n1 "$DB/$1")" = "$sum" ] && [ -f "$main" ]; then echo "$1 (WebAssembly) is already installed"; return 0; fi
+  echo "($1) WebAssembly build, $lic, $((${size:-0} / 1048576)) MB"
+  mkdir -p "$(dirname "$main")" "$DB" || return 1
+  tmp="$main.apk-new"
+  case "$url" in
+    file://*) cp "${url#file://}" "$tmp" ;;
+    /*) cp "$url" "$tmp" ;;
+    *) wget -q -O "$tmp" "$url" ;;
+  esac || { rm -f "$tmp"; echo "ERROR: $1: download failed: $url" >&2; return 1; }
+  got=$(sha256sum "$tmp" | cut -d' ' -f1)
+  [ "$got" = "$sum" ] || { rm -f "$tmp"; echo "ERROR: $1: checksum mismatch ($got)" >&2; return 1; }
+  chmod 755 "$tmp" && mv -f "$tmp" "$main" || return 1
+  printf '%s\n%s\n' "$sum" "$main" > "$DB/$1"
+  for f in $(printf '%s' "$files" | tr ',' ' '); do
+    [ "$f" = "$main" ] && continue
+    mkdir -p "$(dirname "$f")" && ln -sf "$main" "$f" && echo "$f" >> "$DB/$1"
+  done
+  echo "OK: $1 installed: $main"
+}
+del_one() {
+  tail -n +2 "$DB/$1" | while read -r f; do rm -f "$f"; done
+  rm -f "$DB/$1"; echo "($1) WebAssembly build removed"
+}
+
+case "$cmd" in
+add|del)
+  # split the names: WebAssembly ones are handled here, the rest (and all options) go to apk
+  n=$#; wasm=; x86=; seen=; prev=
   for a in "$@"; do
     case "$a" in
-      -*) ;;
-      add|del|update|upgrade|fix|cache|audit) exec sudo /sbin/apk "$@" ;;
-      *) break ;;
+      --x86) x86=1; continue ;;
+      -*) set -- "$@" "$a"; prev=$a; continue ;;
     esac
+    if [ -z "$seen" ] && [ "$a" = "$cmd" ]; then seen=1; set -- "$@" "$a"; continue; fi
+    case "$prev" in -X|--repository|-p|--root|--keys-dir|--cache-dir|-t|--virtual) set -- "$@" "$a"; prev=; continue ;; esac
+    if [ "$cmd" = add ] && [ -z "$x86" ] && [ -n "$(entry "$a")" ]; then wasm="$wasm $a"
+    elif [ "$cmd" = del ] && [ -f "$DB/$a" ]; then wasm="$wasm $a"
+    else set -- "$@" "$a"; fi
   done
-fi
+  shift "$n"
+  rc=0
+  for p in $wasm; do if [ "$cmd" = add ]; then install_one "$p" || rc=1; else del_one "$p"; fi; done
+  # only options and the command left: nothing more for apk
+  if [ -n "$wasm" ]; then
+    left=; for a in "$@"; do case "$a" in -*|"$cmd") ;; *) left=1 ;; esac; done
+    [ -z "$left" ] && exit "$rc"
+  fi
+  /sbin/apk "$@" || rc=$?
+  exit "$rc" ;;
+search)
+  /sbin/apk "$@"; rc=$?
+  pat=; for a in "$@"; do case "$a" in -*|search) ;; *) pat=$a ;; esac; done
+  for c in $CATS; do [ -f "$c" ] && cat "$c"; done | awk -F '\t' -v p="$pat" '!/^#/ && NF >= 6 && (p == "" || index(tolower($1 " " $7), tolower(p))) { print $1 " [wasm] " $7 }'
+  exit "$rc" ;;
+info)
+  if [ "$#" -eq 1 ] && [ -d "$DB" ]; then /sbin/apk info; rc=$?; ls "$DB"; exit "$rc"; fi
+  last=; for a in "$@"; do last=$a; done
+  e=$(entry "$last")
+  if [ -n "$e" ] && [ "$last" != info ]; then
+    printf '%s [wasm]: %s\nlicense: %s\nurl: %s\ninstalled: %s\n' "$last" "$(field "$e" 7)" "$(field "$e" 5)" "$(field "$e" 2)" "$([ -f "$DB/$last" ] && echo yes || echo no)"
+    exit 0
+  fi ;;
+esac
 exec /sbin/apk "$@"
