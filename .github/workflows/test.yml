@@ -35,6 +35,12 @@ jobs:
         run: node tests/linux-test.mjs engine-src/target/wasm32-unknown-unknown/release/inksoc.wasm
       - name: Test the published engine.wasm
         run: node tests/linux-test.mjs engine.wasm
+      - name: x86 test programs (kept when a test fails, to read the code at a crash address)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: x86-test-programs
+          path: tests/x86*
   catalog:
     # WebAssembly catalog (apk add): every entry downloads with the listed sha256 and size
     runs-on: ubuntu-latest
