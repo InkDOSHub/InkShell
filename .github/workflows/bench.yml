@@ -70,7 +70,7 @@ jobs:
             native.time=$(ls native-*.time | paste -sd,) > report.md || true
           { echo "## Terminal: motor vs nativo (runner)"; echo; cat report.md; echo; cat engine-fails.txt 2>/dev/null; } | tee -a $GITHUB_STEP_SUMMARY
       - name: Compare with previous main run
-        if: always()
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -81,7 +81,7 @@ jobs:
           { echo "## Motor: antes (main, run ${id:-—}) vs agora"; echo; node ../tests/bench/compare.mjs prev/results.json results.json; } > compare.md
           cat compare.md | tee -a $GITHUB_STEP_SUMMARY
       - name: PR comment (side by side)
-        if: always() && github.event_name == 'pull_request'
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
