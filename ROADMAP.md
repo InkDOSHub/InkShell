@@ -1,21 +1,43 @@
 # InkShell roadmap
 
-InkShell is an Alpine Linux terminal in the browser (x86 engine, BusyBox, apk).
+Fonte: "Roadmap do terminal Linux (a partir de sex 27/11)", Paulo, 2026-11-22.
+Foco: terminal Linux sólido e rápido no WebKit. Ferramenta com WASM roda direto; x86 (InkSoC) só reserva. Arquivo nunca inteiro na RAM.
 
-Written on 2026-11-20 during the InkOS autopilot run. Ordered by priority; nothing here is started unless marked.
+## Fila (gerente mantém; worker pega o primeiro `aberto`)
 
-## Now
+| # | Item | Fase | Pts | Estado | Pronto quando |
+|---|---|---|---|---|---|
+| 1 | Bench Linux em todo PR, números vs anterior | 1 | 1 | aberto | PR mostra números lado a lado |
+| 2 | Kernel roda .wasm WASI (arquivos, pipes, tty, /mnt) | 2 | 3,5 | aberto | .wasm roda no shell c/ pipe e redirect |
+| 3 | Catálogo WASM + `apk add` consulta catálogo + loja ☰ (python3, coreutils, sqlite, ripgrep, jq, lua, zip/unzip) | 3 | 3,5 | aberto | python3 abre em WASM; bench bem > x86 |
+| 4 | Disco Linux no OPFS em blocos; /mnt por File.slice; cache c/ descarte | 4 | 3,5 | aberto | copiar+zipar 1 GB no CI sem estourar memória |
+| 5 | ffmpeg, 7z, qpdf, imagemagick WASM (sem GPL) | 5 | 2 | aberto | cada um roda WASM + teste curto |
+| 6 | inkvideo (WebCodecs H.264/HEVC) | 6 | 2 | aberto | 1080p no iPhone em tempo real |
 
-- Adopt the InkOS postMessage protocol v1 (`docs/PROTOCOL.md`): theme via `ink-tema`, files via `inkos-vfs-file` (`inkos:file` event from the Hub's `assets/tema.js`).
-- Validate parent origin against the InkOS allowlist before acting on any message.
-- Rootfs plan: keep `alpine-rootfs.tar.gz`, `busybox` and `overlay.tar` as downloaded artifacts, built by CI, not as source in the MIT tree (GPL-2.0 components).
-- Theme: the page sets no `data-theme`; adopt `assets/tema.js` semantics (found by the InkOS apps matrix).
+Item grande (3,5) pode ser fatiado pelo worker em sub-PRs; somar pontos por fatia.
 
-## Next
+## Semanas (14 pts; sex→qui)
 
-- Test on iPhone 17 Pro Max and iPad 11" (A16), iOS 27 Safari, and record results.
-- Keep third-party components listed in `THIRD_PARTY_LICENSES.md` up to date.
+| Sem | Datas | Plano | Pts |
+|---|---|---|---|
+| 0 | até qui 26/11 | Só reparos. Qui 22h: item 1 + começo fácil item 2 | 3 |
+| 1 | 27/11–03/12 | Resto item 2; itens 3–6. Terminal pronto | 12,5 + 1,5 correções |
+| 2 | 04/12–10/12 | x86: call/ret (2), rep movs/stos (1), BMI/POPCNT/LZCNT (2), SSE/x87 no JIT (3,5), bench x86 CI (1) | 9,5 + 4,5 |
+| 3 | 11/12–17/12 | Opcional: cache JIT OPFS (2), Linux 32 bits (3,5), AVX/AVX2 (7) | até 12,5 |
+| 4+ | 18/12– | Windows/exe: só pesquisa se Paulo pedir | — |
 
-## Not planned in this round
+Metas: fim sem 1 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 2 → x86 ~3x nativo, call ~5x.
 
-- Large new features. This file only records direction; see the README for the current state.
+## Quadro de pontos
+
+| Data | Sem | Item | PR | Pts |
+|---|---|---|---|---|
+| 2026-11-23 | 0 | Processo: CLAUDE.md, graph.yml, fila | — | 0 (infra) |
+
+## Fora (sem ponto até Paulo mandar)
+Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
+
+## Backlog antigo (2026-11-20)
+- Protocolo postMessage InkOS v1 (`docs/PROTOCOL.md`), validar origem pai.
+- Rootfs como artefato de CI (componentes GPL-2.0 fora da árvore MIT).
+- Tema via `assets/tema.js`.
