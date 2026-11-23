@@ -32,6 +32,11 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cd engine-src && cargo build --release --target wasm32-unknown-unknown
+      - name: (debug) main's engine.wasm on the same tests
+        continue-on-error: true
+        run: |
+          git fetch -q --depth=1 origin main && git show FETCH_HEAD:engine.wasm > $RUNNER_TEMP/main.wasm
+          timeout 600 node tests/linux-test.mjs $RUNNER_TEMP/main.wasm 2>&1 | grep -A12 -E "x86|FAIL|passed"
       - name: Test the fresh build
         run: node tests/linux-test.mjs engine-src/target/wasm32-unknown-unknown/release/inksoc.wasm
       - name: Test the published engine.wasm
