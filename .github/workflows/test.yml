@@ -21,7 +21,8 @@ jobs:
       - name: x86 test programs (Alpine gcc, static)
         run: |
           docker run --rm -v "$PWD":/w -w /w alpine:3.21 sh -c '
-            apk add -q gcc musl-dev && gcc -O2 -static -pthread -o tests/x86calls tests/src/x86calls.c'
+            apk add -q gcc musl-dev && gcc -O2 -static -pthread -o tests/x86calls tests/src/x86calls.c &&
+            apk add -q binutils && nm -n tests/x86calls | grep -i " t " | head -60 && objdump -d --no-show-raw-insn --start-address=0x401000 --stop-address=0x402400 tests/x86calls'
       - name: python3 from the WebAssembly catalog (URL and sha256 from the catalog)
         run: |
           e=$(awk -F '\t' '$1 == "python3"' overlay/etc/inksoc/wasm-catalog)
