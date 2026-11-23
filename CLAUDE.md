@@ -12,8 +12,7 @@ Terminal Alpine Linux no navegador (iPad XeOS principal, iPhone Safari). Motor =
 ## Threads
 - **Gerente** (sessão "Gerente InkShell"): mantém fila + pontos em `ROADMAP.md`, revisa, faz merge (ou libera auto-merge).
 - **Worker**: 1 sessão curta = 1 item da fila. Branch `claude/<item>`, PR, espera CI verde.
-  - Até sex 2026-11-27 05:00 SP: não fazer merge; pedir ao gerente.
-  - Depois: trabalho do terminal com CI verde = merge sozinho (squash). Hub UI continua pedindo Paulo.
+  - Trabalho do terminal com CI verde = merge sozinho (squash). Hub UI continua pedindo Paulo.
 - Worker termina com 2–4 linhas: PR, CI, pontos.
 
 ## Pontos
