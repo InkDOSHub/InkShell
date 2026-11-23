@@ -40,6 +40,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-23 | 1 | 1: bench em todo PR + comparação c/ main | #14 | 1 |
 | 2026-11-23 | 1 | 2 fatia 1: exec .wasm → stub + wasi.js (WASI→Linux) + teste | #17 | 2 |
 | 2026-11-23 | 1 | 2 fatia 2: .wasm na página (Worker + sw.js), engine.yml rebuild, teste Chromium | #19 | 1,5 |
+| 2026-11-23 | 1 | correção: 🔺 do bench pelo "x nativo" | claude/bench-native-ratio | 0,5 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
