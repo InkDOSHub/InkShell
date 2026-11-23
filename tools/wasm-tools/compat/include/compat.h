@@ -19,6 +19,12 @@ int fchown(int, uid_t, gid_t);
 #define TIOCGWINSZ 0x5413
 struct winsize { unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel; };
 #endif
+#ifdef COMPAT_CHMOD_OK /* WASI cannot set permission bits: chmod/fchmod succeed when the file exists (7-Zip extract) */
+#define chmod(p, m) compat_chmod(p, m)
+#define fchmod(f, m) compat_fchmod(f, m)
+int compat_chmod(const char *, mode_t);
+int compat_fchmod(int, mode_t);
+#endif
 #define tzset() ((void)0) /* no time zones: UTC */
 #ifdef __cplusplus
 }

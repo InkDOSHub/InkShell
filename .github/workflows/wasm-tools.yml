@@ -11,7 +11,7 @@ on:
 permissions:
   contents: write
 env:
-  TAG: wasm-tools-1
+  TAG: wasm-tools-2
 concurrency:
   group: wasm-tools-${{ github.ref }}
 jobs:

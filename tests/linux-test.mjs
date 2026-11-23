@@ -199,7 +199,7 @@ if (hasWasi) {
     await step('pw1\n', new RegExp(tools.map((t) => `OK: ${t.name} installed`).join('[\\s\\S]*') + '[\\s\\S]*add-rc=0'), `tools: apk add installs ${tools.map((t) => t.name).join(', ')}`);
   }
   if (hasTool('7zip')) { // 7-Zip: create, list, extract, compare (7z and zip)
-    await step('mkdir -p /tmp/z/in/sub && cd /tmp/z && echo one > in/a.txt && seq 1 3000 > in/sub/n.txt && 7zz a -bd t.7z in > /dev/null && 7z l t.7z | grep -c "\\.txt$"; mkdir x && cd x && 7z x -bd ../t.7z > /dev/null && diff -r ../in in && echo 7z-same; cd /tmp/z && 7zz a -bd -tzip t.zip in > /dev/null && unzip -l t.zip | grep -c "\\.txt$" && 7zz t t.zip | grep -c "Everything is Ok"; cd\n',
+    await step('mkdir -p /tmp/sz/in/sub && cd /tmp/sz && echo one > in/a.txt && seq 1 3000 > in/sub/n.txt && 7zz a -bd t.7z in > /dev/null && 7z l t.7z | grep -c "\\.txt$"; mkdir x && cd x && 7z x -bd ../t.7z > /dev/null && diff -r ../in in && echo 7z-same; cd /tmp/sz && 7zz a -bd -tzip t.zip in > /dev/null && unzip -l t.zip | grep -c "\\.txt$" && 7zz t t.zip | grep -c "Everything is Ok"; cd\n',
       /^2\s+7z-same\s+2\s+1\s*$/m, '7-Zip: 7z archive create, list, extract same files; zip readable by unzip');
     await step('7zz x -bd /root/hello.wasm; echo 7z-rc=$?\n', /7z-rc=2/, '7-Zip: not an archive (C++ exception path) exits 2');
   }

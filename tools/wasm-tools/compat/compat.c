@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/sysinfo.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include "compat.h"
 #include "pwd.h"
@@ -28,3 +29,5 @@ int fchown(int f, uid_t u, gid_t g) { (void)f; (void)u; (void)g; return 0; }
 struct group *getgrgid(gid_t g) { (void)g; return NULL; }
 struct group *getgrnam(const char *n) { (void)n; return NULL; }
 int sysinfo(struct sysinfo *i) { memset(i, 0, sizeof *i); i->totalram = i->freeram = 1u << 30; i->mem_unit = 1; return 0; } /* 1 GB: what a wasm32 program can use comfortably */
+int compat_chmod(const char *p, mode_t m) { struct stat st; int r = chmod(p, m); return r && errno == ENOSYS ? stat(p, &st) : r; }
+int compat_fchmod(int f, mode_t m) { struct stat st; int r = fchmod(f, m); return r && errno == ENOSYS ? fstat(f, &st) : r; }

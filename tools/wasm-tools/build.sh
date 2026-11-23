@@ -81,7 +81,7 @@ ffmpeg() { # 5.1: the last ffmpeg CLI that runs without threads (WASI preview1 h
 magick() { # ImageMagick 7, single program "magick" (convert, identify, mogrify... as links); PNG, JPEG, zlib built in
   libpng; libjpeg; compat
   fetch ImageMagick/ImageMagick $MAGICK magick
-  (cd "$WORK/magick" && [ -f Makefile ] || CFLAGS="-O2 $EMU $SJLJ" CPPFLAGS="-I$P/include -I$P/compat -include compat.h" LDFLAGS="-L$P/lib $STACK" LIBS="-lcompat $EMUL -lsetjmp" \
+  (cd "$WORK/magick" && [ -f Makefile ] || CFLAGS="-O2 $EMU $SJLJ" CPPFLAGS="-I$P/include -I$P/compat -include compat.h" LDFLAGS="-L$P/lib $STACK" LIBS="-lcompat $EMUL -lsetjmp -lc-printscan-long-double" \
     PKG_CONFIG_LIBDIR="$P/lib/pkgconfig" PKG_CONFIG_PATH= ./configure --host=$T --prefix="$P" --disable-shared --enable-static \
     --enable-zero-configuration --disable-openmp --without-threads --disable-opencl --without-modules --disable-docs \
     --without-magick-plus-plus --without-perl --without-x --with-zlib --with-png --with-jpeg \
@@ -109,7 +109,7 @@ sevenzip() { # 7-Zip console (7zz), single-threaded (Z7_ST), without the unRAR c
   compat; fetch ip7z/7zip $SEVENZIP 7zip
   (cd "$WORK/7zip/CPP/7zip/Bundles/Alone2" && make -j"$J" -f ../../cmpl_gcc.mak DISABLE_RAR=1 IS_X64= USE_ASM= O=b \
     CC="$CC" CXX="$CXX" CFLAGS_BASE_LIST="-c" CFLAGS_WARN_WALL= \
-    LOCAL_FLAGS_ST="-DZ7_ST -O2 $EMU $EH -I$P/compat -include compat.h" MY_ARCH= LDFLAGS_STATIC_2= LIB2="$EH -L$P/lib -lcompat -lunwind -lsetjmp $EMUL $STACK")
+    LOCAL_FLAGS_ST="-DZ7_ST -DCOMPAT_CHMOD_OK -O2 $EMU $EH -I$P/compat -include compat.h" MY_ARCH= LDFLAGS_STATIC_2= LIB2="$EH -L$P/lib -lcompat -lunwind -lsetjmp $EMUL $STACK")
   cp "$WORK/7zip/CPP/7zip/Bundles/Alone2/b/7zz" "$OUT/7zz.wasm"
 }
 
