@@ -53,7 +53,7 @@ $('calib').onclick = async () => {
   $('calib').disabled = true;
   await stop(true);
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=20');
+  const c = new Worker('worker.js?v=21');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -78,7 +78,7 @@ showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
   stop(false).then(() => {
-    const r = new Worker('worker.js?v=20');
+    const r = new Worker('worker.js?v=21');
     r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
     r.postMessage({ type: 'reset' });
   });
@@ -111,7 +111,7 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=20');
+  w = new Worker('worker.js?v=21');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;
@@ -195,33 +195,51 @@ const human = (n) => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) +
 const MIME = { txt: 'text/plain', pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', zip: 'application/zip', mp3: 'audio/mpeg', mp4: 'video/mp4', csv: 'text/csv', json: 'application/json', html: 'text/html',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' };
 const mimeOf = (n) => MIME[(n.split('.').pop() || '').toLowerCase()] || 'application/octet-stream';
-function dlRowEl(text, sub, onTap) {
-  const li = document.createElement('li');
-  const n = document.createElement('span'); n.className = 'n'; n.textContent = text; li.append(n);
-  if (sub) { const t = document.createElement('span'); t.className = 't'; t.textContent = sub; li.append(t); }
-  li.onclick = onTap;
-  return li;
+const ICON = (id) => '<svg aria-hidden="true"><use href="#' + id + '"></use></svg>';
+let dlHome = null;
+function dlSide() {
+  const nav = $('dl-side'); nav.textContent = '';
+  const h = document.createElement('h4'); h.textContent = 'Favorites'; nav.append(h);
+  const add = (icon, label, path) => {
+    const b = document.createElement('button'); b.type = 'button';
+    b.innerHTML = ICON(icon); b.append(label);
+    if (dlPath === path) b.className = 'on';
+    b.onclick = () => dlReq(path);
+    nav.append(b);
+  };
+  if (dlHome) add('ic-home', dlHome.split('/').pop() || 'Home', dlHome);
+  for (const r of mounted.keys()) add('ic-side-folder', r.split('/').pop(), r);
+  add('ic-disk', 'Linux (/)', '/');
 }
 function dlShow(m) {
   if ($('dl').hidden) return;
+  if (m.home) dlHome = m.home;
   dlPath = m.path; dlRow = null;
-  $('dl-path').textContent = m.path;
-  const ul = $('dl-list'); ul.textContent = '';
+  $('dl-acts').hidden = true;
+  $('dl-path').textContent = m.path === '/' ? 'Linux (/)' : m.path.split('/').filter(Boolean).join('  ›  ');
+  $('dl-up').disabled = m.path === '/';
+  dlSide();
+  const g = $('dl-list'); g.textContent = '';
+  const msg = (t) => { const d = document.createElement('div'); d.className = 'vazio'; d.textContent = t; g.append(d); };
+  if (!m.items) { msg('Linux is starting…'); return; }
+  if (!m.items.length) { msg('Empty folder'); return; }
   const join = (n) => (m.path === '/' ? '' : m.path) + '/' + n;
-  if (m.path !== '/') ul.append(dlRowEl('⬆︎ ..', '', () => dlReq(m.path.replace(/\/[^/]*$/, '') || '/')));
-  if (!m.items) { ul.append(dlRowEl('Linux is not running', '', () => {})); return; }
-  if (!m.items.length) ul.append(dlRowEl('(empty folder)', '', () => {}));
   for (const it of m.items) {
     const p = join(it.name);
-    const li = dlRowEl((it.dir ? '📁 ' : '📄 ') + it.name, it.dir ? '' : human(it.size || 0), () => (it.dir ? dlReq(p) : dlPick(p, li)));
-    ul.append(li);
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'item';
+    b.innerHTML = ICON(it.dir ? 'ic-folder' : 'ic-file');
+    const n = document.createElement('span'); n.className = 'n'; n.textContent = it.name; b.append(n);
+    if (!it.dir) { const t = document.createElement('span'); t.className = 't'; t.textContent = human(it.size || 0); b.append(t); }
+    b.onclick = () => (it.dir ? dlReq(p) : dlPick(p, b));
+    g.append(b);
   }
 }
-async function dlPick(path, li) {
-  const old = $('dl-list').querySelector('.acoes'); if (old) old.remove();
-  dlRow = { path, li };
-  const box = document.createElement('li'); box.className = 'acoes'; box.textContent = 'Reading…';
-  li.after(box);
+$('dl-up').onclick = () => { if (dlPath && dlPath !== '/') dlReq(dlPath.replace(/\/[^/]*$/, '') || '/'); };
+async function dlPick(path, el) {
+  for (const o of $('dl-list').querySelectorAll('.item.on')) o.classList.remove('on');
+  el.classList.add('on');
+  dlRow = { path, el };
+  const box = $('dl-acts'); box.hidden = false; box.textContent = 'Reading…';
   const mt = mounted.get(rootOf(path)), h = mt && mt.files.get(path);
   if (h) { // a file of a mounted folder: the page already has it
     try { dlReady(path, h.getFile ? await h.getFile() : h); return; } catch (er) {}
@@ -230,33 +248,33 @@ async function dlPick(path, li) {
 }
 function dlGot(m) {
   if (!dlRow || dlRow.path !== m.path) return;
-  if (!m.data) { const b = $('dl-list').querySelector('.acoes'); if (b) b.textContent = 'Could not read this file.'; return; }
+  if (!m.data) { $('dl-acts').textContent = 'Could not read this file.'; return; }
   const name = m.path.split('/').pop() || 'file';
   dlReady(m.path, new File([m.data], name, { type: mimeOf(name) }));
 }
 function dlReady(path, f) {
-  const box = $('dl-list').querySelector('.acoes');
-  if (!box || !dlRow || dlRow.path !== path) return;
+  const box = $('dl-acts');
+  if (!dlRow || dlRow.path !== path) return;
   const name = path.split('/').pop() || 'file';
   const file = f instanceof File && f.name === name ? f : new File([f], name, { type: mimeOf(name) });
   if (dlUrl) URL.revokeObjectURL(dlUrl);
   dlUrl = URL.createObjectURL(file);
   box.textContent = '';
-  const a = document.createElement('a'); a.href = dlUrl; a.download = name; a.textContent = 'Save'; box.append(a);
+  const nm = document.createElement('span'); nm.className = 'nome'; nm.textContent = name + ' · ' + human(file.size); box.append(nm);
   let canShare = false;
   try { canShare = !!(navigator.share && navigator.canShare && navigator.canShare({ files: [file] })); } catch (er) {}
   if (canShare) {
     const b = document.createElement('button'); b.type = 'button'; b.className = 'sec'; b.textContent = 'Save to Files / Share';
-    b.onclick = (ev) => { ev.stopPropagation(); navigator.share({ files: [file] }).catch(() => {}); };
+    b.onclick = () => { navigator.share({ files: [file] }).catch(() => {}); };
     box.append(b);
   }
-  box.onclick = (ev) => ev.stopPropagation();
+  const a = document.createElement('a'); a.href = dlUrl; a.download = name; a.textContent = 'Save'; box.append(a);
 }
 $('down').onclick = () => {
   if (!w) $('start').click();
   $('info').classList.remove('show');
   $('dl').hidden = false;
-  $('dl-path').textContent = ''; $('dl-list').textContent = '';
+  $('dl-list').textContent = ''; $('dl-acts').hidden = true;
   dlReq(dlPath);
 };
 $('dl-x').onclick = () => { $('dl').hidden = true; fit(); term.focus(); };

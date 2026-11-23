@@ -287,7 +287,8 @@ function syncMounts() {
    when none is given). scan() also clears the "changed" marks of mounted files, so what changed
    in mounted folders is sent to the page first. */
 function list(path) {
-  if (!path) { const u = lx.get('/etc/inksoc/user'); const n = u ? dec.decode(u).trim() : ''; path = n && n !== 'root' ? '/home/' + n : '/root'; }
+  const u = lx.get('/etc/inksoc/user'), n = u ? dec.decode(u).trim() : '', home = n && n !== 'root' ? '/home/' + n : '/root';
+  if (!path) path = home;
   path = path.replace(/\/+$/, '') || '/';
   const pre = path === '/' ? '/' : path + '/';
   if (mounts.size) syncMounts();
@@ -303,5 +304,5 @@ function list(path) {
   }
   if (path === '/' || path === '/mnt') for (const r of mounts.keys()) { const n = r.slice(pre.length); if (r.startsWith(pre) && n && !n.includes('/') && !items.some((i) => i.name === n)) items.push({ name: n, dir: true }); }
   items.sort((a, b) => (b.dir ? 1 : 0) - (a.dir ? 1 : 0) || a.name.localeCompare(b.name));
-  return { path, items };
+  return { path, items, home };
 }
