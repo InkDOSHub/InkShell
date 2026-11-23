@@ -16,16 +16,21 @@ Foco: terminal Linux sólido e rápido no WebKit. Ferramenta com WASM roda diret
 
 Item grande (3,5) pode ser fatiado pelo worker em sub-PRs; somar pontos por fatia.
 
-## Semanas (14 pts; sex→qui)
+## Semanas (plano Pro renova toda terça 17:00 SP)
+
+- Semana = ter 17:00 → ter 17:00 SP. Teto 14 pts de ter 17:00 até ter 10:00 seguinte.
+- Ter 10:00 → 17:00: liberado, sem teto (queima o resto do crédito; linhas "reserva" no quadro).
+- Worker nunca espera horário: item pronto → merge → próximo item, até o teto.
 
 | Sem | Datas | Plano | Pts |
 |---|---|---|---|
-| 1 | 23/11–03/12 (Paulo: assinatura nova, semana 0 vira semana 1) | Resto item 2; itens 3–6. Terminal pronto | 12,5 + 1,5 correções |
-| 2 | 04/12–10/12 | x86: call/ret (2), rep movs/stos (1), BMI/POPCNT/LZCNT (2), SSE/x87 no JIT (3,5), bench x86 CI (1) | 9,5 + 4,5 |
-| 3 | 11/12–17/12 | Opcional: cache JIT OPFS (2), Linux 32 bits (3,5), AVX/AVX2 (7) | até 12,5 |
-| 4+ | 18/12– | Windows/exe: só pesquisa se Paulo pedir | — |
+| 1 | seg 23/11 → ter 24/11 17:00 (curta; ter 10–17 liberado) | Item 1; começo item 2 | até 14 |
+| 2 | 24/11 → 01/12 | Resto item 2; itens 3–6. Terminal pronto | 12,5 + 1,5 correções |
+| 3 | 01/12 → 08/12 | x86: call/ret (2), rep movs/stos (1), BMI/POPCNT/LZCNT (2), SSE/x87 no JIT (3,5), bench x86 CI (1) | 9,5 + 4,5 |
+| 4 | 08/12 → 15/12 | Opcional: cache JIT OPFS (2), Linux 32 bits (3,5), AVX/AVX2 (7) | até 12,5 |
+| 5+ | 15/12 → | Windows/exe: só pesquisa se Paulo pedir | — |
 
-Metas: fim sem 1 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 2 → x86 ~3x nativo, call ~5x.
+Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3 → x86 ~3x nativo, call ~5x.
 
 ## Quadro de pontos
 
