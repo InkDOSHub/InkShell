@@ -209,7 +209,7 @@ if (hasWasi) {
   }
   if (hasTool('imagemagick')) { // ImageMagick: PPM to PNG to JPEG, identify, pixel colour
     await step("mkdir -p /tmp/m && cd /tmp/m && printf 'P3\\n2 2\\n255\\n255 0 0 0 255 0\\n0 0 255 255 255 255\\n' > a.ppm && magick a.ppm -scale 400% b.png && od -An -c -N4 b.png && identify -format '%m %wx%h\\n' b.png && convert b.png c.jpg && magick identify -format '%m %wx%h\\n' c.jpg && magick b.png -format '%[pixel:p{7,0}]\\n' info:; cd\n",
-      /P\s+N\s+G[\s\S]*^PNG 8x8\s+^JPEG 8x8\s+^(lime|green|srgb\(0,255,0\))\s*$/m, 'ImageMagick: PPM to PNG to JPEG, identify, pixel colour');
+      /P\s+N\s+G[\s\S]*^PNG 8x8\s[\s\S]*^JPEG 8x8\s+^(lime|green|srgb\(0,255,0\))\s*$/m, 'ImageMagick: PPM to PNG to JPEG (convert link warns it is deprecated), identify, pixel colour');
   }
   if (hasTool('ffmpeg')) { // ffmpeg: LGPL build; 1 s WAV made by a filter, to FLAC and back, a short MPEG-4 video
     await step('ffmpeg -hide_banner -L | grep -c "Lesser General Public"; ffmpeg -hide_banner -buildconf | grep -c enable-gpl\n', /^[1-9]\d*\s+^0\s*$/m, 'ffmpeg: LGPL build (no --enable-gpl)');
