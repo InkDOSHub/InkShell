@@ -1,6 +1,7 @@
 name: Terminal benchmark
 # Performance of the Linux terminal (engine in node = same WebAssembly as the page) against the
-# runner itself: CPU (tests/src/cpubench.c), Python, copy/sha256/zip/unzip of 64 MB and 1 GB,
+# runner itself: CPU (tests/src/cpubench.c), Python (x86 and the catalog's WebAssembly build, column
+# "wasm"), copy/sha256/zip/unzip of 64 MB and 1 GB,
 # peak memory. Plus phase-2 pre-tests: WASI programs (probe, cpubench, CPython) in node.
 # Results: the run's summary page; logs: the artifacts. Every PR (and every main push, which becomes
 # the baseline) also shows the engine numbers side by side with the last successful main run.
@@ -38,6 +39,13 @@ jobs:
               --repositories-file /etc/apk/repositories python3 zip unzip &&
             tar -C /x -cf out/zpkgs.tar usr/bin usr/lib lib etc/ssl 2>/dev/null; ls -la out'
           cp tests/bench/bench.sh tests/bench/pybench.py out/
+      - name: python3 WebAssembly build (from the catalog), as /usr/local/bin/python3
+        run: |
+          e=$(awk -F '\t' '$1 == "python3"' overlay/etc/inksoc/wasm-catalog)
+          mkdir -p $RUNNER_TEMP/pw/usr/local/bin
+          curl -fsSL --retry 3 -o $RUNNER_TEMP/pw/usr/local/bin/python3 "$(printf '%s' "$e" | cut -f2)"
+          echo "$(printf '%s' "$e" | cut -f3)  $RUNNER_TEMP/pw/usr/local/bin/python3" | sha256sum -c
+          tar --format=ustar -C $RUNNER_TEMP/pw -cf out/zpywasm.tar usr
       - name: Build the engine
         run: |
           rustup target add wasm32-unknown-unknown
@@ -61,13 +69,19 @@ jobs:
             grep -q '@@T done' out/engine-$n.log || echo "- motor \`$s\`: não terminou (ver engine-$n.log)" | tee -a out/engine-fails.txt
             echo "::endgroup::"
           done
+      - name: Engine, python3 via WASI (the catalog's python.wasm run by the kernel)
+        run: |
+          echo "::group::engine py (WebAssembly)"
+          /usr/bin/time -v -o out/wasm-py.time timeout 1800 node tests/bench-engine.mjs out/engine.wasm bench.sh=out/bench.sh pybench.py=out/pybench.py zpywasm.tar=out/zpywasm.tar -- sh /root/bench.sh py 2>&1 | tee out/wasm-py.log
+          grep -q '@@T done' out/wasm-py.log || echo "- motor \`py\` (WebAssembly): não terminou (ver wasm-py.log)" | tee -a out/engine-fails.txt
+          echo "::endgroup::"
       - name: Report
         if: always()
         run: |
           cd out
           node ../tests/bench/report.mjs \
-            native=$(ls native-*.log | paste -sd,) engine=$(ls engine-*.log | paste -sd,) \
-            native.time=$(ls native-*.time | paste -sd,) > report.md || true
+            native=$(ls native-*.log | paste -sd,) engine=$(ls engine-*.log | paste -sd,) wasm=wasm-py.log \
+            native.time=$(ls native-*.time | paste -sd,) wasm.time=wasm-py.time > report.md || true
           { echo "## Terminal: motor vs nativo (runner)"; echo; cat report.md; echo; cat engine-fails.txt 2>/dev/null; } | tee -a $GITHUB_STEP_SUMMARY
       - name: Compare with previous main run
         if: ${{ !cancelled() }}

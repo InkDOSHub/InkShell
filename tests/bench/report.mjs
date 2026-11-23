@@ -1,5 +1,5 @@
 // Builds the benchmark table (Markdown) from stamped logs and writes results.json.
-// usage: node tests/bench/report.mjs native=native.log engine=engine-*.log [native.time=time.txt]
+// usage: node tests/bench/report.mjs native=native.log engine=engine-*.log [wasm=wasm-py.log] [native.time=time.txt]
 // Several files per label are merged (e.g. one engine run per section).
 import fs from 'node:fs';
 const runs = {}; // label -> { metric: ms }, plus mem and errors
@@ -31,10 +31,13 @@ const labels = Object.keys(runs);
 const keys = [...new Set(labels.flatMap((l) => Object.keys(runs[l].ms)))];
 const fmt = (v) => (v == null ? '—' : v >= 10000 ? (v / 1000).toFixed(1) + ' s' : v.toFixed(0) + ' ms');
 const [a, b] = labels;
-let md = `| teste | ${labels.join(' | ')} | ${b ? `${b}/${a}` : ''} | ${b ? `${b} wasm MB` : ''} |\n|---|${labels.map(() => '---:').join('|')}|---:|---:|\n`;
+// one ratio column per label after the first (e.g. engine/native, wasm/native)
+const rest = labels.length > 1 ? labels.slice(1) : [null];
+let md = `| teste | ${labels.join(' | ')} | ${rest.map((l) => (l ? `${l}/${a}` : '')).join(' | ')} | ${b ? `${b} wasm MB` : ''} |\n|---|${labels.map(() => '---:').join('|')}|${rest.map(() => '---:').join('|')}|---:|\n`;
 for (const k of keys) {
-  const va = runs[a].ms[k], vb = b && runs[b].ms[k];
-  md += `| ${k} | ${labels.map((l) => fmt(runs[l].ms[k])).join(' | ')} | ${va && vb ? (vb / va).toFixed(1) + 'x' : '—'} | ${b && runs[b].mem[k] != null ? runs[b].mem[k] : ''} |\n`;
+  const va = runs[a].ms[k];
+  const rs = rest.map((l) => { const v = l && runs[l].ms[k]; return va && v ? (v / va).toFixed(1) + 'x' : '—'; });
+  md += `| ${k} | ${labels.map((l) => fmt(runs[l].ms[k])).join(' | ')} | ${rs.join(' | ')} | ${b && runs[b].mem[k] != null ? runs[b].mem[k] : ''} |\n`;
 }
 md += `\n**Memória pico** — ${labels.map((l) => `${l}: ${Object.entries(runs[l].peak).map(([k, v]) => `${k} ${v.toFixed(0)} MB`).join(', ') || '—'}`).join('; ')}\n`;
 const errs = labels.flatMap((l) => runs[l].err.map((e) => `- ${l}: ${e}`));

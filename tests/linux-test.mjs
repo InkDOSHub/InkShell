@@ -41,6 +41,11 @@ add('stage1', fs.readFileSync(new URL('./stage1', import.meta.url))); // tests/s
 const wasiHello = new URL('./wasihello.wasm', import.meta.url); // tests/src/wasihello.c, built in CI (wasi-sdk)
 const hasWasi = !!x.wasi_next;
 if (hasWasi) add('hello.wasm', fs.readFileSync(wasiHello));
+// CPython for WASI from the catalog (test.yml downloads it to tests/python.wasm, sha256 checked)
+const pyWasm = new URL('./python.wasm', import.meta.url);
+const hasPy = hasWasi && fs.existsSync(pyWasm);
+const pyBytes = hasPy ? fs.readFileSync(pyWasm) : null;
+if (hasPy) add('python.wasm', pyBytes);
 put(enc.encode('busybox\0sh /etc/inksoc/start'));
 if (x.start() !== 0) { console.log('FAIL start:', dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()))); process.exit(1); }
 x.linux_winsize(30, 100);
@@ -123,6 +128,17 @@ if (hasWasi) {
   await step('hello-wasm X < /dev/null; echo rc=$?\n', /wasi argc=2 arg1=X in=\(eof\)[\s\S]*rc=3/, 'catalog: installed program runs from PATH');
   await step('apk del hello-wasm; test -e /usr/local/bin/hello-wasm || echo gone\n', /Password/, 'catalog: apk del asks sudo');
   await step('pw1\n', /WebAssembly build removed[\s\S]*gone/, 'catalog: apk del removes it');
+  if (hasPy) { // python3 from the catalog (local file:// mirror), run in the terminal
+    const psum = crypto.createHash('sha256').update(pyBytes).digest('hex');
+    await step(`sudo sh -c "printf 'python3\\tfile:///root/python.wasm\\t${psum}\\t${pyBytes.length}\\tPSF-2.0\\t/usr/local/bin/python3,/usr/local/bin/python\\tPython\\n' >> /etc/inksoc/wasm-catalog.local"\n`, /Password/, 'python3: local catalog entry (sudo asks)');
+    await step('pw1\n', /tester@inksoc/, 'python3: local catalog entry written');
+    await step('apk add --no-network python3; echo add-rc=$?\n', /Password/, 'python3: apk add asks sudo');
+    await step('pw1\n', /OK: python3 installed[\s\S]*add-rc=0/, 'python3: apk add installs the WebAssembly build');
+    await step('python3 -c "print(6*7)"\n', /^42\s*$/m, 'python3: -c prints 42');
+    await step(`mkdir -p /tmp/t && printf '%s\\n' 'import json, re' 'open("/tmp/t/d.json", "w").write(json.dumps({"a": [1, 2]}))' 'd = json.load(open("/tmp/t/d.json"))' 'print("py-file", d["a"][1], re.sub(r"[0-9]+", "N", "x12y3"))' > /tmp/t/s.py && (cd /tmp/t && python3 s.py)\n`, /py-file 2 xNyN/, 'python3: script by relative name, file in /tmp, json and re');
+    await step('echo abc | python3 -c "import sys; print(sys.stdin.read().upper())"\n', /^ABC\s*$/m, 'python3: reads a pipe');
+    await step('python3 -c "raise SystemExit(5)"; echo py-rc=$?\n', /py-rc=5/, 'python3: exit code');
+  }
 } else console.log('(engine without WebAssembly programs: published engine.wasm older than the kernel source)');
 await step('trap "echo caught-usr1" USR1; kill -USR1 $$\n', /caught-usr1/, 'shell trap');
 await step('(nc -l -p 8098 > /tmp/nc.txt &) ; sleep 0.3; echo over-nc | nc 127.0.0.1 8098; sleep 0.3; cat /tmp/nc.txt\n', /^over-nc/m, 'nc server and client on this machine');

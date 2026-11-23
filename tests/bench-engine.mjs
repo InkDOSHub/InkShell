@@ -1,10 +1,12 @@
 // Runs a script in Alpine on this engine (node 18+, no network) and stamps its output lines.
 // usage: node tests/bench-engine.mjs ENGINE.wasm [NAME=FILE ...] -- sh /root/bench.sh cpu py
 // NAME=FILE puts FILE at /root/NAME; a NAME ending in .tar is unpacked at / (extra packages).
+// WebAssembly (WASI) programs the script starts run through ../wasi.js (runWasi).
 // Output: "MS<TAB>line<TAB>wasmMB" per line (format of tests/bench/stamp.mjs plus memory),
 // then "@@MEM wasm=MB rss=MB" with the peaks. Exit 0 when the script printed "@@T done".
 import fs from 'node:fs';
 import zlib from 'node:zlib';
+import { runWasi } from '../wasi.js';
 const argv = process.argv.slice(2), sep = argv.indexOf('--');
 const wasmPath = argv[0], files = argv.slice(1, sep), cmd = argv.slice(sep + 1).join(' ');
 const POOL = +(process.env.POOL_MB || 512), LIMIT = +(process.env.LIMIT_MS || 1800000);
@@ -55,6 +57,8 @@ let st = 0;
 try {
   for (let idle = 0; !done && performance.now() - t0 < LIMIT;) {
     st = x.run(2000000);
+    // WebAssembly (WASI) programs run here, in the engine's thread, as in tests/linux-test.mjs
+    if (x.wasi_next) for (let pid; (pid = x.wasi_next());) runWasi(x, pid);
     peakRss = Math.max(peakRss, process.memoryUsage().rss);
     if (st === 1 || st === 2) break;
     if (st === 3) { const ms = x.stat(17); if (ms >= 30 && !(x.linux_timer_ms?.() >= 0) && ++idle > 200) break; await new Promise((r) => setTimeout(r, Math.min(ms, 30) || 2)); } else idle = 0;

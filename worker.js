@@ -100,7 +100,7 @@ function info(bytes) {
 async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   if (network in NETS) net = network;
   wasiSw = !!sw; wasiOpen(Math.random().toString(36).slice(2));
-  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=1'); } catch (e) { wasiInline = null; } }
+  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=2'); } catch (e) { wasiInline = null; } }
   const swap = await openSwap(), ram = new Map();
   const page = (p) => new Uint8Array(mem.buffer, p, 4096);
   const env = {
