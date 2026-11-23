@@ -153,6 +153,7 @@ async function run({ rows, cols, network, poolMb, targetMb }) {
   };
   while (pendingMounts.length) mount(pendingMounts.shift());
   while (pendingPuts.length) { const f = pendingPuts.shift(); lx.put(f.name, f.data); }
+  if (pendingLs !== null) { postMessage({ type: 'ls', ...list(pendingLs) }); pendingLs = null; }
   const feed = () => {
     while (keys.length) {
       const s = keys.shift();
@@ -200,7 +201,8 @@ onmessage = async (ev) => {
   if (d.type === 'resize') { if (lx) lx.resize(d.rows, d.cols); return; }
   if (d.type === 'put') { if (lx) { lx.put(d.name, d.data); loaded(d.name, d.data.byteLength); } else pendingPuts.push({ name: d.name, data: d.data }); return; }
   if (d.type === 'mount') { if (lx) mount(d); else pendingMounts.push(d); return; }
-  if (d.type === 'get') { postMessage({ type: 'file', path: d.path, data: lx ? lx.get(d.path) : null }); return; }
+  if (d.type === 'get') { const data = lx ? lx.get(d.path) : null; postMessage({ type: 'file', path: d.path, data, to: d.to }, data ? [data.buffer] : []); return; }
+  if (d.type === 'ls') { if (lx) postMessage({ type: 'ls', ...list(d.path) }); else pendingLs = d.path || ''; return; }
   if (d.type === 'net') { net = d.network; wsUrl = null; if (ws) { try { ws.close(); } catch (e) {} ws = null; } return; }
   if (d.type === 'save') { if (lx) { if (mounts.size) syncMounts(); await save(); } postMessage({ type: 'saved' }); return; }
   if (d.type === 'reset') { const root = await opfs(); if (root) { try { await root.removeEntry(SAVE); } catch (e) {} } postMessage({ type: 'reset' }); return; }
@@ -235,6 +237,7 @@ async function calibrate() {
    Files only read are dropped again when more than MOUNT_RAM bytes are held. */
 const mounts = new Map(); // root -> Map(path -> 'D' | size)
 const pendingMounts = [];
+let pendingLs = null; // the Download page asked for a list before Linux was up
 const MOUNT_RAM = 192 * 1048576;
 let held = new Map(); // mounted files read into memory: path -> size (oldest first)
 function mount(d) {
@@ -278,4 +281,27 @@ function syncMounts() {
     if (total <= MOUNT_RAM) break;
     put(enc.encode(p)); if (x.linux_mount_evict()) { held.delete(p); total -= size; }
   }
+}
+
+/* The page's Download list: the folders and files right inside one folder (your home folder
+   when none is given). scan() also clears the "changed" marks of mounted files, so what changed
+   in mounted folders is sent to the page first. */
+function list(path) {
+  if (!path) { const u = lx.get('/etc/inksoc/user'); const n = u ? dec.decode(u).trim() : ''; path = n && n !== 'root' ? '/home/' + n : '/root'; }
+  path = path.replace(/\/+$/, '') || '/';
+  const pre = path === '/' ? '/' : path + '/';
+  if (mounts.size) syncMounts();
+  let all = null;
+  for (const [root, m] of mounts) if (path === root || path.startsWith(root + '/')) all = m;
+  if (!all) all = scan(path === '/' ? '' : path);
+  const items = [];
+  for (const [p, v] of all) {
+    if (!p.startsWith(pre)) continue;
+    const name = p.slice(pre.length);
+    if (!name || name.includes('/')) continue;
+    items.push(v === 'D' ? { name, dir: true } : { name, size: v.size });
+  }
+  if (path === '/' || path === '/mnt') for (const r of mounts.keys()) { const n = r.slice(pre.length); if (r.startsWith(pre) && n && !n.includes('/') && !items.some((i) => i.name === n)) items.push({ name: n, dir: true }); }
+  items.sort((a, b) => (b.dir ? 1 : 0) - (a.dir ? 1 : 0) || a.name.localeCompare(b.name));
+  return { path, items };
 }

@@ -53,7 +53,7 @@ $('calib').onclick = async () => {
   $('calib').disabled = true;
   await stop(true);
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=19');
+  const c = new Worker('worker.js?v=20');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -78,7 +78,7 @@ showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
   stop(false).then(() => {
-    const r = new Worker('worker.js?v=19');
+    const r = new Worker('worker.js?v=20');
     r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
     r.postMessage({ type: 'reset' });
   });
@@ -111,19 +111,14 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=19');
+  w = new Worker('worker.js?v=20');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;
     if (m.type === 'out') term.write(m.text);
-    else if (m.type === 'file') {
-      if (!m.data) { term.write('\r\n\x1b[31m' + m.path + ': not found\x1b[0m\r\n'); return; }
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([m.data]));
-      a.download = m.path.split('/').pop() || 'file';
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-    } else if (m.type === 'mfetch') mountFetch(m.paths);
+    else if (m.type === 'file') dlGot(m);
+    else if (m.type === 'ls') dlShow(m);
+    else if (m.type === 'mfetch') mountFetch(m.paths);
     else if (m.type === 'msync') mountSync(m.root, m.ops);
     else if (m.type === 'saved') term.write('\r\n\x1b[2m[files saved]\x1b[0m\r\n');
     else if (m.type === 'info') { pref.set('alpine-user', m.user || ''); }
@@ -189,10 +184,82 @@ $('file').onchange = async () => {
   $('file').value = '';
   send('');
 };
+
+/* ---- Download: a page like Settings that lists your Linux files ----
+   No prompt() (apps like XeOS may not show it) and no click from a script after the file
+   arrives (Safari drops it once the tap is too old): the file is read first, then the person
+   taps Save (a real link) or Save to Files / Share (the system sheet). */
+let dlPath = null, dlRow = null, dlUrl = null;
+const dlReq = (path) => { if (w) w.postMessage({ type: 'ls', path }); };
+const human = (n) => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : n < 1073741824 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1073741824).toFixed(2) + ' GB';
+const MIME = { txt: 'text/plain', pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', zip: 'application/zip', mp3: 'audio/mpeg', mp4: 'video/mp4', csv: 'text/csv', json: 'application/json', html: 'text/html',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' };
+const mimeOf = (n) => MIME[(n.split('.').pop() || '').toLowerCase()] || 'application/octet-stream';
+function dlRowEl(text, sub, onTap) {
+  const li = document.createElement('li');
+  const n = document.createElement('span'); n.className = 'n'; n.textContent = text; li.append(n);
+  if (sub) { const t = document.createElement('span'); t.className = 't'; t.textContent = sub; li.append(t); }
+  li.onclick = onTap;
+  return li;
+}
+function dlShow(m) {
+  if ($('dl').hidden) return;
+  dlPath = m.path; dlRow = null;
+  $('dl-path').textContent = m.path;
+  const ul = $('dl-list'); ul.textContent = '';
+  const join = (n) => (m.path === '/' ? '' : m.path) + '/' + n;
+  if (m.path !== '/') ul.append(dlRowEl('⬆︎ ..', '', () => dlReq(m.path.replace(/\/[^/]*$/, '') || '/')));
+  if (!m.items) { ul.append(dlRowEl('Linux is not running', '', () => {})); return; }
+  if (!m.items.length) ul.append(dlRowEl('(empty folder)', '', () => {}));
+  for (const it of m.items) {
+    const p = join(it.name);
+    const li = dlRowEl((it.dir ? '📁 ' : '📄 ') + it.name, it.dir ? '' : human(it.size || 0), () => (it.dir ? dlReq(p) : dlPick(p, li)));
+    ul.append(li);
+  }
+}
+async function dlPick(path, li) {
+  const old = $('dl-list').querySelector('.acoes'); if (old) old.remove();
+  dlRow = { path, li };
+  const box = document.createElement('li'); box.className = 'acoes'; box.textContent = 'Reading…';
+  li.after(box);
+  const mt = mounted.get(rootOf(path)), h = mt && mt.files.get(path);
+  if (h) { // a file of a mounted folder: the page already has it
+    try { dlReady(path, h.getFile ? await h.getFile() : h); return; } catch (er) {}
+  }
+  if (w) w.postMessage({ type: 'get', path, to: 'dl' });
+}
+function dlGot(m) {
+  if (!dlRow || dlRow.path !== m.path) return;
+  if (!m.data) { const b = $('dl-list').querySelector('.acoes'); if (b) b.textContent = 'Could not read this file.'; return; }
+  const name = m.path.split('/').pop() || 'file';
+  dlReady(m.path, new File([m.data], name, { type: mimeOf(name) }));
+}
+function dlReady(path, f) {
+  const box = $('dl-list').querySelector('.acoes');
+  if (!box || !dlRow || dlRow.path !== path) return;
+  const name = path.split('/').pop() || 'file';
+  const file = f instanceof File && f.name === name ? f : new File([f], name, { type: mimeOf(name) });
+  if (dlUrl) URL.revokeObjectURL(dlUrl);
+  dlUrl = URL.createObjectURL(file);
+  box.textContent = '';
+  const a = document.createElement('a'); a.href = dlUrl; a.download = name; a.textContent = 'Save'; box.append(a);
+  let canShare = false;
+  try { canShare = !!(navigator.share && navigator.canShare && navigator.canShare({ files: [file] })); } catch (er) {}
+  if (canShare) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'sec'; b.textContent = 'Save to Files / Share';
+    b.onclick = (ev) => { ev.stopPropagation(); navigator.share({ files: [file] }).catch(() => {}); };
+    box.append(b);
+  }
+  box.onclick = (ev) => ev.stopPropagation();
+}
 $('down').onclick = () => {
-  const p = prompt('File to download (path, e.g. /home/you/notes.txt):', '/home/');
-  if (p && w) w.postMessage({ type: 'get', path: p });
+  if (!w) $('start').click();
+  $('info').classList.remove('show');
+  $('dl').hidden = false;
+  $('dl-path').textContent = ''; $('dl-list').textContent = '';
+  dlReq(dlPath);
 };
+$('dl-x').onclick = () => { $('dl').hidden = true; fit(); term.focus(); };
 
 /* ---- device folders at /mnt/NAME ----
    showDirectoryPicker (Chrome, Edge, Brave on computers; XeOS on iPad adds its own) gives a folder
@@ -248,7 +315,12 @@ function addMount(m) {
 }
 $('mount').onclick = async () => {
   if (window.showDirectoryPicker) {
-    try { addMount(await mountDir(await window.showDirectoryPicker({ mode: 'readwrite' }))); }
+    try {
+      let dir;
+      try { dir = await window.showDirectoryPicker({ mode: 'readwrite' }); }
+      catch (er) { if (er && er.name === 'AbortError') throw er; dir = await window.showDirectoryPicker(); } // pickers that take no options
+      addMount(await mountDir(dir));
+    }
     catch (er) { if (er && er.name !== 'AbortError') note('could not mount: ' + er.message); }
   } else $('mountdir').click();
 };
