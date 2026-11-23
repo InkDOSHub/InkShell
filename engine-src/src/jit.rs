@@ -573,6 +573,13 @@ struct G {
     need: Vec<bool>,         // per block: reads the flags before writing them
     cur: usize,              // index of the block being emitted
     hints: Vec<(usize, u8)>, // branch hints: code position of an `if`, 1 = usually taken, 0 = rarely
+    // resident registers (second pass): the registers in `res_in` are loaded once when the region
+    // starts and stay in their locals across its jumps (no store at each jump, no load at each
+    // block); the ones the region writes are stored at exits and before an interpreter step. First pass: `used`/`wrote` collect the masks.
+    res: bool,
+    res_in: u16,
+    used: u16,
+    wrote: u16,
 }
 
 macro_rules! off {
@@ -667,11 +674,24 @@ impl G {
 
     fn ensure(&mut self, r: u8) {
         if self.valid & (1 << r) == 0 {
+            self.used |= 1 << r;
             self.i32c(0);
             let a = self.reg_addr(r);
             self.mem(I64LOAD, 3, a);
             self.set(R0 + r as u32);
             self.valid |= 1 << r;
+        }
+    }
+
+    /// Resident mode: the registers the next block expects in their locals are there
+    /// (only an interpreter step in this block can have dropped them).
+    fn ensure_in(&mut self) {
+        if self.res {
+            for r in 0..16u8 {
+                if self.res_in & (1 << r) != 0 {
+                    self.ensure(r);
+                }
+            }
         }
     }
 
@@ -1239,6 +1259,7 @@ impl G {
         self.flush_once();
     }
     fn flush_once(&mut self) {
+        self.wrote |= self.dirty;
         for r in 0..16u8 {
             if self.dirty & (1 << r) != 0 {
                 self.st_base();
@@ -1298,7 +1319,11 @@ impl G {
             self.exit_dyn(t, n);
             return;
         }
-        self.flush();
+        if self.res {
+            self.ensure_in();
+        } else {
+            self.flush();
+        }
         if self.lic {
             self.get(L_IC);
             self.i64c(n as u64);
@@ -1327,6 +1352,9 @@ impl G {
             self.cpu_ld64(off!(jit_limit));
             self.b(I64GEU);
             self.if_hint(VOID, false);
+            if self.res {
+                self.flush();
+            }
             if self.lic {
                 if !self.need[idx] {
                     self.exit_flags();
@@ -1346,6 +1374,9 @@ impl G {
             self.b(END);
         }
         self.cnt(2);
+        if self.res {
+            self.flush();
+        }
         if self.lic {
             self.exit_flags();
             let a = self.cpu + off!(icount);
@@ -1361,6 +1392,44 @@ impl G {
     }
     /// Jumps to block `idx` of this region (`depth` = blocks open inside the current block).
     fn internal(&mut self, target: u64, idx: usize, n: u32, depth: u32) {
+        if self.res {
+            // registers stay in their locals: stores only on the way out
+            let need = self.need[idx];
+            if need {
+                self.exit_flags();
+            }
+            self.get(L_IC);
+            self.i64c(n as u64);
+            self.b(I64ADD);
+            if idx > self.cur {
+                self.set(L_IC);
+                self.cnt(0);
+                self.b(BR);
+                self.u((depth + (idx - self.cur - 1) as u32) as u64);
+                return;
+            }
+            self.cnt(1);
+            self.tee(L_IC);
+            self.cpu_ld64(off!(jit_limit));
+            self.b(I64GEU);
+            self.if_hint(VOID, false);
+            self.flush();
+            if !need {
+                self.exit_flags();
+            }
+            let a = self.cpu + off!(icount);
+            self.st_base();
+            self.get(L_IC);
+            self.mem(I64STORE, 3, a);
+            self.set_rip_const(target);
+            self.b(RET);
+            self.b(END);
+            self.i32c(idx as i32);
+            self.set(L_B);
+            self.b(BR);
+            self.u((depth + self.base) as u64);
+            return;
+        }
         if self.lic {
             self.flush();
             let need = self.need[idx];
@@ -1429,7 +1498,12 @@ impl G {
     /// Jump to a constant target: stays in the module when the target is one of its blocks.
     fn jump(&mut self, target: u64, n: u32, depth: u32) {
         match self.heads.iter().position(|&h| h == target) {
-            Some(idx) => self.internal(target, idx, n, depth),
+            Some(idx) => {
+                if depth == 0 {
+                    self.ensure_in();
+                }
+                self.internal(target, idx, n, depth)
+            }
             None => self.exit(target, n),
         }
     }
@@ -3070,9 +3144,11 @@ fn popcnt(g: &mut G, i: &Ins, live: bool) -> bool {
     true
 }
 
-const MAX_BLOCKS: usize = 24; // blocks per region
+const MAX_BLOCKS: usize = 16; // blocks per region
 const MAX_REGION_INS: usize = 320;
+const MAX_RETS: usize = 6; // return sites a ret compares with before it leaves the region
 
+#[derive(Clone)]
 struct Block {
     list: Vec<Ins>,
     end_rip: Option<u64>,
@@ -3141,7 +3217,6 @@ fn targets(b: &Block) -> Vec<u64> {
                 t.push(i.next.wrapping_add(i.imm));
                 t.push(i.next);
             }
-            0xFF if i.m.map_or(false, |m| m.reg & 7 == 2) => t.push(i.next),
             _ => {}
         }
     }
@@ -3177,7 +3252,6 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
         k += 1;
     }
     let cpu = &e.cpu as *const _ as u32;
-    let nb = blocks.len() as u32;
     let lic = opt();
     // per block: does it read the flags before it writes them all? (exits count as reads)
     let need = blocks
@@ -3198,35 +3272,76 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
     let call_next: Vec<u64> = blocks
         .iter()
         .flat_map(|b| b.list.iter())
-        .filter(|i| i.op == 0xE8 || (i.op == 0xFF && i.m.map_or(false, |m| m.reg & 7 == 2)))
+        .filter(|i| i.op == 0xE8 && heads.contains(&i.next.wrapping_add(i.imm))) // the callee runs in this region
         .map(|i| i.next)
         .collect();
-    let rets = (0..heads.len()).filter(|&j| call_next.contains(&heads[j])).collect();
+    let rets = (0..heads.len()).filter(|&j| call_next.contains(&heads[j])).take(MAX_RETS).collect();
+    let proto = Proto { cpu, tlb: e.mmu.tlb_addr(), m32: e.cpu.mode32, heads, rets, need, lic };
+    // first pass: registers loaded per block and stored at every jump; it also finds which
+    // registers the region reads and writes. Second pass (the code used): those registers
+    // stay in locals for the whole region.
+    let g1 = emit_region(&proto, blocks.clone(), None);
+    if !lic {
+        return finish(g1);
+    }
+    let masks = (g1.used | g1.wrote, g1.wrote);
+    let g = emit_region(&proto, blocks, Some(masks));
+    #[cfg(feature = "prof")]
+    {
+        prof::add(0xD0000000, total as u64);
+        prof::add(0xD0000001, g.c.len() as u64);
+    }
+    finish(g)
+}
+
+struct Proto {
+    cpu: u32,
+    tlb: u32,
+    m32: bool,
+    heads: Vec<u64>,
+    rets: Vec<usize>,
+    need: Vec<bool>,
+    lic: bool,
+}
+
+/// Emits the region's function body; `res` = (resident registers, written registers).
+fn emit_region(p: &Proto, blocks: Vec<Block>, res: Option<(u16, u16)>) -> G {
+    let nb = blocks.len() as u32;
+    let (res_in, res_dirty) = res.unwrap_or((0, 0));
     let mut g = G {
         c: Vec::with_capacity(4096),
         ntmp: FIRST_TMP,
         valid: 0,
         dirty: 0,
         prod: Prod::Unknown,
-        cpu,
-        tlb: e.mmu.tlb_addr(),
+        cpu: p.cpu,
+        tlb: p.tlb,
         pool: 0,
-        heads,
-        rets,
+        heads: p.heads.clone(),
+        rets: p.rets.clone(),
         base: 0,
         max_tmp: FIRST_TMP,
-        m32: e.cpu.mode32,
+        m32: p.m32,
         z: Default::default(),
         last_get: (0, 0),
         last_mask: usize::MAX,
-        lic,
-        need,
+        lic: p.lic,
+        need: p.need.clone(),
         hints: Vec::new(),
         cur: 0,
+        res: res.is_some(),
+        res_in,
+        used: 0,
+        wrote: 0,
     };
-    if lic {
+    if g.lic {
         g.cpu_ld64(off!(icount));
         g.set(L_IC);
+    }
+    for r in 0..16u8 {
+        if res_in & (1 << r) != 0 {
+            g.ensure(r);
+        }
     }
     g.b(0x03);
     g.b(VOID); // loop: every jump between blocks comes back here
@@ -3251,8 +3366,10 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
         g.b(END); // the code of block j follows the end of label j
         g.base = nb - 1 - j as u32;
         g.cur = j;
-        g.valid = 0;
-        g.dirty = 0;
+        // resident: every register is in its local (the region reads the ones it loaded, writes
+        // the others before reading them); the written ones may differ from memory
+        g.valid = if g.res { 0xFFFF } else { 0 };
+        g.dirty = if g.res { res_dirty } else { 0 };
         g.prod = Prod::Unknown;
         g.z.clear();
         g.ntmp = FIRST_TMP;
@@ -3261,13 +3378,7 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
     }
     g.b(END); // loop
     g.b(END); // function
-    #[cfg(feature = "prof")]
-    {
-        prof::add(0xD0000000, total as u64);
-        prof::add(0xD0000001, g.c.len() as u64);
-    }
-
-    finish(g)
+    g
 }
 
 fn emit_block(g: &mut G, b: Block) {
@@ -3302,6 +3413,9 @@ fn emit_block(g: &mut G, b: Block) {
         match i.op {
             0x70..=0x7F | 0x0F80..=0x0F8F => {
                 let target = i.next.wrapping_add(i.imm);
+                if g.heads.contains(&target) {
+                    g.ensure_in(); // (before the `if`: the loads must happen on both paths)
+                }
                 g.cond((i.op & 15) as u8);
                 // leaving the region is the unusual way (its hot targets are inside)
                 if g.heads.contains(&target) {
@@ -3360,8 +3474,7 @@ fn emit_block(g: &mut G, b: Block) {
                     g.set(L_T);
                     g.push(L_T);
                 }
-                let all: Vec<usize> = (0..g.heads.len()).collect();
-                g.dyn_jump(t, n, &all);
+                g.exit_dyn(t, n);
                 done_all = true;
                 break;
             }
