@@ -184,6 +184,9 @@ if (x.linux_save_next) { // big files: 4 KB blocks in swap slots (lxdata.rs), no
   const MB = 1048576, h0 = x.heap_used();
   await step('dd if=/dev/zero of=/tmp/z bs=1M count=3 2>/dev/null; printf ABC | dd of=/tmp/z bs=1 seek=2000000 conv=notrunc 2>/dev/null; dd if=/tmp/z bs=1 skip=1999999 count=5 2>/dev/null | od -c; stat -c %s /tmp/z; truncate -s 4000 /tmp/z; stat -c %s /tmp/z; truncate -s 2000002 /tmp/z; dd if=/tmp/z bs=1 skip=1999999 count=3 2>/dev/null | od -c; rm /tmp/z\n',
     /\\0\s+A\s+B\s+C\s+\\0[\s\S]*^3145728\s[\s\S]*^4000\s[\s\S]*\\0\s+\\0\s+\\0/m, 'file in blocks: write in the middle, read back, shrink, grow with zeros');
+  // cp (sendfile) and ln share the blocks (copy-on-write): changing a copy leaves the original as it was
+  await step('dd if=/dev/urandom of=/tmp/c1 bs=1M count=3 2>/dev/null; printf tail >> /tmp/c1; s0=$(md5sum < /tmp/c1); cp /tmp/c1 /tmp/c2; ln /tmp/c1 /tmp/c3; printf XYZ | dd of=/tmp/c2 bs=1 seek=70000 conv=notrunc 2>/dev/null; truncate -s 100000 /tmp/c3; echo abc >> /tmp/c3; [ "$s0" = "$(md5sum < /tmp/c1)" ] && echo orig-same; cmp -s /tmp/c1 /tmp/c2 || echo copy-differs; dd if=/tmp/c2 bs=1 skip=70000 count=3 2>/dev/null; echo; stat -c %s /tmp/c2 /tmp/c3; dd if=/tmp/c3 bs=1 skip=100000 count=4 2>/dev/null | od -c | head -1; rm /tmp/c1 /tmp/c2 /tmp/c3\n',
+    /orig-same[\s\S]*copy-differs[\s\S]*XYZ[\s\S]*^3145732\s+^100004\s[\s\S]*a\s+b\s+c\s+\\n/m, 'copies share blocks: changing the copy (write, truncate, append) keeps the original');
   await step('dd if=/dev/urandom of=/tmp/big bs=1M count=64 2>/dev/null; sha256sum /tmp/big; cp /tmp/big ~/big2; sha256sum ~/big2; stat -c %s ~/big2; rm /tmp/big; echo big-done\n',
     /^([0-9a-f]{64})  \/tmp\/big\s[\s\S]*^\1  \/home\/tester\/big2\s[\s\S]*^67108864\s[\s\S]*big-done/m, 'big file (64 MB, more than the 24 MB RAM pool): write, copy, same sha256');
   const sum = (out.match(/^([0-9a-f]{64})  \/home\/tester\/big2/m) || [])[1];

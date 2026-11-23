@@ -761,6 +761,20 @@ fn write_data(e: &mut Engine, fd: i32, d: &[u8]) -> i64 {
     }
 }
 
+/// sendfile from the file `src` at `at` into the file open as `out`, sharing extents (lxdata.rs)
+/// when both ends line up with them; None when it cannot (the bytes are then copied).
+fn share_copy(e: &mut Engine, out: i32, src: &str, at: u64, n: u64) -> Option<i64> {
+    let (l, mm) = lxm(e);
+    let (dp, pos, app) = match l.fds.get(&out) { Some(Fd::File { path, pos, append }) => (path.clone(), *pos, *append), _ => return None };
+    if dp == src || dp.starts_with("/dev/") || l.stubs.contains_key(&dp) { return None; }
+    let ext = match l.fs.get(src) { Some(Node::File(d)) if at < d.len() => { let k = n.min(d.len() - at); (d.extents(at, k)?, k) } _ => return None };
+    let Some(Node::File(d)) = l.fs.get_mut(&dp) else { return None };
+    let to = if app { d.len() } else { pos };
+    if !d.share_in(&mut l.bc, mm, to, ext.1, &ext.0) { return None; }
+    if let Some(Fd::File { pos, .. }) = l.fds.get_mut(&out) { *pos = to + ext.1; }
+    Some(ext.1 as i64)
+}
+
 /// The `syscall` instruction (rip already points after it).
 pub fn syscall(e: &mut Engine) {
     let _g = crate::lock::lock();
@@ -945,8 +959,11 @@ pub fn syscall(e: &mut Engine) {
             let l = lx(e);
             let (path, pos) = match l.fds.get(&inp) { Some(Fd::File { path, pos, .. }) => (path.clone(), *pos), _ => return ret(e, -EINVAL) };
             let at = if offp != 0 { e.r64(offp) } else { pos };
-            let (l, mm) = lxm(e); let d = match l.fs.get(&path) { Some(Node::File(d)) => d.read(&mut l.bc, mm, at, n as usize), _ => return ret(e, -EBADF) };
-            let k = write_data(e, out, &d);
+            // file to file in blocks: the extents are shared (copy-on-write), no bytes move
+            let k = match share_copy(e, out, &path, at, n) { Some(k) => k, None => {
+                let (l, mm) = lxm(e); let d = match l.fs.get(&path) { Some(Node::File(d)) => d.read(&mut l.bc, mm, at, n as usize), _ => return ret(e, -EBADF) };
+                write_data(e, out, &d)
+            } };
             if k > 0 {
                 if offp != 0 { e.w64(offp, at + k as u64); } else if let Some(Fd::File { pos, .. }) = lx(e).fds.get_mut(&inp) { *pos += k as u64; }
             }

@@ -4,6 +4,8 @@
 // read or written with one host call (host_swap_readv/writev), through a write-back cache of
 // CACHE extents (oldest half dropped when full); a write that reaches the end of an extent sends
 // it out at once (streaming writes do not fill the cache), a read of part of one reads it whole.
+// Copies share extents (sendfile between files, hard links): an extent with more than one owner
+// is copied on its first write (copy-on-write), so `cp` of a 1 GB file moves no bytes.
 
 use crate::mmu::Mmu;
 use std::collections::HashMap;
@@ -31,7 +33,12 @@ impl From<Vec<u8>> for Data {
 struct Ent { b: Vec<u8>, dirty: bool, tick: u64 }
 
 #[derive(Default)]
-pub struct Cache { ext: HashMap<u32, Ent>, tick: u64 }
+pub struct Cache {
+    ext: HashMap<u32, Ent>,
+    tick: u64,
+    /// extents with more than one owner: how many owners beyond the first
+    refs: HashMap<u32, u32>,
+}
 
 /// The bits of blocks [a, b) of an extent.
 fn bits(a: usize, b: usize) -> u16 { (((1u32 << b) - 1) & !((1u32 << a) - 1)) as u16 }
@@ -71,6 +78,29 @@ impl Cache {
         if let Some(p) = self.ext.remove(&s) { if p.dirty { m.slot_writev(s, &p.b); } }
     }
     fn forget(&mut self, s: u32) { self.ext.remove(&s); }
+    /// Keeps `b` as the (changed) contents of the extent at slot `s`.
+    fn adopt(&mut self, m: &mut Mmu, s: u32, b: Vec<u8>) {
+        self.room(m);
+        self.tick += 1;
+        self.ext.insert(s, Ent { b, dirty: true, tick: self.tick });
+    }
+    /// One more owner of the extent at `s`.
+    fn share(&mut self, s: u32) { *self.refs.entry(s).or_insert(0) += 1; }
+    /// One owner less: the last one gives its slots back to the swap.
+    fn unref(&mut self, m: &mut Mmu, s: u32) {
+        if let Some(r) = self.refs.get_mut(&s) { *r -= 1; if *r == 0 { self.refs.remove(&s); } return; }
+        self.forget(s);
+        m.run_free(s, EXT_BLKS);
+    }
+    /// Makes `e` an extent only this file owns (copied when shared; `keep`: with its bytes).
+    fn own(&mut self, m: &mut Mmu, e: &mut (u32, u16), keep: bool) {
+        if e.0 == NONE || !self.refs.contains_key(&e.0) { return; }
+        let n = m.run_new(EXT_BLKS);
+        if keep && e.1 != 0 { let mut b = vec![0u8; EXT]; self.get(m, e.0, e.1, &mut b); self.adopt(m, n, b); }
+        else { e.1 = 0; }
+        self.unref(m, e.0);
+        e.0 = n;
+    }
     /// The extent as it is now, whole, in `b`.
     fn get(&mut self, m: &mut Mmu, s: u32, mask: u16, b: &mut [u8]) {
         match self.ext.get(&s) {
@@ -139,7 +169,7 @@ impl Data {
             let p = off + o as u64;
             let (j, at) = ((p / EXT as u64) as usize, (p % EXT as u64) as usize);
             let t = (EXT - at).min(d.len() - o);
-            if ext[j].0 == NONE { ext[j] = (m.run_new(EXT_BLKS), 0); }
+            if ext[j].0 == NONE { ext[j] = (m.run_new(EXT_BLKS), 0); } else { c.own(m, &mut ext[j], t < EXT); }
             let (sl, mask) = ext[j];
             if t == EXT { c.forget(sl); m.slot_writev(sl, &d[o..o + EXT]); ext[j].1 = 0xFFFF; }
             else {
@@ -160,10 +190,11 @@ impl Data {
         self.spill(m);
         let Data::Blk { len, ext } = self else { unreachable!() };
         let want = n.div_ceil(EXT as u64) as usize;
-        while ext.len() > want { let (s, _) = ext.pop().unwrap(); if s != NONE { c.forget(s); m.run_free(s, EXT_BLKS); } }
+        while ext.len() > want { let (s, _) = ext.pop().unwrap(); if s != NONE { c.unref(m, s); } }
         if n < *len && n % EXT as u64 != 0 {
             // the bytes past the new end in the last extent become zeros (they read as zeros if it grows again)
             let at = (n % EXT as u64) as usize;
+            if ext[want - 1].1 != 0 { c.own(m, &mut ext[want - 1], true); }
             let (s, mask) = ext[want - 1];
             if s != NONE && mask != 0 {
                 let pg = c.load(m, s, mask);
@@ -192,25 +223,42 @@ impl Data {
 
     /// Empties the file (its blocks go back to the swap).
     pub fn clear(&mut self, c: &mut Cache, m: &mut Mmu) {
-        if let Data::Blk { ext, .. } = self { for &(s, _) in ext.iter() { if s != NONE { c.forget(s); m.run_free(s, EXT_BLKS); } } }
+        if let Data::Blk { ext, .. } = self { for &(s, _) in ext.iter() { if s != NONE { c.unref(m, s); } } }
         *self = Data::Mem(Vec::new());
     }
 
-    /// A separate copy (hard links are copies here).
-    pub fn dup(&self, c: &mut Cache, m: &mut Mmu) -> Data {
+    /// A separate copy (hard links are copies here); a file in blocks shares them (copy-on-write).
+    pub fn dup(&self, c: &mut Cache, _m: &mut Mmu) -> Data {
         match self {
             Data::Mem(v) => Data::Mem(v.clone()),
             Data::Blk { len, ext } => {
-                let mut b = vec![0u8; EXT];
-                let ext = ext.iter().map(|&(s, mask)| {
-                    if s == NONE { return (NONE, 0); }
-                    c.get(m, s, mask, &mut b);
-                    let n = m.run_new(EXT_BLKS);
-                    m.slot_writev(n, &b);
-                    (n, 0xFFFF)
-                }).collect();
-                Data::Blk { len: *len, ext }
+                for &(s, _) in ext.iter() { if s != NONE { c.share(s); } }
+                Data::Blk { len: *len, ext: ext.clone() }
             }
         }
+    }
+
+    /// The extents holding bytes [off, off+n) when they can be shared: a file in blocks, `off` at
+    /// the start of an extent, and `n` whole extents or reaching the end of the file.
+    pub fn extents(&self, off: u64, n: u64) -> Option<Vec<(u32, u16)>> {
+        let Data::Blk { len, ext } = self else { return None };
+        if n == 0 || off % EXT as u64 != 0 || off + n > *len || (n % EXT as u64 != 0 && off + n != *len) { return None; }
+        let j = (off / EXT as u64) as usize;
+        Some(ext[j..j + n.div_ceil(EXT as u64) as usize].to_vec())
+    }
+    /// Puts `n` bytes at `at` that are the extents `src` of another file (from `extents`): they are
+    /// shared, not copied. `at` starts an extent; a last partial extent must end this file too.
+    pub fn share_in(&mut self, c: &mut Cache, m: &mut Mmu, at: u64, n: u64, src: &[(u32, u16)]) -> bool {
+        if at % EXT as u64 != 0 || (n % EXT as u64 != 0 && at + n < self.len()) { return false; }
+        self.spill(m);
+        if at + n > self.len() { self.resize(c, m, at + n); }
+        let Data::Blk { ext, .. } = self else { unreachable!() };
+        let j = (at / EXT as u64) as usize;
+        for (i, &e) in src.iter().enumerate() {
+            if e.0 != NONE { c.share(e.0); }
+            let old = std::mem::replace(&mut ext[j + i], e);
+            if old.0 != NONE { c.unref(m, old.0); }
+        }
+        true
     }
 }
