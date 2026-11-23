@@ -895,6 +895,64 @@ impl Mmu {
         match size { 8 => self.write8(a, v as u8), 16 => self.wr::<2>(a, v), 32 => self.wr::<4>(a, v), _ => self.wr::<8>(a, v) }
     }
 
+    /// Pool offset of `a` from the TLB alone (None = not there right now).
+    #[inline(always)]
+    fn tlb_off(&self, a: u64, write: bool) -> Option<usize> {
+        let vpn = a >> 12;
+        let e = self.tlb[(vpn as usize) & (TLB_SIZE - 1)];
+        if e.tag == vpn && (!write || e.writable) {
+            Some(e.add.wrapping_add(a as u32).wrapping_sub(self.sh.pool.as_ptr() as u32) as usize)
+        } else {
+            None
+        }
+    }
+    /// Pool offsets of `src` (read) and `dst` (write) for a bulk string operation, when both
+    /// pages are in memory at once (bringing in one can push the other out, and a write can
+    /// copy a shared page). None = do one element through read_sized/write_sized instead,
+    /// which faults exactly where the instruction would.
+    pub fn bulk_pair(&mut self, src: u64, dst: u64) -> Option<(usize, usize)> {
+        if crate::lock::MT && (self.lk != 0 || strong()) { return None; }
+        self.tr(src, false).ok()?;
+        self.tr(dst, true).ok()?;
+        Some((self.tlb_off(src, false)?, self.tlb_off(dst, true)?))
+    }
+    /// Pool offset of `dst` for a bulk write (see bulk_pair).
+    pub fn bulk_dst(&mut self, dst: u64) -> Option<usize> {
+        if crate::lock::MT && (self.lk != 0 || strong()) { return None; }
+        self.tr(dst, true).ok()?;
+        self.tlb_off(dst, true)
+    }
+    /// REP MOVS of k elements of `sz` bytes inside one page each: `d` and `s` are the pool
+    /// offsets of the lowest element of each run; `back` = DF=1 (highest element first).
+    /// The result is the one element-by-element copy gives, overlap included.
+    pub fn bulk_move(&mut self, d: usize, s: usize, k: usize, sz: usize, back: bool) {
+        let n = k * sz;
+        let p = &mut self.sh.pool;
+        // memmove gives the element order's result unless the copy runs into bytes it has yet to read
+        if d == s || d + n <= s || s + n <= d || (!back && d < s) || (back && d > s) {
+            p.copy_within(s..s + n, d);
+            return;
+        }
+        let mut t = [0u8; 8];
+        for j in 0..k {
+            let i = if back { k - 1 - j } else { j };
+            t[..sz].copy_from_slice(&p[s + i * sz..s + i * sz + sz]);
+            p[d + i * sz..d + i * sz + sz].copy_from_slice(&t[..sz]);
+        }
+    }
+    /// REP STOS of k elements of `sz` bytes of value v at pool offset d (one page).
+    pub fn bulk_fill(&mut self, d: usize, k: usize, sz: usize, v: u64) {
+        let p = &mut self.sh.pool[d..d + k * sz];
+        if sz == 1 {
+            p.fill(v as u8);
+            return;
+        }
+        let b = v.to_le_bytes();
+        for c in p.chunks_exact_mut(sz) {
+            c.copy_from_slice(&b[..sz]);
+        }
+    }
+
     /// Address in wasm memory of a program byte (for Wine code compiled to wasm).
     #[inline(always)]
     pub fn host_addr(&mut self, a: u64, write: bool) -> Result<u64, Fault> {

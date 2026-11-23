@@ -37,6 +37,7 @@ add('rootfs.tar', zlib.gunzipSync(fs.readFileSync('alpine-rootfs.tar.gz')));
 add('zoverlay.tar', fs.readFileSync('overlay.tar'));
 add('stage1', fs.readFileSync(new URL('./stage1', import.meta.url))); // tests/src/stage1.c, built static
 add('x86calls', fs.readFileSync(new URL('./x86calls', import.meta.url))); // tests/src/x86calls.c, built static in CI (Alpine)
+add('x86string', fs.readFileSync(new URL('./x86string', import.meta.url))); // tests/src/x86string.c, built static in CI (Alpine)
 // WebAssembly programs (kernel with wasi_next; the published engine.wasm may be older)
 const wasiHello = new URL('./wasihello.wasm', import.meta.url); // tests/src/wasihello.c, built in CI (wasi-sdk)
 const hasWasi = !!x.wasi_next;
@@ -138,6 +139,7 @@ await step('awk \'BEGIN{for(i=0;i<400000;i++)a[i]="item number " i; print length
 results.push(swap.size > 0); console.log((swap.size > 0 ? 'PASS' : 'FAIL') + ' pages went to swap (' + swap.size + ' chunks)');
 await step('sh -c \'awk "BEGIN{for(i=0;i<200000;i++)a[i]=i; print 1}" & awk "BEGIN{for(i=0;i<200000;i++)b[i]=i; print 2}"; wait\' | sort | tr "\\n" " "; echo\n', /1 2/, 'two processes swapping at once');
 await step('/root/x86calls\n', /x86calls ok \d+/, 'calls and returns under the JIT: recursion, function pointers, tail calls, longjmp, signals, threads');
+await step('/root/x86string\n', /x86string ok \d+/, 'rep movs/stos: sizes, alignments, overlaps, DF=1, long counts, memcpy/memset, fault');
 await step('/root/stage1 threads\n', /threads 200000/, 'threads, mutex and condition variable (futex)');
 await step('/root/stage1 signals\n', /signals 10 7 15/, 'signal handlers, pause, kill');
 await step('/root/stage1 sockets\n', /sockets ping pong 0 tcp-ok/, 'socketpair, unix server, TCP on 127.0.0.1');
