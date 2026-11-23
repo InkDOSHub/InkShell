@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <unistd.h>
 
 #define NI __attribute__((noinline))
 static int fails, checks;
@@ -82,7 +83,8 @@ static volatile int ticks;
 static sigjmp_buf sjb;
 static volatile int jump_out;
 static void on_alarm(int s) { (void)s; ticks++; if (jump_out && ticks >= 3) siglongjmp(sjb, 1); }
-NI static uint64_t spin(int n) { return n == 0 ? 0 : spin(n - 1) + (uint64_t)(n & 3); }
+// (the engine delivers signals when a system call returns: the deepest frame makes one)
+NI static uint64_t spin(int n) { if (n == 0) return (uint64_t)getppid() * 0; return spin(n - 1) + (uint64_t)(n & 3); }
 
 // 8 threads: recursion and pointer calls on two threads at once
 static void *thr(void *a) {
