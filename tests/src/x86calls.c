@@ -92,11 +92,13 @@ static void *thr(void *a) {
 }
 
 int main(void) {
+  fputs("[fib] ", stderr);
   for (int n = 0; n < 26; n++) check("fib", fib(n), fib_loop(n));
   for (int r = 0; r < 20; r++) check("deep", deep(20000 + r, (uint64_t)r), deep_loop(20000 + r, (uint64_t)r));
   check("ack", ack(2, 300), 603);
   check("ack3", ack(3, 6), 509);
 
+  fputs("[mutual] ", stderr);
   int e = 0; for (unsigned n = 0; n < 3000; n++) e += is_even(n) != !(n & 1) || is_odd(n) != (int)(n & 1);
   check("even/odd", (uint64_t)e, 0);
   uint64_t F[40], M[40]; F[0] = 1; M[0] = 0;
@@ -104,6 +106,7 @@ int main(void) {
   e = 0; for (int n = 0; n < 40; n++) e += hof(n) != F[n] || hom(n) != M[n];
   check("hofstadter", (uint64_t)e, 0);
 
+  fputs("[fptr] ", stderr);
   uint64_t a1 = 1, a2 = 1;
   for (int i = 0; i < 100000; i++) { a1 = ops[i & 3](a1, (uint64_t)i); a2 = vops[i & 3](a2, (uint64_t)i); }
   uint64_t a3 = 1;
@@ -123,6 +126,7 @@ int main(void) {
   uint64_t sum1 = 0; int bad = 0; for (int i = 0; i < 50000; i++) { sum1 += v[i]; bad += i && v[i - 1] > v[i]; }
   check("qsort order", (uint64_t)bad, 0); check("qsort sum", sum1, sum0);
 
+  fputs("[tail] ", stderr);
   uint64_t t1 = 0; for (uint64_t k = 1; k <= 100000; k++) t1 += k * k;
   check("tail self", tail_sum(100000, 0), t1);
   uint64_t ta = 7; for (uint64_t n = 100001; n > 0; n--) ta = (n & 1) ? ta * 3 + 1 : ta ^ (ta >> 3);
@@ -131,6 +135,7 @@ int main(void) {
   for (int k = 0; k < 200000; k++) { w1 = sw(w1, k); uint64_t x = w2; switch (k & 7) { case 0: x = x + 1; break; case 1: x = x * 3; break; case 2: x = x ^ 0x55; break; case 3: x = x - 7; break; case 4: x = x << 1; break; case 5: x = x >> 1; break; case 6: x = ~x; break; default: x = x * x; } w2 = x; }
   check("switch", w1, w2);
 
+  fputs("[longjmp] ", stderr);
   uint64_t lj = 0;
   for (int r = 0; r < 300; r++) { volatile int at = 50 + r * 7; int got = setjmp(jb); if (got == 0) dive(0, at); else lj += (uint64_t)got; }
   uint64_t lj2 = 0; for (int r = 0; r < 300; r++) lj2 += (uint64_t)(50 + r * 7 + 1);
@@ -138,12 +143,14 @@ int main(void) {
   check("after longjmp", fib(20), 6765);
 
 #if defined(__x86_64__)
+  fputs("[asm] ", stderr);
   uint64_t sr = 0; for (int r = 0; r < 1000; r++) sr += swap_ret_target();
   check("changed return address", sr, 42000);
   uint64_t ri = 0; for (uint64_t r = 0; r < 1000; r++) ri += ret_imm(r);
   check("ret imm16", ri, 1000 * 3 + 999 * 1000 / 2);
 #endif
 
+  fputs("[signals] ", stderr);
   struct sigaction sa; memset(&sa, 0, sizeof sa); sa.sa_handler = on_alarm; sigaction(SIGALRM, &sa, 0);
   struct itimerval it = { { 0, 2000 }, { 0, 2000 } }; setitimer(ITIMER_REAL, &it, 0);
   uint64_t sp1 = 0; for (int r = 0; r < 1000000 && ticks < 3; r++) sp1 += spin(5000) - spin(4999);
@@ -157,6 +164,7 @@ int main(void) {
   check("recursion after signals", spin(1000), 1500);
   (void)sp1;
 
+  fputs("[threads] ", stderr);
   pthread_t th[2]; void *res[2];
   for (int k = 0; k < 2; k++) pthread_create(&th[k], 0, thr, (void *)(intptr_t)k);
   for (int k = 0; k < 2; k++) pthread_join(th[k], &res[k]);
