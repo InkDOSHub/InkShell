@@ -4,6 +4,7 @@
 // /proc, and the swap (small real RAM, so pages of several processes go out and come back).
 import fs from 'node:fs';
 import zlib from 'node:zlib';
+import { runWasi } from '../wasi.js';
 const wasmPath = process.argv[2] || 'engine.wasm';
 const POOL = 24; // MB of real RAM: small on purpose
 const dec = new TextDecoder(), enc = new TextEncoder();
@@ -35,6 +36,10 @@ add('busybox', fs.readFileSync('busybox'));
 add('rootfs.tar', zlib.gunzipSync(fs.readFileSync('alpine-rootfs.tar.gz')));
 add('zoverlay.tar', fs.readFileSync('overlay.tar'));
 add('stage1', fs.readFileSync(new URL('./stage1', import.meta.url))); // tests/src/stage1.c, built static
+// WebAssembly programs (kernel with wasi_next; the published engine.wasm may be older)
+const wasiHello = new URL('./wasihello.wasm', import.meta.url); // tests/src/wasihello.c, built in CI (wasi-sdk)
+const hasWasi = !!x.wasi_next;
+if (hasWasi) add('hello.wasm', fs.readFileSync(wasiHello));
 put(enc.encode('busybox\0sh /etc/inksoc/start'));
 if (x.start() !== 0) { console.log('FAIL start:', dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()))); process.exit(1); }
 x.linux_winsize(30, 100);
@@ -45,6 +50,7 @@ async function settle(maxMs = 120000) {
   for (let idle = 0; Date.now() - t0 < maxMs;) {
     const st = x.run(2000000);
     serveMount();
+    if (hasWasi) for (let pid; (pid = x.wasi_next());) runWasi(x, pid);
     if (st === 1 || st === 2) return st;
     // waiting: a timer due soon (sleep, a timeout) is not idle; only waiting for the terminal is
     if (st === 3) { const ms = x.stat(17); if (ms >= 30 && !(x.linux_timer_ms?.() >= 0) && ++idle > 20) return 3; await new Promise((r) => setTimeout(r, Math.min(ms, 30) || 2)); } else idle = 0;
@@ -103,6 +109,10 @@ await step('stat -c %s /mnt/t/sub/b.txt; cat /mnt/t/a.txt; echo new > /mnt/t/n.t
 await step('/root/stage1 epoll\n', /epoll 0 1 22 1 11 5 select 0 1/, 'epoll, eventfd, select');
 await step('/root/stage1 timers\n', /timers 14 1 fd 10 14/, 'alarm, setitimer, timerfd, timer_create; SIGALRM ends a process');
 await step('/root/stage1 pty\n', /pty size tty line \^C sig 2/, 'pseudo-terminal: size, tty name, line mode, Ctrl+C');
+if (hasWasi) {
+  await step('echo piped | /root/hello.wasm A > /tmp/w.out; echo rc=$?; cat /tmp/w.out /tmp/wasi-made.txt\n', /rc=3[\s\S]*wasi argc=2 arg1=A in=piped[\s\S]*made-by-wasm/, 'WebAssembly program: args, pipe in, redirect out, file, exit code');
+  await step('/root/hello.wasm B < /dev/null | tr a-z A-Z\n', /WASI ARGC=2 ARG1=B IN=\(EOF\)/, 'WebAssembly program in a pipeline');
+} else console.log('(engine without WebAssembly programs: published engine.wasm older than the kernel source)');
 await step('trap "echo caught-usr1" USR1; kill -USR1 $$\n', /caught-usr1/, 'shell trap');
 await step('(nc -l -p 8098 > /tmp/nc.txt &) ; sleep 0.3; echo over-nc | nc 127.0.0.1 8098; sleep 0.3; cat /tmp/nc.txt\n', /^over-nc/m, 'nc server and client on this machine');
 { // Ctrl+C stops a running program and the shell comes back

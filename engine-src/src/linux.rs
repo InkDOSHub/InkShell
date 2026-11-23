@@ -37,7 +37,7 @@ pub enum Fd {
 
 /// What a waiting Linux thread waits for.
 #[derive(Clone)]
-pub enum Cond { PipeRead(u32), Child { parent: u32, pid: i64 }, Stdin, Until, Socks(Vec<u32>), Fds(Vec<(Fd, u16)>), Futex { addr: u64 }, Signal, SigWait(u64), Fetch(String) }
+pub enum Cond { PipeRead(u32), Child { parent: u32, pid: i64 }, Stdin, Until, Socks(Vec<u32>), Fds(Vec<(Fd, u16)>), Futex { addr: u64 }, Signal, SigWait(u64), Fetch(String), Wasi(u32) }
 
 /// A process that is not running right now keeps its state here.
 pub struct Saved {
@@ -45,6 +45,39 @@ pub struct Saved {
     brk_start: u64, brk: u64, mmap_next: u64, exe: String, ids: (u32, u32, u32),
     space: crate::mmu::Space, jit: crate::jit::Jit,
 }
+/// A WebAssembly program's process: the call the page asked for and the answer.
+#[derive(Default)]
+pub struct Wasi { pub info: Vec<u8>, req: Option<([u64; 7], Vec<u8>, u64)>, res: Option<(i64, Vec<u8>)>, out_len: u64 }
+
+/// Where the stub's data buffer lives and how big it is (the page reads and writes up to this much per call).
+pub const WBUF: u64 = 0x1000_0000;
+pub const WBUF_SIZE: u64 = 1 << 20;
+const SYS_WASI_WAIT: u64 = 0x5741;
+const SYS_WASI_DONE: u64 = 0x5742;
+
+/// The stub a WebAssembly program's process runs (static x86-64 ELF):
+///   loop: mov eax, WAIT; syscall   -> the kernel loads the page's call (rax = nr, args)
+///         syscall                  -> the real Linux call, with this process's files
+///         mov rdi, rax; mov eax, DONE; syscall; jmp loop
+fn wasi_stub() -> Vec<u8> {
+    let code: [u8; 21] = [0xB8, 0x41, 0x57, 0, 0, 0x0F, 0x05, 0x0F, 0x05, 0x48, 0x89, 0xC7, 0xB8, 0x42, 0x57, 0, 0, 0x0F, 0x05, 0xEB, 0xEB];
+    let (base, ph) = (0x40_0000u64, 64u64);
+    let entry = base + ph + 2 * 56;
+    let mut b = Vec::new();
+    b.extend_from_slice(b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0");
+    b.extend_from_slice(&2u16.to_le_bytes()); b.extend_from_slice(&62u16.to_le_bytes()); b.extend_from_slice(&1u32.to_le_bytes());
+    b.extend_from_slice(&entry.to_le_bytes()); b.extend_from_slice(&ph.to_le_bytes()); b.extend_from_slice(&0u64.to_le_bytes());
+    b.extend_from_slice(&0u32.to_le_bytes()); b.extend_from_slice(&64u16.to_le_bytes()); b.extend_from_slice(&56u16.to_le_bytes());
+    b.extend_from_slice(&2u16.to_le_bytes()); b.extend_from_slice(&0u16.to_le_bytes()); b.extend_from_slice(&0u16.to_le_bytes()); b.extend_from_slice(&0u16.to_le_bytes());
+    let total = entry - base + code.len() as u64;
+    for (off, va, fsz, msz, fl) in [(0u64, base, total, total, 5u32), (0, WBUF, 0, WBUF_SIZE, 6)] {
+        b.extend_from_slice(&1u32.to_le_bytes()); b.extend_from_slice(&fl.to_le_bytes());
+        for v in [off, va, va, fsz, msz, 0x1000] { b.extend_from_slice(&v.to_le_bytes()); }
+    }
+    b.extend_from_slice(&code);
+    b
+}
+
 pub struct Proc { ppid: u32, saved: Option<Saved>, zombie: Option<i32>, pgid: u32, ctty: u32 } // ctty: controlling pty (0 = the page's terminal)
 
 #[derive(Default)]
@@ -93,6 +126,10 @@ pub struct Lx {
     masks: BTreeMap<u32, u64>,
     susp: BTreeMap<u32, u64>,
     fg: u32, // foreground process group of the terminal (0 = not set)
+    // WebAssembly (WASI) programs: the page runs the module; the process here is a small stub
+    // that makes the module's Linux calls with its own files (see `wasi_stub`)
+    pub wasi: BTreeMap<u32, Wasi>,
+    pub wasi_new: std::collections::VecDeque<u32>,
     // local sockets, eventfd, epoll
     us: BTreeMap<u32, Us>,
     us_names: BTreeMap<String, u32>,
@@ -671,6 +708,27 @@ pub fn syscall(e: &mut Engine) {
     if matches!(nr, 2 | 257 | 76 | 77 | 82 | 264 | 316 | 83 | 258 | 84 | 87 | 263 | 86 | 88 | 265 | 266) || (matches!(nr, 1 | 18 | 20) && matches!(lx(e).fds.get(&(a0 as i32)), Some(Fd::File { .. }))) { lx(e).dirty = true; }
     let v: i64 = match nr {
         0 => do_read(e, a0 as i32, a1, a2),
+        SYS_WASI_WAIT => { // a WebAssembly program's stub waits for the page's next call
+            let l = lx(e);
+            let me = l.pid;
+            match l.wasi.get_mut(&me).and_then(|w| w.req.take().map(|q| { w.out_len = q.2; q })) {
+                None if l.wasi.contains_key(&me) => { l.want = Some(Cond::Wasi(me)); BLOCKED }
+                None => -ENOSYS,
+                Some((a, data, _)) => {
+                    let _ = e.mmu.write_bytes(WBUF, &data[..data.len().min(WBUF_SIZE as usize)]);
+                    for (k, r) in [7usize, 6, 2, 10, 8, 9].into_iter().enumerate() { e.cpu.regs[r] = a[k + 1]; }
+                    a[0] as i64
+                }
+            }
+        }
+        SYS_WASI_DONE => { // the call's result (and the buffer the page wants back)
+            let me = lx(e).pid;
+            let n = lx(e).wasi.get(&me).map_or(0, |w| w.out_len.min(WBUF_SIZE));
+            let mut d = vec![0u8; n as usize];
+            let _ = e.mmu.read_bytes(WBUF, &mut d);
+            if let Some(w) = lx(e).wasi.get_mut(&me) { w.res = Some((a0 as i64, d)); }
+            0
+        }
         22 | 293 => { // pipe / pipe2
             let l = lx(e);
             let id = l.next_pipe; l.next_pipe += 1;
@@ -1414,6 +1472,7 @@ pub fn ready(e: &mut Engine, c: &Cond, pid: u32, tid: u32) -> bool {
         Cond::Futex { .. } | Cond::Signal => false,
         Cond::SigWait(set) => l.pend.get(&pid).map_or(false, |p| p & set != 0),
         Cond::Fetch(p) => !l.stubs.contains_key(p), // the page sent the file of a mounted folder
+        Cond::Wasi(p) => l.wasi.get(p).map_or(true, |w| w.req.is_some()),
     }
 }
 
@@ -1541,8 +1600,19 @@ fn execve(e: &mut Engine, path: &str, mut args: Vec<String>, env: Vec<String>) -
         p = l.resolve(&interp, true);
         data = match l.fs.get(&p) { Some(Node::File(d)) => d.clone(), _ => return -ENOENT };
     }
-    if !data.starts_with(b"\x7fELF") { return -ENOEXEC; }
+    let wasm = data.starts_with(b"\0asm");
+    if !wasm && !data.starts_with(b"\x7fELF") { return -ENOEXEC; }
     if args.is_empty() { args.push(p.clone()); }
+    if wasm { // the page runs the module; this process becomes its stub
+        let mut info = p.clone().into_bytes();
+        for a in &args { info.push(0); info.extend_from_slice(a.as_bytes()); }
+        info.push(0);
+        for v in &env { info.push(0); info.extend_from_slice(v.as_bytes()); }
+        let me = l.pid;
+        l.wasi.insert(me, Wasi { info, ..Default::default() });
+        l.wasi_new.push_back(me);
+        data = wasi_stub();
+    }
     // set-uid programs (no file modes here): these run with effective uid 0, as on Alpine
     let base = path.rsplit('/').next().unwrap_or("");
     if matches!(base, "su" | "passwd" | "login" | "ping" | "ping6" | "traceroute" | "crontab" | "doas" | "sudo" | "newgrp" | "chsh" | "chfn" | "gpasswd") { l.ids.2 = 0; }
@@ -2750,3 +2820,74 @@ pub extern "C" fn linux_save_tar() -> u32 {
     t.extend_from_slice(&[0u8; 1024]);
     crate::set_out(t)
 }
+
+// ---------------------------------------------------------------- WebAssembly (WASI) programs
+
+/// The next process that started a WebAssembly program (0 = none). out_ptr(): "path\0arg\0...\0\0env\0...".
+#[no_mangle]
+pub extern "C" fn wasi_next() -> i32 {
+    let _g = crate::lock::lock();
+    let Some(l) = crate::eng().s.lx.as_mut() else { return 0 };
+    while let Some(pid) = l.wasi_new.pop_front() {
+        if let Some(w) = l.wasi.get(&pid) { let v = w.info.clone(); crate::set_out(v); return pid as i32; }
+    }
+    0
+}
+
+/// The description of WebAssembly process `pid` (in out_ptr()): "path\0arg\0...\0\0env\0..."; its length.
+#[no_mangle]
+pub extern "C" fn wasi_info(pid: u32) -> u32 {
+    let _g = crate::lock::lock();
+    let Some(l) = crate::eng().s.lx.as_mut() else { return 0 };
+    match l.wasi.get(&pid) { Some(w) => { let v = w.info.clone(); crate::set_out(v) } None => 0 }
+}
+
+/// The module of WebAssembly process `pid` (in out_ptr()); its length.
+#[no_mangle]
+pub extern "C" fn wasi_module(pid: u32) -> u32 {
+    let _g = crate::lock::lock();
+    let Some(l) = crate::eng().s.lx.as_mut() else { return 0 };
+    let Some(w) = l.wasi.get(&pid) else { return 0 };
+    let path = String::from_utf8_lossy(&w.info[..w.info.iter().position(|&c| c == 0).unwrap_or(w.info.len())]).into_owned();
+    match l.fs.get(&path) { Some(Node::File(d)) => { let d = d.clone(); crate::set_out(d) } _ => 0 }
+}
+
+/// Address of the stub's data buffer (call arguments point into it) and its size.
+#[no_mangle]
+pub extern "C" fn wasi_base() -> f64 { WBUF as f64 }
+#[no_mangle]
+pub extern "C" fn wasi_buf_size() -> f64 { WBUF_SIZE as f64 }
+
+/// The page's WebAssembly program `pid` makes Linux call `nr` (arguments as numbers; pointers
+/// into wasi_base()). The buffer (from buffer()) goes to wasi_base() first; `out_len` bytes come back.
+/// 0 = queued, -1 = not a WebAssembly process (it ended), -2 = a call is already waiting.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn wasi_call(pid: u32, nr: f64, a0: f64, a1: f64, a2: f64, a3: f64, a4: f64, a5: f64, out_len: f64) -> i32 {
+    let _g = crate::lock::lock();
+    let data = unsafe { crate::take_buf() };
+    let Some(l) = crate::eng().s.lx.as_mut() else { return -1 };
+    if !l.procs.get(&pid).map_or(false, |p| p.zombie.is_none()) { l.wasi.remove(&pid); return -1; }
+    let Some(w) = l.wasi.get_mut(&pid) else { return -1 };
+    if w.req.is_some() || w.res.is_some() { return -2; }
+    let n = |v: f64| v as i64 as u64;
+    w.req = Some(([n(nr), n(a0), n(a1), n(a2), n(a3), n(a4), n(a5)], data, n(out_len)));
+    0
+}
+
+/// The answer to the last wasi_call: -1 = not yet, -2 = the process ended (killed), else the
+/// length of the data copied to out_ptr(); the call's return value is wasi_ret().
+static mut WASI_RET: f64 = 0.0;
+#[no_mangle]
+pub extern "C" fn wasi_take(pid: u32) -> i32 {
+    let _g = crate::lock::lock();
+    let Some(l) = crate::eng().s.lx.as_mut() else { return -2 };
+    let alive = l.procs.get(&pid).map_or(false, |p| p.zombie.is_none());
+    match l.wasi.get_mut(&pid).and_then(|w| w.res.take()) {
+        Some((v, d)) => { unsafe { WASI_RET = v as f64; } crate::set_out(d) as i32 }
+        None if alive && l.wasi.contains_key(&pid) => -1,
+        None => { l.wasi.remove(&pid); -2 }
+    }
+}
+#[no_mangle]
+pub extern "C" fn wasi_ret() -> f64 { unsafe { WASI_RET } }
