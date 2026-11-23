@@ -144,6 +144,30 @@ if (hasWasi) {
 } else console.log('(engine without WebAssembly programs: published engine.wasm older than the kernel source)');
 await step('trap "echo caught-usr1" USR1; kill -USR1 $$\n', /caught-usr1/, 'shell trap');
 await step('(nc -l -p 8098 > /tmp/nc.txt &) ; sleep 0.3; echo over-nc | nc 127.0.0.1 8098; sleep 0.3; cat /tmp/nc.txt\n', /^over-nc/m, 'nc server and client on this machine');
+if (x.linux_save_next) { // big files: 4 KB blocks in swap slots (lxdata.rs), not in the engine's heap
+  const MB = 1048576, h0 = x.heap_used();
+  await step('dd if=/dev/zero of=/tmp/z bs=1M count=3 2>/dev/null; printf ABC | dd of=/tmp/z bs=1 seek=2000000 conv=notrunc 2>/dev/null; dd if=/tmp/z bs=1 skip=1999999 count=5 2>/dev/null | od -c; stat -c %s /tmp/z; truncate -s 4000 /tmp/z; stat -c %s /tmp/z; truncate -s 2000002 /tmp/z; dd if=/tmp/z bs=1 skip=1999999 count=3 2>/dev/null | od -c; rm /tmp/z\n',
+    /\\0\s+A\s+B\s+C\s+\\0[\s\S]*^3145728\s[\s\S]*^4000\s[\s\S]*\\0\s+\\0\s+\\0/m, 'file in blocks: write in the middle, read back, shrink, grow with zeros');
+  await step('dd if=/dev/urandom of=/tmp/big bs=1M count=64 2>/dev/null; sha256sum /tmp/big; cp /tmp/big ~/big2; sha256sum ~/big2; stat -c %s ~/big2; rm /tmp/big; echo big-done\n',
+    /^([0-9a-f]{64})  \/tmp\/big\s[\s\S]*^\1  \/home\/tester\/big2\s[\s\S]*^67108864\s[\s\S]*big-done/m, 'big file (64 MB, more than the 24 MB RAM pool): write, copy, same sha256');
+  const sum = (out.match(/^([0-9a-f]{64})  \/home\/tester\/big2/m) || [])[1];
+  const grow = (x.heap_used() - h0) / MB;
+  results.push(grow < 16); console.log((grow < 16 ? 'PASS' : 'FAIL') + ` big file: engine heap grew ${grow.toFixed(1)} MB (heap ${(x.heap_used() / MB).toFixed(1)} MB)`);
+  // the saved tar (what the page writes to OPFS) comes in pieces: the 64 MB file never sits whole in the heap
+  x.linux_save_begin();
+  const parts = []; let peak = 0;
+  for (let n; (n = x.linux_save_next()) > 0;) { parts.push(Buffer.from(new Uint8Array(mem.buffer, x.out_ptr(), n))); peak = Math.max(peak, x.heap_used()); }
+  const tar = Buffer.concat(parts); let got = null;
+  for (let o = 0; o + 512 <= tar.length;) {
+    const name = tar.toString('latin1', o, o + 100).replace(/\0.*$/s, ''), size = parseInt(tar.toString('latin1', o + 124, o + 136), 8) || 0;
+    if (!name) break;
+    if (name === 'home/tester/big2') got = crypto.createHash('sha256').update(tar.subarray(o + 512, o + 512 + size)).digest('hex');
+    o += 512 + Math.ceil(size / 512) * 512;
+  }
+  const sgrow = (peak - h0) / MB, sok = !!sum && got === sum && sgrow < 16;
+  results.push(sok); console.log((sok ? 'PASS' : 'FAIL') + ` saved tar in pieces (${parts.length}, ${(tar.length / MB).toFixed(0)} MB): big file same sha256, heap peak +${sgrow.toFixed(1)} MB` + (sok ? '' : ` (${sum} vs ${got})`));
+  await step('rm ~/big2; ls ~/big2 2>&1 | grep -c "No such"\n', /^1\s*$/m, 'big file removed');
+}
 { // Ctrl+C stops a running program and the shell comes back
   const before = out.length;
   send('sleep 30; echo after-sleep\n'); await settle(1500);

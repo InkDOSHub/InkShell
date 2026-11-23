@@ -597,6 +597,11 @@ impl Mmu {
     fn alloc_slot(&mut self) -> u32 {
         self.sh.free_slots.pop().unwrap_or_else(|| { let s = self.sh.swap_slots; self.sh.swap_slots += 1; s })
     }
+    /// Swap slots lent to the Linux files (lxdata.rs): big files keep their 4 KB blocks there.
+    pub fn slot_new(&mut self) -> u32 { self.alloc_slot() }
+    pub fn slot_free(&mut self, s: u32) { self.sh.free_slots.push(s); }
+    pub fn slot_read(&mut self, s: u32, b: &mut [u8]) { assert!(b.len() >= PAGE as usize); unsafe { host_swap_read(s, b.as_mut_ptr()); } }
+    pub fn slot_write(&mut self, s: u32, b: &[u8]) { assert!(b.len() >= PAGE as usize); unsafe { host_swap_write(s, b.as_ptr()); } }
     /// A full copy of the current address space (fork). Pages go to free frames while there are
     /// some, then straight to swap; pages already in swap are copied slot to slot.
     pub fn clone_space(&mut self) -> Option<Space> {

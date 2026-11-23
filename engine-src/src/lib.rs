@@ -12,6 +12,7 @@ mod jit;
 mod kernel32;
 mod lock;
 mod linux;
+mod lxdata;
 mod x87;
 mod f80;
 mod mmu;
@@ -198,6 +199,8 @@ static mut MSG: Vec<u8> = Vec::new();
 #[allow(static_mut_refs)]
 #[allow(static_mut_refs)]
 pub(crate) fn set_out(v: Vec<u8>) -> u32 { unsafe { OUT = v; OUT.len() as u32 } }
+#[allow(static_mut_refs)]
+pub(crate) fn take_out() -> Vec<u8> { unsafe { std::mem::take(&mut OUT) } }
 
 #[allow(static_mut_refs)]
 pub(crate) unsafe fn take_buf() -> Vec<u8> { std::mem::take(&mut BUF) }
@@ -615,7 +618,7 @@ static mut OUT: Vec<u8> = Vec::new();
 pub extern "C" fn out_file(i: u32) -> u32 {
     let e = eng();
     let (name, data) = if e.s.lx.is_some() {
-        let Some(x) = linux::written(e).into_iter().nth(i as usize) else { return 0 };
+        let Some(x) = linux::written(e, i as usize) else { return 0 };
         x
     } else {
         let Some(name) = e.s.fs.written.iter().nth(i as usize).cloned() else { return 0 };

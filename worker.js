@@ -23,17 +23,29 @@ async function loadSaved() {
 let saving = false;
 async function save() {
   if (saving) return; saving = true;
+  let w = null, h = null;
   try {
-    const n = x.linux_save_tar();
-    const data = new Uint8Array(mem.buffer, x.out_ptr(), n).slice();
     const root = await opfs();
     if (root) {
       const fh = await root.getFileHandle(SAVE, { create: true });
-      if (fh.createWritable) { const w = await fh.createWritable(); await w.write(data); await w.close(); }
-      else { const h = await fh.createSyncAccessHandle(); h.truncate(0); h.write(data, { at: 0 }); h.flush(); h.close(); }
+      if (fh.createWritable) w = await fh.createWritable(); else { h = await fh.createSyncAccessHandle(); h.truncate(0); }
     }
-    info(data.length);
-  } catch (e) { out('\r\n\x1b[2m[could not save the files: ' + e.message + ']\x1b[0m\r\n'); }
+    // the tar comes in pieces of about 4 MB (big files are in blocks, never whole in memory)
+    let at = 0;
+    const piece = async (n) => {
+      const data = new Uint8Array(mem.buffer, x.out_ptr(), n).slice();
+      if (w) await w.write(data); else if (h) h.write(data, { at });
+      at += n;
+    };
+    if (x.linux_save_next) { x.linux_save_begin(); for (let n; (n = x.linux_save_next()) > 0;) await piece(n); }
+    else await piece(x.linux_save_tar());
+    if (w) { await w.close(); w = null; }
+    if (h) { h.flush(); h.close(); h = null; }
+    info(at);
+  } catch (e) {
+    out('\r\n\x1b[2m[could not save the files: ' + e.message + ']\x1b[0m\r\n');
+    try { if (w) await w.abort(); if (h) h.close(); } catch (e2) {}
+  }
   saving = false;
 }
 
@@ -124,7 +136,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   };
   const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(u + ': ' + r.status); return r; });
   const [wasm, busybox, overlay, saved] = await Promise.all([
-    get('engine.wasm?v=21').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
+    get('engine.wasm?v=22').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
     get('overlay.tar?v=8').then((r) => r.arrayBuffer()), loadSaved()]);
   let rootfs = saved;
   if (!rootfs) {
