@@ -53,7 +53,7 @@ $('calib').onclick = async () => {
   $('calib').disabled = true;
   await stop(true);
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=22');
+  const c = new Worker('worker.js?v=23');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -78,7 +78,7 @@ showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
   stop(false).then(() => {
-    const r = new Worker('worker.js?v=22');
+    const r = new Worker('worker.js?v=23');
     r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
     r.postMessage({ type: 'reset' });
   });
@@ -104,6 +104,21 @@ function stop(save) {
 }
 
 let w = null, starting = false;
+// WebAssembly programs: each runs in its own Worker; the service worker carries their calls to the engine
+const wasiWorkers = new Map();
+const swOn = () => !!(navigator.serviceWorker && navigator.serviceWorker.controller);
+if (navigator.serviceWorker) {
+  navigator.serviceWorker.register('sw.js?v=1').catch(() => {});
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (w) w.postMessage({ type: 'wasi-sw', on: swOn() }); });
+}
+function wasiEnd(pid) { const b = wasiWorkers.get(pid); if (b) { b.terminate(); wasiWorkers.delete(pid); } }
+function wasiStart(m) {
+  const b = new Worker('wasi-worker.js?v=1', { type: 'module' });
+  wasiWorkers.set(m.pid, b);
+  b.onmessage = (ev) => { if (ev.data.type === 'done') wasiEnd(m.pid); };
+  b.onerror = () => wasiEnd(m.pid);
+  b.postMessage(m, [m.bytes.buffer]);
+}
 let ctrl = false;
 const send = (t) => { if (w) w.postMessage({ type: 'key', data: t }); };
 
@@ -111,7 +126,7 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=22');
+  w = new Worker('worker.js?v=23');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;
@@ -122,15 +137,18 @@ function start() {
     else if (m.type === 'msync') mountSync(m.root, m.ops);
     else if (m.type === 'saved') term.write('\r\n\x1b[2m[files saved]\x1b[0m\r\n');
     else if (m.type === 'info') { pref.set('alpine-user', m.user || ''); }
+    else if (m.type === 'wasi-start') wasiStart(m);
+    else if (m.type === 'wasi-end') wasiEnd(m.pid);
     else if (m.type === 'done') {
       term.write('\r\n\x1b[2m[' + (m.error ? 'stopped: ' + m.error : 'Linux ended') + ']\x1b[0m\r\n');
       if (w) w.terminate();
       w = null;
+      for (const pid of [...wasiWorkers.keys()]) wasiEnd(pid);
       setTimeout(() => { if (!w) openSettings(); }, 1500);
     }
   };
   fit();
-  w.postMessage({ type: 'start', rows: term.rows, cols: term.cols, network, poolMb: budget().pool, targetMb: 8192 });
+  w.postMessage({ type: 'start', rows: term.rows, cols: term.cols, network, poolMb: budget().pool, targetMb: 8192, sw: swOn() });
   for (const [root, m] of mounted) w.postMessage({ type: 'mount', root, list: m.list }); // mounted before a restart
 }
 

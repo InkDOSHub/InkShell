@@ -1,0 +1,42 @@
+name: Engine build
+# Rebuilds the published engine.wasm on a claude/* branch when engine-src changes (the agent's
+# sandbox cannot build wasm32) and bumps the cache query strings: engine.wasm?v= in worker.js,
+# worker.js?v= in app.js, app.js?v= in index.html (once per branch, relative to main).
+on:
+  push:
+    branches: ['claude/**']
+    paths: ['engine-src/**', '.github/workflows/engine.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: engine-${{ github.ref }}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Build
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cd engine-src && cargo build --release --target wasm32-unknown-unknown
+          cp target/wasm32-unknown-unknown/release/inksoc.wasm ../engine.wasm
+      - name: Bump query strings (once per branch)
+        run: |
+          git fetch -q origin main
+          v() { git show "$1" | grep -o "$2?v=[0-9]*" | head -1 | sed 's/.*=//'; }
+          bump() { # file, name: set name?v= to main's value + 1 unless already above it
+            m=$(v origin/main:$1 "$2"); c=$(v HEAD:$1 "$2")
+            [ -n "$m" ] && [ "$c" -le "$m" ] && sed -i "s/$2?v=[0-9]*/$2?v=$((m + 1))/g" "$1" || true
+          }
+          if ! git diff --quiet engine.wasm; then bump worker.js engine.wasm; bump app.js worker.js; bump index.html app.js; fi
+          git status --short
+      - name: Commit
+        run: |
+          git diff --quiet && { echo "engine.wasm unchanged"; exit 0; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Rebuild engine.wasm from engine-src ($(git rev-parse --short HEAD))"
+          git push

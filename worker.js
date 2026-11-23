@@ -97,8 +97,10 @@ function info(bytes) {
   postMessage({ type: 'info', user: u ? dec.decode(u).trim() : '', bytes });
 }
 
-async function run({ rows, cols, network, poolMb, targetMb }) {
+async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   if (network in NETS) net = network;
+  wasiSw = !!sw; wasiOpen(Math.random().toString(36).slice(2));
+  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=1'); } catch (e) { wasiInline = null; } }
   const swap = await openSwap(), ram = new Map();
   const page = (p) => new Uint8Array(mem.buffer, p, 4096);
   const env = {
@@ -122,7 +124,7 @@ async function run({ rows, cols, network, poolMb, targetMb }) {
   };
   const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(u + ': ' + r.status); return r; });
   const [wasm, busybox, overlay, saved] = await Promise.all([
-    get('engine.wasm?v=20').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
+    get('engine.wasm?v=21').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
     get('overlay.tar?v=6').then((r) => r.arrayBuffer()), loadSaved()]);
   let rootfs = saved;
   if (!rootfs) {
@@ -180,19 +182,69 @@ async function run({ rows, cols, network, poolMb, targetMb }) {
     feed();
     st = x.run(2000000);
     pumpNet();
+    if (x.wasi_next) wasiPump();
     if (mounts.size) { const n = x.linux_mount_fetch(); if (n) postMessage({ type: 'mfetch', paths: lx.text(n).split('\n') }); }
     if (st === 1 || st === 2) break;
     if (st === 3) {
       const t = performance.now();
       if (mounts.size && t - lastSync > 1500) { lastSync = t; syncMounts(); }
       if (t - lastSave > 3000 && x.linux_dirty()) { lastSave = t; await save(); }
-      await new Promise((r) => setTimeout(r, Math.min(30, Math.max(0, x.stat(17)))));
+      await sleep(Math.min(30, Math.max(0, x.stat(17))));
     } else await yieldNow();
   }
   if (mounts.size) syncMounts();
   if (x.linux_dirty()) await save();
   lx = null;
   postMessage({ type: 'done', error: st === 2 ? dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()).slice()) : '' });
+}
+
+/* ---- WebAssembly (WASI) programs: the kernel lists them (wasi_next); each runs in its own Worker
+   (wasi-worker.js, started by the page) whose calls come here through the service worker (sw.js) over
+   a BroadcastChannel. Without a service worker the module runs here (wasi.js runWasi), blocking the
+   terminal while it runs. ---- */
+let wasiSid = '', wasiBc = null, wasiSw = false, wasiInline = null;
+const wasiWait = new Map(), wasiLive = new Set();
+let wake = null;
+const sleep = (ms) => new Promise((r) => { const t = setTimeout(() => { wake = null; r(); }, ms); wake = () => { clearTimeout(t); wake = null; r(); }; });
+function wpack(h, data) {
+  const j = enc.encode(JSON.stringify(h)), d = data || new Uint8Array(0), b = new Uint8Array(4 + j.length + d.length);
+  new DataView(b.buffer).setUint32(0, j.length, true); b.set(j, 4); b.set(d, 4 + j.length); return b;
+}
+function wasiReply(id, h, data) { const b = wpack(h, data); wasiBc.postMessage({ id, body: b.buffer }, [b.buffer]); }
+function wasiOpen(sid) {
+  if (wasiBc) wasiBc.close();
+  wasiSid = sid; wasiBc = new BroadcastChannel('inkshell-wasi-' + sid);
+  wasiBc.onmessage = (e) => {
+    if (!x || !x.wasi_call) return;
+    const b = new Uint8Array(e.data.body), n = new DataView(b.buffer).getUint32(0, true);
+    const h = JSON.parse(dec.decode(b.subarray(4, 4 + n))), data = b.subarray(4 + n);
+    if (h.op === 'call') {
+      put(data);
+      const a = [...(h.a || []), 0, 0, 0, 0, 0, 0];
+      if (x.wasi_call(h.pid, h.nr, a[0], a[1], a[2], a[3], a[4], a[5], h.outLen || 0) !== 0) { wasiReply(e.data.id, { gone: 1 }); return; }
+    }
+    wasiWait.set(h.pid, { id: e.data.id, t: performance.now() });
+    if (wake) wake();
+  };
+}
+function wasiPump() {
+  for (let pid; (pid = x.wasi_next());) {
+    const k = x.wasi_info(pid), info = new Uint8Array(mem.buffer, x.out_ptr(), k).slice();
+    if (wasiSw) {
+      const m = x.wasi_module(pid), bytes = new Uint8Array(mem.buffer, x.out_ptr(), m).slice();
+      wasiLive.add(pid);
+      postMessage({ type: 'wasi-start', pid, sid: wasiSid, info, bytes, base: x.wasi_base(), size: x.wasi_buf_size() }, [bytes.buffer]);
+    } else if (wasiInline) wasiInline.runWasi(x, pid);
+    else { out('\r\n\x1b[2m[WebAssembly programs need a newer browser]\x1b[0m\r\n'); put(new Uint8Array(0)); x.wasi_call(pid, 231, 126, 0, 0, 0, 0, 0, 0); }
+  }
+  for (const [pid, q] of wasiWait) {
+    const n = x.wasi_take(pid);
+    if (n === -1) { if (performance.now() - q.t > 15000) { wasiWait.delete(pid); wasiReply(q.id, { pending: 1 }); } continue; }
+    wasiWait.delete(pid);
+    if (n === -2) wasiReply(q.id, { gone: 1 });
+    else wasiReply(q.id, { r: x.wasi_ret() }, n > 0 ? new Uint8Array(mem.buffer, x.out_ptr(), n).slice() : null);
+  }
+  for (const pid of wasiLive) if (!x.wasi_alive(pid)) { wasiLive.delete(pid); postMessage({ type: 'wasi-end', pid }); }
 }
 
 onmessage = async (ev) => {
@@ -215,6 +267,7 @@ onmessage = async (ev) => {
   if (d.type === 'save') { if (lx) { if (mounts.size) syncMounts(); await save(); } postMessage({ type: 'saved' }); return; }
   if (d.type === 'reset') { const root = await opfs(); if (root) { try { await root.removeEntry(SAVE); } catch (e) {} } postMessage({ type: 'reset' }); return; }
   if (d.type === 'calibrate') { calibrate(); return; }
+  if (d.type === 'wasi-sw') { wasiSw = !!d.on; return; }
   if (d.type === 'start') { try { await run(d); } catch (e) { postMessage({ type: 'done', error: e.message }); } }
 };
 

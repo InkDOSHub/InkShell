@@ -2,25 +2,30 @@
 // turns it into a small stub process and lists it in wasi_next(); this file runs the module and
 // makes each WASI call a Linux call of that stub (wasi_call / wasi_take), so the program uses the
 // process's own files, pipes, terminal and /mnt, and the shell sees a normal process (pid, exit code).
-// Calls are synchronous: while one waits, the engine keeps running the other processes (x.run).
-// Limits (next slices): runs inside the engine's thread (a terminal read waits in a loop); relative
-// paths resolve from "/"; no sockets.
+// Calls are synchronous. In node (tests) the module runs in the engine's thread (runWasi); on the
+// page it runs in its own Worker (wasi-worker.js) and each call is a synchronous request that the
+// service worker (sw.js) passes to the engine's worker, which keeps running meanwhile.
+// Limits: relative paths resolve from "/"; no sockets.
 const E = { 1: 63, 2: 44, 4: 27, 5: 29, 9: 8, 11: 6, 12: 48, 13: 2, 17: 20, 18: 75, 20: 54, 21: 31, 22: 28, 24: 33, 28: 51, 29: 70, 30: 69, 32: 64, 36: 37, 38: 52, 39: 55, 40: 32, 95: 58 };
 const errno = (v) => E[-v] ?? 29;
 const ftype = (mode) => ({ 0o040000: 3, 0o100000: 4, 0o020000: 2, 0o060000: 1, 0o120000: 7, 0o140000: 6 })[mode & 0o170000] ?? 0;
 const dtype = { 1: 0, 2: 2, 4: 3, 6: 1, 8: 4, 10: 7, 12: 6 };
-class Exit { constructor(code) { this.code = code; } }
+export class Exit { constructor(code) { this.code = code; } }
 
-/** Runs WebAssembly process `pid` (from x.wasi_next()) to its end; returns its exit code.
- *  x = engine exports; opts.wait(n) is called when every process waits (n = times in a row). */
+/** The "path\0args\0\0env" description (wasi_info) as { args, envs }. */
+export function parseInfo(bytes) {
+  const parts = new TextDecoder().decode(bytes).split('\0');
+  const sep = parts.indexOf('', 1);
+  return { args: parts.slice(1, sep), envs: parts.slice(sep + 1).filter((s) => s) };
+}
+
+/** Runs WebAssembly process `pid` (from x.wasi_next()) to its end inside the engine's own thread;
+ *  returns its exit code. x = engine exports; opts.wait(n) is called when every process waits. */
 export function runWasi(x, pid, opts = {}) {
-  const dec = new TextDecoder(), enc = new TextEncoder();
   const emem = () => new Uint8Array(x.memory.buffer);
   const k = x.wasi_info(pid);
-  const parts = dec.decode(emem().slice(x.out_ptr(), x.out_ptr() + k)).split('\0');
-  const sep = parts.indexOf('', 1);
-  const args = parts.slice(1, sep), envs = parts.slice(sep + 1).filter((s) => s);
-  const BASE = x.wasi_base(), SIZE = x.wasi_buf_size();
+  const { args, envs } = parseInfo(emem().slice(x.out_ptr(), x.out_ptr() + k));
+  const bytes = (() => { const n = x.wasi_module(pid); return emem().slice(x.out_ptr(), x.out_ptr() + n); })();
   // one Linux call of the stub: data goes to BASE first, `outLen` bytes come back
   function sys(nr, a = [], data, outLen = 0) {
     const d = data || new Uint8Array(0);
@@ -37,6 +42,13 @@ export function runWasi(x, pid, opts = {}) {
     const out = n > 0 ? emem().slice(x.out_ptr(), x.out_ptr() + n) : null;
     return { r: x.wasi_ret(), out };
   }
+  return runModule({ bytes, args, envs, base: x.wasi_base(), size: x.wasi_buf_size(), sys });
+}
+
+/** Runs a WASI module whose calls go through `sys(nr, args, data, outLen) -> { r, out }`
+ *  (a Linux call of the stub process; throws Exit when the process is gone). */
+export function runModule({ bytes, args, envs, base: BASE, size: SIZE, sys }) {
+  const dec = new TextDecoder(), enc = new TextEncoder();
   const cstr = (s) => { const b = enc.encode(s), o = new Uint8Array(b.length + 1); o.set(b); return o; };
   // WASI fd -> Linux fd; 3 = "/" (preopened)
   const fds = new Map([[0, 0], [1, 1], [2, 2]]);
@@ -201,7 +213,6 @@ export function runWasi(x, pid, opts = {}) {
     },
     sock_accept: () => 52, sock_recv: () => 52, sock_send: () => 52, sock_shutdown: () => 52,
   };
-  const bytes = (() => { const k = x.wasi_module(pid); return emem().slice(x.out_ptr(), x.out_ptr() + k); })();
   let code = 0;
   try {
     const mod = new WebAssembly.Module(bytes);
@@ -219,4 +230,16 @@ export function runWasi(x, pid, opts = {}) {
     }
   }
   return code;
+}
+
+/** Message framing between wasi-worker.js and the engine's worker: [u32 header length][JSON header][data]. */
+export function pack(h, data) {
+  const j = new TextEncoder().encode(JSON.stringify(h)), d = data || new Uint8Array(0);
+  const b = new Uint8Array(4 + j.length + d.length);
+  new DataView(b.buffer).setUint32(0, j.length, true); b.set(j, 4); b.set(d, 4 + j.length);
+  return b;
+}
+export function unpack(b) {
+  const n = new DataView(b.buffer, b.byteOffset).getUint32(0, true);
+  return { h: JSON.parse(new TextDecoder().decode(b.subarray(4, 4 + n))), out: b.slice(4 + n) };
 }

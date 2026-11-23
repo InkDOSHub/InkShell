@@ -2891,3 +2891,11 @@ pub extern "C" fn wasi_take(pid: u32) -> i32 {
 }
 #[no_mangle]
 pub extern "C" fn wasi_ret() -> f64 { unsafe { WASI_RET } }
+
+/// Is WebAssembly process `pid` still running? (The page ends the module's Worker when not: Ctrl+C, kill.)
+#[no_mangle]
+pub extern "C" fn wasi_alive(pid: u32) -> i32 {
+    let _g = crate::lock::lock();
+    let Some(l) = crate::eng().s.lx.as_mut() else { return 0 };
+    (l.wasi.contains_key(&pid) && l.procs.get(&pid).map_or(false, |p| p.zombie.is_none())) as i32
+}
