@@ -20,8 +20,7 @@ Item grande (3,5) pode ser fatiado pelo worker em sub-PRs; somar pontos por fati
 
 | Sem | Datas | Plano | Pts |
 |---|---|---|---|
-| 0 | até qui 26/11 | Só reparos. Qui 22h: item 1 + começo fácil item 2 | 3 |
-| 1 | 27/11–03/12 | Resto item 2; itens 3–6. Terminal pronto | 12,5 + 1,5 correções |
+| 1 | 23/11–03/12 (Paulo: assinatura nova, semana 0 vira semana 1) | Resto item 2; itens 3–6. Terminal pronto | 12,5 + 1,5 correções |
 | 2 | 04/12–10/12 | x86: call/ret (2), rep movs/stos (1), BMI/POPCNT/LZCNT (2), SSE/x87 no JIT (3,5), bench x86 CI (1) | 9,5 + 4,5 |
 | 3 | 11/12–17/12 | Opcional: cache JIT OPFS (2), Linux 32 bits (3,5), AVX/AVX2 (7) | até 12,5 |
 | 4+ | 18/12– | Windows/exe: só pesquisa se Paulo pedir | — |
@@ -32,8 +31,8 @@ Metas: fim sem 1 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 2
 
 | Data | Sem | Item | PR | Pts |
 |---|---|---|---|---|
-| 2026-11-23 | 0 | Processo: CLAUDE.md, graph.yml, fila | — | 0 (infra) |
-| 2026-11-23 | 0 | 1: bench em todo PR + comparação c/ main | #14 | 1 |
+| 2026-11-23 | 1 | Processo: CLAUDE.md, graph.yml, fila | — | 0 (infra) |
+| 2026-11-23 | 1 | 1: bench em todo PR + comparação c/ main | #14 | 1 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
