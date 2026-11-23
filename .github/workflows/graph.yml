@@ -23,7 +23,7 @@ jobs:
           graphify update . || graphify . --no-viz
           ls -la graphify-out
       - name: Summary
-        run: python3 tools/graph-summary.py graphify-out/graph.json docs/graph/SUMMARY.md "$GITHUB_SHA"
+        run: python3 tools/graph-summary.py graphify-out/graph.json docs/graph/SUMMARY.md "$GITHUB_SHA" "${GITHUB_REPOSITORY#*/}"
       - uses: actions/upload-artifact@v4
         with: { name: graphify-out, path: graphify-out, retention-days: 14 }
       - name: Commit summary
