@@ -2780,7 +2780,7 @@ pub extern "C" fn linux_net_in(id: u32, kind: u32) {
 pub extern "C" fn linux_dirty() -> u32 { crate::eng().s.lx.as_mut().map_or(0, |l| std::mem::take(&mut l.dirty) as u32) }
 
 /// Saving the tree in pieces (linux_save_begin / linux_save_next): the paths still to write and
-/// the rest of a file in blocks being written (path, bytes done, size in its header).
+/// the rest of the file being written (path, bytes done, size in its header).
 pub struct SaveIter { keys: Vec<String>, i: usize, cur: Option<(String, u64, u64)>, end: bool }
 const SAVE_PIECE: usize = 4 << 20;
 
@@ -2822,9 +2822,9 @@ pub extern "C" fn linux_save_next() -> u32 {
     let e = crate::eng();
     let Some(l) = e.s.lx.as_mut() else { return 0 };
     let Some(mut it) = l.save.take() else { return 0 };
-    let mut t: Vec<u8> = Vec::new();
+    let mut t: Vec<u8> = Vec::with_capacity(SAVE_PIECE + 8192);
     while t.len() < SAVE_PIECE {
-        // the rest of a file in blocks (a file removed or cut meanwhile ends in zeros: the size is in its header)
+        // the rest of a file (one removed or cut meanwhile ends in zeros: the size is in its header)
         if let Some((p, off, len)) = it.cur.take() {
             let n = ((len - off) as usize).min(SAVE_PIECE - t.len());
             let mut d = match l.fs.get(&p) { Some(Node::File(d)) => d.read(&mut l.bc, &mut e.mmu, off, n), _ => Vec::new() };
@@ -2847,8 +2847,7 @@ pub extern "C" fn linux_save_next() -> u32 {
             Some(Node::File(d)) => {
                 let (m, u, g) = perm(l, &p, false);
                 tar_hdr(&mut t, name, b'0', d.len(), "", m, (u, g));
-                if d.is_blk() { if d.len() > 0 { it.cur = Some((p.clone(), 0, d.len())); } }
-                else { t.extend_from_slice(d.mem()); t.resize((t.len() + 511) / 512 * 512, 0); }
+                if d.len() > 0 { it.cur = Some((p.clone(), 0, d.len())); } // its bytes follow, piece by piece
             }
         }
     }
