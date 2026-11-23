@@ -14,7 +14,7 @@
 static int fails, checks;
 static void check(const char *what, uint64_t got, uint64_t want) {
   checks++;
-  if (got != want) { fails++; printf("FAIL %s: %llu != %llu\n", what, (unsigned long long)got, (unsigned long long)want); }
+  if (got != want && ++fails <= 30) { printf("FAIL %s: %llu != %llu\n", what, (unsigned long long)got, (unsigned long long)want); }
 }
 
 // 1 recursion: fib, deep linear recursion, Ackermann
@@ -34,8 +34,8 @@ NI static int is_even(unsigned n) { return n == 0 ? 1 : is_odd(n - 1); }
 NI static int is_odd(unsigned n) { return n == 0 ? 0 : is_even(n - 1); }
 NI static uint64_t hof(int n);
 NI static uint64_t hom(int n);
-NI static uint64_t hof(int n) { return n == 0 ? 1 : (uint64_t)n - hom((int)hof(n - 1)); } // Hofstadter F/M
-NI static uint64_t hom(int n) { return n == 0 ? 0 : (uint64_t)n - hof((int)hom(n - 1)); }
+NI static uint64_t hof(int n) { if ((unsigned)n > 40) return 1000; return n == 0 ? 1 : (uint64_t)n - hom((int)hof(n - 1)); } // Hofstadter F/M
+NI static uint64_t hom(int n) { if ((unsigned)n > 40) return 1000; return n == 0 ? 0 : (uint64_t)n - hof((int)hom(n - 1)); }
 
 // 3 function pointers: a table, qsort callbacks, a callback calling back
 typedef uint64_t (*op_t)(uint64_t, uint64_t);
@@ -92,6 +92,7 @@ static void *thr(void *a) {
 }
 
 int main(void) {
+  setvbuf(stdout, 0, _IONBF, 0);
   fputs("[fib] ", stderr);
   for (int n = 0; n < 26; n++) check("fib", fib(n), fib_loop(n));
   for (int r = 0; r < 20; r++) check("deep", deep(20000 + r, (uint64_t)r), deep_loop(20000 + r, (uint64_t)r));
