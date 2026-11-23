@@ -558,6 +558,7 @@ struct G {
     tlb: u32,
     pool: u32,
     heads: Vec<u64>, // blocks of this region (index = br_table slot)
+    rets: Vec<usize>, // blocks that start right after a call of this region (where a ret usually goes)
     base: u32,       // labels between the current block's code and the region loop
     max_tmp: u32,
     m32: bool, // 32-bit code (WoW64): [disp32] addressing, addresses wrap at 4 GB
@@ -1286,6 +1287,76 @@ impl G {
         self.get(t);
         self.mem(I64STORE, 3, a);
         self.add_icount(n);
+        self.b(RET);
+    }
+    /// Goes to the address in local t (a return or an indirect jump/call): when t is one of
+    /// the region's blocks `cands` it stays in the module (no trip through the dispatcher),
+    /// else it leaves like exit_dyn. Same budget check as a jump back, so signals, thread
+    /// switches and faults still stop the region.
+    fn dyn_jump(&mut self, t: u32, n: u32, cands: &[usize]) {
+        if cands.is_empty() {
+            self.exit_dyn(t, n);
+            return;
+        }
+        self.flush();
+        if self.lic {
+            self.get(L_IC);
+            self.i64c(n as u64);
+            self.b(I64ADD);
+            self.set(L_IC);
+        } else {
+            self.exit_flags();
+            self.add_icount(n);
+        }
+        for &idx in cands {
+            let h = self.heads[idx];
+            self.cnt(1);
+            self.get(t);
+            self.i64c(h);
+            self.b(I64EQ);
+            self.b(IF);
+            self.b(VOID);
+            if self.lic && self.need[idx] {
+                self.exit_flags();
+            }
+            if self.lic {
+                self.get(L_IC);
+            } else {
+                self.cpu_ld64(off!(icount));
+            }
+            self.cpu_ld64(off!(jit_limit));
+            self.b(I64GEU);
+            self.if_hint(VOID, false);
+            if self.lic {
+                if !self.need[idx] {
+                    self.exit_flags();
+                }
+                let a = self.cpu + off!(icount);
+                self.st_base();
+                self.get(L_IC);
+                self.mem(I64STORE, 3, a);
+            }
+            self.set_rip_const(h);
+            self.b(RET);
+            self.b(END);
+            self.i32c(idx as i32);
+            self.set(L_B);
+            self.b(BR);
+            self.u((1 + self.base) as u64);
+            self.b(END);
+        }
+        self.cnt(2);
+        if self.lic {
+            self.exit_flags();
+            let a = self.cpu + off!(icount);
+            self.st_base();
+            self.get(L_IC);
+            self.mem(I64STORE, 3, a);
+        }
+        let a = self.cpu + off!(rip);
+        self.st_base();
+        self.get(t);
+        self.mem(I64STORE, 3, a);
         self.b(RET);
     }
     /// Jumps to block `idx` of this region (`depth` = blocks open inside the current block).
@@ -2999,7 +3070,7 @@ fn popcnt(g: &mut G, i: &Ins, live: bool) -> bool {
     true
 }
 
-const MAX_BLOCKS: usize = 16; // blocks per region
+const MAX_BLOCKS: usize = 24; // blocks per region
 const MAX_REGION_INS: usize = 320;
 
 struct Block {
@@ -3064,7 +3135,13 @@ fn targets(b: &Block) -> Vec<u64> {
     let mut t = Vec::new();
     for i in &b.list {
         match i.op {
-            0x70..=0x7F | 0x0F80..=0x0F8F | 0xE9 | 0xEB | 0xE8 => t.push(i.next.wrapping_add(i.imm)),
+            0x70..=0x7F | 0x0F80..=0x0F8F | 0xE9 | 0xEB => t.push(i.next.wrapping_add(i.imm)),
+            // a call: its target, then where its ret comes back (so the ret can stay in the region)
+            0xE8 => {
+                t.push(i.next.wrapping_add(i.imm));
+                t.push(i.next);
+            }
+            0xFF if i.m.map_or(false, |m| m.reg & 7 == 2) => t.push(i.next),
             _ => {}
         }
     }
@@ -3118,6 +3195,13 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
             true
         })
         .collect();
+    let call_next: Vec<u64> = blocks
+        .iter()
+        .flat_map(|b| b.list.iter())
+        .filter(|i| i.op == 0xE8 || (i.op == 0xFF && i.m.map_or(false, |m| m.reg & 7 == 2)))
+        .map(|i| i.next)
+        .collect();
+    let rets = (0..heads.len()).filter(|&j| call_next.contains(&heads[j])).collect();
     let mut g = G {
         c: Vec::with_capacity(4096),
         ntmp: FIRST_TMP,
@@ -3128,6 +3212,7 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
         tlb: e.mmu.tlb_addr(),
         pool: 0,
         heads,
+        rets,
         base: 0,
         max_tmp: FIRST_TMP,
         m32: e.cpu.mode32,
@@ -3254,7 +3339,9 @@ fn emit_block(g: &mut G, b: Block) {
                 g.b(I64ADD);
                 g.set(R0 + 4);
                 g.dirty |= 1 << 4;
-                g.exit_dyn(t, n);
+                // the return address is usually right after a call of this region
+                let rets = g.rets.clone();
+                g.dyn_jump(t, n, &rets);
                 done_all = true;
                 break;
             }
@@ -3273,7 +3360,8 @@ fn emit_block(g: &mut G, b: Block) {
                     g.set(L_T);
                     g.push(L_T);
                 }
-                g.exit_dyn(t, n);
+                let all: Vec<usize> = (0..g.heads.len()).collect();
+                g.dyn_jump(t, n, &all);
                 done_all = true;
                 break;
             }
