@@ -43,7 +43,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-23 | 1 | correção: 🔺 do bench pelo "x nativo" | #20 | 0,5 |
 | 2026-11-23 | 1 | 3 fatia 1: catálogo WASM + apk add | #21 | 2 |
 | 2026-11-23 | 1 | 3 fatia 2: python3 WASM roda + bench | #22 | 2 |
-| 2026-11-23 | 1 | 3 fatia 3: loja ☰ + caminho relativo | #PR | 1 |
+| 2026-11-23 | 1 | 3 fatia 3: loja ☰ + caminho relativo | #23 | 1 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
