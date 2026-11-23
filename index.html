@@ -24,24 +24,34 @@
   #info.show{display:block}
   #info code{font-size:12px}
   /* Settings: a page of its own over the terminal; its bar has only a small red X back to the terminal */
-  #panel{position:fixed;inset:0;z-index:2000;display:flex;flex-direction:column;background:var(--bg);color:var(--text);padding:env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left)}
-  #panel[hidden]{display:none}
-  #panel .barra{flex:none;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;min-height:44px;padding:4px 10px;background:var(--card);border-bottom:1px solid var(--border)}
-  #panel .barra b{grid-column:2;font-weight:600;font-size:14px}
-  #panel .barra #fechar{grid-column:3;justify-self:end;display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border:0;border-radius:50%;background:var(--perigo);color:#fff;cursor:pointer;-webkit-tap-highlight-color:transparent}
-  #panel .barra #fechar svg{width:12px;height:12px}
-  #panel .rolar{flex:1;min-height:0;overflow:auto;padding:20px 16px}
-  #panel .card{max-width:520px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
-  #panel fieldset{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:0;background:var(--card)}
-  #panel legend{font-weight:600;padding:0 4px}
-  #panel label{display:flex;gap:8px;align-items:baseline;padding:4px 0}
-  #panel .nota{color:var(--muted);font-size:13px}
-  #panel .linha{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
-  #panel .linha button{font:inherit;font-size:14px;background:var(--btn);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:6px 12px;cursor:pointer}
-  #panel .linha button.perigo{color:var(--perigo)}
-  #panel button:disabled{opacity:.45;cursor:default}
-  #panel #start{font:inherit;background:var(--accent);border:1px solid var(--accent);border-radius:8px;color:#0d1117;font-size:16px;padding:10px;font-weight:600;cursor:pointer}
-  #panel #start[hidden]{display:none}
+  .pg{position:fixed;inset:0;z-index:2000;display:flex;flex-direction:column;background:var(--bg);color:var(--text);padding:env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left)}
+  .pg[hidden]{display:none}
+  .pg .barra{flex:none;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;min-height:44px;padding:4px 10px;background:var(--card);border-bottom:1px solid var(--border)}
+  .pg .barra b{grid-column:2;font-weight:600;font-size:14px}
+  .pg .barra .fechar{grid-column:3;justify-self:end;display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border:0;border-radius:50%;background:var(--perigo);color:#fff;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .pg .barra .fechar svg{width:12px;height:12px}
+  .pg .rolar{flex:1;min-height:0;overflow:auto;padding:20px 16px}
+  .pg .card{max-width:520px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+  .pg fieldset{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:0;background:var(--card)}
+  .pg legend{font-weight:600;padding:0 4px}
+  .pg label{display:flex;gap:8px;align-items:baseline;padding:4px 0}
+  .pg .nota{color:var(--muted);font-size:13px}
+  .pg .linha{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+  .pg .linha button{font:inherit;font-size:14px;background:var(--btn);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:6px 12px;cursor:pointer}
+  .pg .linha button.perigo{color:var(--perigo)}
+  .pg button:disabled{opacity:.45;cursor:default}
+  .pg #start{font:inherit;background:var(--accent);border:1px solid var(--accent);border-radius:8px;color:#0d1117;font-size:16px;padding:10px;font-weight:600;cursor:pointer}
+  .pg #start[hidden]{display:none}
+  /* Download: the same kind of page, a list of your Linux files */
+  #dl .caminho{font:13px ui-monospace,Menlo,monospace;color:var(--muted);word-break:break-all}
+  #dl ul{list-style:none;margin:0;padding:0;border:1px solid var(--border);border-radius:10px;background:var(--card);overflow:hidden}
+  #dl li{display:flex;align-items:center;gap:8px;padding:10px 12px;border-top:1px solid var(--border);cursor:pointer;-webkit-tap-highlight-color:transparent}
+  #dl li:first-child{border-top:0}
+  #dl li .n{flex:1;min-width:0;overflow-wrap:anywhere}
+  #dl li .t{color:var(--muted);font-size:12px;white-space:nowrap}
+  #dl .acoes{display:flex;gap:8px;flex-wrap:wrap;padding:0 12px 10px;border:0}
+  #dl .acoes a,#dl .acoes button{font:inherit;font-size:14px;background:var(--accent);border:1px solid var(--accent);border-radius:8px;color:#0d1117;padding:6px 12px;text-decoration:none;cursor:pointer}
+  #dl .acoes button.sec{background:var(--btn);border-color:var(--border);color:var(--text)}
   /* inside InkOS (?inkos=1) the window is the terminal: only the menu stays in the bar */
   body.embed .ink-esq,body.embed .ink-meio{visibility:hidden}
   body.embed .ink-bar{min-height:34px;padding:2px 8px}
@@ -67,8 +77,8 @@
   <button data-k="up">↑</button><button data-k="down">↓</button><button data-k="left">←</button><button data-k="right">→</button>
   <button data-k="|">|</button><button data-k="~">~</button><button data-k="/">/</button><button data-k="-">-</button>
 </div>
-<div id="panel" hidden>
-<div class="barra"><b>Settings</b><button id="fechar" type="button" title="Back to the terminal" aria-label="Back to the terminal"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 2l8 8M10 2l-8 8"/></svg></button></div>
+<div id="panel" class="pg" hidden>
+<div class="barra"><b>Settings</b><button id="fechar" class="fechar" type="button" title="Back to the terminal" aria-label="Back to the terminal"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 2l8 8M10 2l-8 8"/></svg></button></div>
 <div class="rolar"><div class="card">
   <fieldset><legend>System</legend>
     <label><input type="radio" name="sys" value="3.21" checked><span><strong>Alpine 3.21</strong> <span class="nota">x86-64 · stable</span></span></label>
@@ -89,9 +99,17 @@
   <button id="start" type="button" hidden>Start</button>
 </div></div>
 </div>
+<div id="dl" class="pg" hidden>
+<div class="barra"><b>Download a file</b><button class="fechar" id="dl-x" type="button" title="Back to the terminal" aria-label="Back to the terminal"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 2l8 8M10 2l-8 8"/></svg></button></div>
+<div class="rolar"><div class="card">
+  <div class="caminho" id="dl-path"></div>
+  <ul id="dl-list"></ul>
+  <div class="nota">Tap a file, then Save. Save to Files / Share uses the system sheet (iPhone, iPad).</div>
+</div></div>
+</div>
 <input type="file" id="file" multiple hidden>
 <input type="file" id="mountdir" webkitdirectory multiple hidden>
 <script src="vendor/xterm.js?v=1"></script>
-<script src="app.js?v=22"></script>
+<script src="app.js?v=23"></script>
 </body>
 </html>
