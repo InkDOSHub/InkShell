@@ -5,7 +5,8 @@
 // Calls are synchronous. In node (tests) the module runs in the engine's thread (runWasi); on the
 // page it runs in its own Worker (wasi-worker.js) and each call is a synchronous request that the
 // service worker (sw.js) passes to the engine's worker, which keeps running meanwhile.
-// Limits: relative paths resolve from "/"; no sockets.
+// Limits: wasi-libc has no working directory, so relative paths resolve from "/" (a program argument
+// naming a file in the shell's folder, as in "python3 script.py", is passed as its full path); no sockets.
 const E = { 1: 63, 2: 44, 4: 27, 5: 29, 9: 8, 11: 6, 12: 48, 13: 2, 17: 20, 18: 75, 20: 54, 21: 31, 22: 28, 24: 33, 28: 51, 29: 70, 30: 69, 32: 64, 36: 37, 38: 52, 39: 55, 40: 32, 95: 58 };
 const errno = (v) => E[-v] ?? 29;
 const ftype = (mode) => ({ 0o040000: 3, 0o100000: 4, 0o020000: 2, 0o060000: 1, 0o120000: 7, 0o140000: 6 })[mode & 0o170000] ?? 0;
@@ -54,6 +55,20 @@ export function runModule({ bytes, args, envs, base: BASE, size: SIZE, sys }) {
   const fds = new Map([[0, 0], [1, 1], [2, 2]]);
   const pre = new Map();
   try { const { r } = sys(257, [-100, BASE, 0x10000 | 0x80000], cstr('/')); if (r >= 0) { fds.set(3, r); pre.set(3, '/'); } } catch { return -1; } // ended before it started
+  // a program argument that names a file relative to the shell's folder becomes its full path
+  try {
+    const { r, out } = sys(79, [BASE, 4096], null, 4096);
+    const cwd = r > 1 ? dec.decode(out.subarray(0, r - 1)) : '/';
+    if (cwd !== '/') {
+      args = args.slice();
+      for (let i = 1; i < args.length; i++) {
+        const a = args[i];
+        if (!a || a[0] === '-' || a[0] === '/' || a.length > 1024) continue;
+        const { r: sr, out: so } = sys(262, [-100, BASE, BASE + 4096, 0], cstr(a), 4096 + 144);
+        if (sr === 0 && (new DataView(so.buffer, so.byteOffset + 4096).getUint32(24, true) & 0o170000) === 0o100000) args[i] = cwd.replace(/\/+$/, '') + '/' + a;
+      }
+    }
+  } catch { return -1; }
   let nextFd = 4;
   const dirs = new Map(); // fd -> entries read by fd_readdir
   let inst, mem;
@@ -132,7 +147,9 @@ export function runModule({ bytes, args, envs, base: BASE, size: SIZE, sys }) {
       const fl = sys(72, [lfd, 3]).r;
       const d = dv(); d.setUint8(p, ftype(new DataView(out.buffer).getUint32(24, true))); d.setUint8(p + 1, 0);
       d.setUint16(p + 2, (fl > 0 && fl & 0x400 ? 1 : 0) | (fl > 0 && fl & 0x800 ? 4 : 0), true);
-      d.setUint32(p + 4, 0, true); d.setBigUint64(p + 8, 0x1fffffffn, true); d.setBigUint64(p + 16, 0x1fffffffn, true);
+      d.setUint32(p + 4, 0, true);
+      // a terminal (TCGETS works) has no seek/tell rights: that is how wasi-libc's isatty() tells (Python's prompt)
+      d.setBigUint64(p + 8, d.getUint8(p) === 2 && sys(16, [lfd, 0x5401, BASE], null, 64).r === 0 ? 0x1fffffffn & ~0x24n : 0x1fffffffn, true); d.setBigUint64(p + 16, 0x1fffffffn, true);
       return 0;
     },
     fd_fdstat_set_flags: (fd, f) => { const lfd = L(fd); if (lfd == null) return 8; sys(72, [lfd, 4, (f & 1 ? 0x400 : 0) | (f & 4 ? 0x800 : 0)]); return 0; },
