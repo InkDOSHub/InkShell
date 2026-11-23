@@ -6,17 +6,16 @@ import fs from 'node:fs';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { runWasi } from '../wasi.js';
+import { swapStore } from './swap-store.mjs';
 const wasmPath = process.argv[2] || 'engine.wasm';
 const POOL = 24; // MB of real RAM: small on purpose
 const dec = new TextDecoder(), enc = new TextEncoder();
 let mem, x, out = '';
-const swap = new Map();
-const page = (p) => new Uint8Array(mem.buffer, p, 4096);
+const sw = swapStore(() => mem), swap = sw.chunks; // 64 KB chunks of swap slots
 const env = {
   host_console: (p, n) => { out += dec.decode(new Uint8Array(mem.buffer, p, n).slice(), { stream: true }); },
   host_now_ms: () => performance.now(), host_epoch_ms: () => Date.now(),
-  host_swap_write: (s, p) => { swap.set(s, page(p).slice()); },
-  host_swap_read: (s, p) => { page(p).set(swap.get(s) || new Uint8Array(4096)); },
+  ...sw.imports,
   wine_call: () => 0,
     host_random: (p, n) => { const b = new Uint8Array(n); crypto.getRandomValues(b); new Uint8Array(mem.buffer, p, n).set(b); },
     host_audio: () => {}, host_gl: () => 0, host_drive_read: () => 0, host_drive_write: () => 0,
@@ -73,6 +72,43 @@ function serveMount() {
     b.set(nm); b.set(d, nm.length + 1); put(b); x.linux_put_file();
   }
 }
+// A second engine that boots from a saved tar fed in 4 MB pieces (linux_load_begin/linux_load_chunk,
+// as the page reads alpine-fs.tar from OPFS) and runs `script` as root. Its own memory and swap.
+async function bootSaved(tar, script) {
+  let m2, x2, o2 = '';
+  const s2 = swapStore(() => m2);
+  const env2 = {
+    ...env, ...s2.imports,
+    host_console: (p, n) => { o2 += dec.decode(new Uint8Array(m2.buffer, p, n).slice(), { stream: true }); },
+    host_random: (p, n) => { const b = new Uint8Array(n); crypto.getRandomValues(b); new Uint8Array(m2.buffer, p, n).set(b); },
+    host_jit: (p, n) => {
+      try {
+        const m = new WebAssembly.Module(new Uint8Array(m2.buffer, p, n).slice());
+        const i = new WebAssembly.Instance(m, { env: { memory: m2, rd: x2.jit_rd, wr: x2.jit_wr, step: x2.jit_step, cond: x2.jit_cond } });
+        const t = x2.__indirect_function_table, k = t.grow(1); t.set(k, i.exports.f); return k;
+      } catch (e) { return -1; }
+    },
+  };
+  x2 = (await WebAssembly.instantiate(fs.readFileSync(wasmPath), { env: env2 })).instance.exports;
+  m2 = x2.memory;
+  const put2 = (b) => { const p = x2.buffer(b.length); new Uint8Array(m2.buffer, p, b.length).set(b); };
+  const add2 = (name, data) => { const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 1 + d.length); b.set(nm); b.set(d, nm.length + 1); put2(b); x2.add_file(); };
+  x2.init(POOL, 8192);
+  add2('busybox', fs.readFileSync('busybox'));
+  const h0 = x2.heap_used(); let peak = h0;
+  x2.linux_load_begin();
+  for (let a = 0; a < tar.length; a += 4 << 20) { put2(tar.subarray(a, a + (4 << 20))); x2.linux_load_chunk(); peak = Math.max(peak, x2.heap_used()); }
+  add2('zoverlay.tar', fs.readFileSync('overlay.tar'));
+  add2('chk.sh', enc.encode(script));
+  put2(enc.encode('busybox\0sh /root/chk.sh'));
+  if (x2.start() !== 0) return { out: 'start failed: ' + dec.decode(new Uint8Array(m2.buffer, x2.msg_ptr(), x2.msg_len())), grow: 0 };
+  for (const t1 = Date.now(); Date.now() - t1 < 180000;) {
+    const st = x2.run(2000000);
+    if (st === 1 || st === 2) break;
+    if (st === 3) await new Promise((r) => setTimeout(r, 2));
+  }
+  return { out: o2, grow: (peak - h0) / 1048576 };
+}
 const results = [];
 async function step(input, expect, name) {
   const before = out.length;
@@ -98,7 +134,7 @@ await step('sh -c "for i in 1 2 3 4 5; do /bin/true; done; echo forked-ok"\n', /
 await step('apk info | wc -l\n', /^\s*1[0-9]\s*$/m, 'apk (dynamic program, shared libraries)');
 await step('free -m | grep Mem\n', /Mem:\s+8192/, '/proc and sysinfo: programs see 8 GB');
 await step('awk \'BEGIN{for(i=0;i<400000;i++)a[i]="item number " i; print length(a)}\'\n', /400000/, 'a program using more than the real RAM');
-results.push(swap.size > 0); console.log((swap.size > 0 ? 'PASS' : 'FAIL') + ' pages went to swap (' + swap.size + ')');
+results.push(swap.size > 0); console.log((swap.size > 0 ? 'PASS' : 'FAIL') + ' pages went to swap (' + swap.size + ' chunks)');
 await step('sh -c \'awk "BEGIN{for(i=0;i<200000;i++)a[i]=i; print 1}" & awk "BEGIN{for(i=0;i<200000;i++)b[i]=i; print 2}"; wait\' | sort | tr "\\n" " "; echo\n', /1 2/, 'two processes swapping at once');
 await step('/root/stage1 threads\n', /threads 200000/, 'threads, mutex and condition variable (futex)');
 await step('/root/stage1 signals\n', /signals 10 7 15/, 'signal handlers, pause, kill');
@@ -148,6 +184,9 @@ if (x.linux_save_next) { // big files: 4 KB blocks in swap slots (lxdata.rs), no
   const MB = 1048576, h0 = x.heap_used();
   await step('dd if=/dev/zero of=/tmp/z bs=1M count=3 2>/dev/null; printf ABC | dd of=/tmp/z bs=1 seek=2000000 conv=notrunc 2>/dev/null; dd if=/tmp/z bs=1 skip=1999999 count=5 2>/dev/null | od -c; stat -c %s /tmp/z; truncate -s 4000 /tmp/z; stat -c %s /tmp/z; truncate -s 2000002 /tmp/z; dd if=/tmp/z bs=1 skip=1999999 count=3 2>/dev/null | od -c; rm /tmp/z\n',
     /\\0\s+A\s+B\s+C\s+\\0[\s\S]*^3145728\s[\s\S]*^4000\s[\s\S]*\\0\s+\\0\s+\\0/m, 'file in blocks: write in the middle, read back, shrink, grow with zeros');
+  // cp (sendfile) and ln share the blocks (copy-on-write): changing a copy leaves the original as it was
+  await step('dd if=/dev/urandom of=/tmp/c1 bs=1M count=3 2>/dev/null; printf tail >> /tmp/c1; s0=$(md5sum < /tmp/c1); cp /tmp/c1 /tmp/c2; ln /tmp/c1 /tmp/c3; printf XYZ | dd of=/tmp/c2 bs=1 seek=70000 conv=notrunc 2>/dev/null; truncate -s 100000 /tmp/c3; echo abc >> /tmp/c3; [ "$s0" = "$(md5sum < /tmp/c1)" ] && echo orig-same; cmp -s /tmp/c1 /tmp/c2 || echo copy-differs; dd if=/tmp/c2 bs=1 skip=70000 count=3 2>/dev/null; echo; stat -c %s /tmp/c2 /tmp/c3; dd if=/tmp/c3 bs=1 skip=100000 count=4 2>/dev/null | od -c | head -1; rm /tmp/c1 /tmp/c2 /tmp/c3\n',
+    /orig-same[\s\S]*copy-differs[\s\S]*XYZ[\s\S]*^3145732\s+^100004\s[\s\S]*a\s+b\s+c\s+\\n/m, 'copies share blocks: changing the copy (write, truncate, append) keeps the original');
   await step('dd if=/dev/urandom of=/tmp/big bs=1M count=64 2>/dev/null; sha256sum /tmp/big; cp /tmp/big ~/big2; sha256sum ~/big2; stat -c %s ~/big2; rm /tmp/big; echo big-done\n',
     /^([0-9a-f]{64})  \/tmp\/big\s[\s\S]*^\1  \/home\/tester\/big2\s[\s\S]*^67108864\s[\s\S]*big-done/m, 'big file (64 MB, more than the 24 MB RAM pool): write, copy, same sha256');
   const sum = (out.match(/^([0-9a-f]{64})  \/home\/tester\/big2/m) || [])[1];
@@ -166,7 +205,27 @@ if (x.linux_save_next) { // big files: 4 KB blocks in swap slots (lxdata.rs), no
   }
   const sgrow = (peak - h0) / MB, sok = !!sum && got === sum && sgrow < 16;
   results.push(sok); console.log((sok ? 'PASS' : 'FAIL') + ` saved tar in pieces (${parts.length}, ${(tar.length / MB).toFixed(0)} MB): big file same sha256, heap peak +${sgrow.toFixed(1)} MB` + (sok ? '' : ` (${sum} vs ${got})`));
+  if (x.linux_load_chunk) { // restore: a new engine boots from that tar fed in 4 MB pieces; big files go straight to blocks
+    let small = 0, big = 0;
+    for (let o = 0; o + 512 <= tar.length;) {
+      const name = tar.toString('latin1', o, o + 100).replace(/\0.*$/s, ''), size = parseInt(tar.toString('latin1', o + 124, o + 136), 8) || 0;
+      if (!name) break;
+      if (size > MB) big += size; else small += size;
+      o += 512 + Math.ceil(size / 512) * 512;
+    }
+    const r = await bootSaved(tar, 'sha256sum /home/tester/big2; stat -c %s /home/tester/big2; cat /etc/inksoc/user; echo restore-done\n');
+    const rok = r.out.includes(`${sum}  /home/tester/big2`) && /^67108864\s/m.test(r.out) && /^tester\s/m.test(r.out) && /restore-done/.test(r.out) && r.grow < small / MB + 16;
+    results.push(rok); console.log((rok ? 'PASS' : 'FAIL') + ` restore from the saved tar in pieces: big file same sha256, heap +${r.grow.toFixed(1)} MB while loading (small files ${(small / MB).toFixed(1)} MB, big ${(big / MB).toFixed(0)} MB)` + (rok ? '' : '\n' + r.out.slice(-600)));
+  }
   await step('rm ~/big2; ls ~/big2 2>&1 | grep -c "No such"\n', /^1\s*$/m, 'big file removed');
+  if (x.linux_load_chunk) { // a file put by the page over a file in blocks gives its blocks back (they are used again)
+    await step('dd if=/dev/zero of=~/leak bs=1M count=8 2>/dev/null; echo leak-made\n', /leak-made/, 'file in blocks made (8 MB)');
+    const b = enc.encode('leak\0x'); put(b); x.linux_put_file();
+    const c0 = swap.size;
+    await step('cat ~/leak; echo; dd if=/dev/zero of=~/leak2 bs=1M count=8 2>/dev/null; rm ~/leak ~/leak2; echo leak2-made\n', /^x\s[\s\S]*leak2-made/m, 'page puts a small file over it');
+    const g = swap.size - c0;
+    results.push(g < 64); console.log((g < 64 ? 'PASS' : 'FAIL') + ` its blocks were given back: swap grew ${g} chunks of 64 KB for a new 8 MB file (128 if they leaked)`);
+  }
 }
 { // Ctrl+C stops a running program and the shell comes back
   const before = out.length;
@@ -177,5 +236,5 @@ if (x.linux_save_next) { // big files: 4 KB blocks in swap slots (lxdata.rs), no
   results.push(ok); console.log((ok ? 'PASS' : 'FAIL') + ' Ctrl+C stops sleep' + (ok ? '' : '\n' + got.slice(-400)));
 }
 const pass = results.filter(Boolean).length;
-console.log(`\n${pass}/${results.length} passed in ${((Date.now() - t0) / 1000).toFixed(1)} s · swap slots used: ${swap.size}`);
+console.log(`\n${pass}/${results.length} passed in ${((Date.now() - t0) / 1000).toFixed(1)} s · swap chunks used: ${swap.size}`);
 process.exit(pass === results.length ? 0 : 1);

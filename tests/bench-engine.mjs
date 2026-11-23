@@ -7,13 +7,13 @@
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { runWasi } from '../wasi.js';
+import { swapStore } from './swap-store.mjs';
 const argv = process.argv.slice(2), sep = argv.indexOf('--');
 const wasmPath = argv[0], files = argv.slice(1, sep), cmd = argv.slice(sep + 1).join(' ');
 const POOL = +(process.env.POOL_MB || 512), LIMIT = +(process.env.LIMIT_MS || 1800000);
 const dec = new TextDecoder(), enc = new TextEncoder();
 let mem, x, out = '', line = '';
-const swap = new Map();
-const page = (p) => new Uint8Array(mem.buffer, p, 4096);
+const sw = swapStore(() => mem); // the page's OPFS swap file, in memory here
 const t0 = performance.now();
 let peakRss = 0, done = false;
 const mb = (b) => (b / 1048576).toFixed(0);
@@ -28,8 +28,7 @@ function emit(s) {
 const env = {
   host_console: (p, n) => emit(dec.decode(new Uint8Array(mem.buffer, p, n).slice(), { stream: true })),
   host_now_ms: () => performance.now(), host_epoch_ms: () => Date.now(),
-  host_swap_write: (s, p) => { swap.set(s, page(p).slice()); },
-  host_swap_read: (s, p) => { page(p).set(swap.get(s) || new Uint8Array(4096)); },
+  ...sw.imports,
   wine_call: () => 0,
   host_random: (p, n) => { const b = new Uint8Array(n); crypto.getRandomValues(b); new Uint8Array(mem.buffer, p, n).set(b); },
   host_audio: () => {}, host_gl: () => 0, host_drive_read: () => 0, host_drive_write: () => 0,
