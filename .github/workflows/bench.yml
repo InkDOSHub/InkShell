@@ -2,13 +2,22 @@ name: Terminal benchmark
 # Performance of the Linux terminal (engine in node = same WebAssembly as the page) against the
 # runner itself: CPU (tests/src/cpubench.c), Python, copy/sha256/zip/unzip of 64 MB and 1 GB,
 # peak memory. Plus phase-2 pre-tests: WASI programs (probe, cpubench, CPython) in node.
-# Results: the run's summary page; logs: the artifacts.
+# Results: the run's summary page; logs: the artifacts. Every PR (and every main push, which becomes
+# the baseline) also shows the engine numbers side by side with the last successful main run.
 on:
   push:
-    paths: ['.github/workflows/bench.yml', 'tests/bench/**', 'tests/bench-engine.mjs', 'tests/src/cpubench.c']
+    branches: [main]
+  pull_request:
   workflow_dispatch:
     inputs:
       big_mb: { description: 'Big file size (MB)', default: '1024' }
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+concurrency:
+  group: bench-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   engine:
     runs-on: ubuntu-latest
@@ -60,6 +69,29 @@ jobs:
             native=$(ls native-*.log | paste -sd,) engine=$(ls engine-*.log | paste -sd,) \
             native.time=$(ls native-*.time | paste -sd,) > report.md || true
           { echo "## Terminal: motor vs nativo (runner)"; echo; cat report.md; echo; cat engine-fails.txt 2>/dev/null; } | tee -a $GITHUB_STEP_SUMMARY
+      - name: Compare with previous main run
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd out
+          id=$(gh run list -R "$GITHUB_REPOSITORY" -w bench.yml -b main -s success -L 5 --json databaseId,headSha \
+            -q "[.[] | select(.headSha != \"$GITHUB_SHA\")][0].databaseId" || true)
+          [ -n "$id" ] && gh run download "$id" -R "$GITHUB_REPOSITORY" -n bench-engine -D prev || echo "no previous run"
+          { echo "## Motor: antes (main, run ${id:-—}) vs agora"; echo; node ../tests/bench/compare.mjs prev/results.json results.json; } > compare.md
+          cat compare.md | tee -a $GITHUB_STEP_SUMMARY
+      - name: PR comment (side by side)
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          cd out
+          { echo '<!-- bench-compare -->'; cat compare.md; echo; echo '<details><summary>Motor vs nativo</summary>'; echo; cat report.md; echo; echo '</details>'; } > body.md
+          cid=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate -q '.[] | select(.body | startswith("<!-- bench-compare -->")) | .id' | tail -1)
+          if [ -n "$cid" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$cid" -F body=@body.md >/dev/null
+          else gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@body.md >/dev/null; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

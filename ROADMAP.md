@@ -7,7 +7,7 @@ Foco: terminal Linux sólido e rápido no WebKit. Ferramenta com WASM roda diret
 
 | # | Item | Fase | Pts | Estado | Pronto quando |
 |---|---|---|---|---|---|
-| 1 | Bench Linux em todo PR, números vs anterior | 1 | 1 | aberto | PR mostra números lado a lado |
+| 1 | Bench Linux em todo PR, números vs anterior | 1 | 1 | feito | PR mostra números lado a lado |
 | 2 | Kernel roda .wasm WASI (arquivos, pipes, tty, /mnt) | 2 | 3,5 | aberto | .wasm roda no shell c/ pipe e redirect |
 | 3 | Catálogo WASM + `apk add` consulta catálogo + loja ☰ (python3, coreutils, sqlite, ripgrep, jq, lua, zip/unzip) | 3 | 3,5 | aberto | python3 abre em WASM; bench bem > x86 |
 | 4 | Disco Linux no OPFS em blocos; /mnt por File.slice; cache c/ descarte | 4 | 3,5 | aberto | copiar+zipar 1 GB no CI sem estourar memória |
@@ -33,6 +33,7 @@ Metas: fim sem 1 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 2
 | Data | Sem | Item | PR | Pts |
 |---|---|---|---|---|
 | 2026-11-23 | 0 | Processo: CLAUDE.md, graph.yml, fila | — | 0 (infra) |
+| 2026-11-23 | 0 | 1: bench em todo PR + comparação c/ main | claude/bench-every-pr | 1 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.

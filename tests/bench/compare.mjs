@@ -1,0 +1,22 @@
+// Side-by-side table: previous main run vs this run (engine times, engine/native ratio, peak memory).
+// usage: node tests/bench/compare.mjs prev/results.json results.json [label]
+import fs from 'node:fs';
+const [prevF, curF, label = 'engine'] = process.argv.slice(2);
+const load = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
+const prev = load(prevF), cur = load(curF);
+if (!cur) { console.log('_Sem results.json desta rodada._'); process.exit(0); }
+if (!prev) { console.log('_Sem rodada anterior da main para comparar (primeira rodada ou artefato expirado)._'); process.exit(0); }
+const fmt = (v) => (v == null ? '—' : v >= 10000 ? (v / 1000).toFixed(1) + ' s' : v.toFixed(0) + ' ms');
+const ratio = (r, k) => { const e = r?.[label]?.ms?.[k], n = r?.native?.ms?.[k]; return e && n ? e / n : null; };
+const keys = [...new Set([...Object.keys(prev[label]?.ms || {}), ...Object.keys(cur[label]?.ms || {})])];
+let md = `| teste | antes | agora | agora/antes | x nativo antes | x nativo agora |\n|---|---:|---:|---:|---:|---:|\n`;
+for (const k of keys) {
+  const a = prev[label]?.ms?.[k], b = cur[label]?.ms?.[k];
+  const d = a && b ? b / a : null;
+  const mark = d == null ? '—' : `${d.toFixed(2)}x${d > 1.15 ? ' 🔺' : d < 0.87 ? ' 🟢' : ''}`;
+  const ra = ratio(prev, k), rb = ratio(cur, k);
+  md += `| ${k} | ${fmt(a)} | ${fmt(b)} | ${mark} | ${ra ? ra.toFixed(1) + 'x' : '—'} | ${rb ? rb.toFixed(1) + 'x' : '—'} |\n`;
+}
+const pk = (r) => Object.entries(r?.[label]?.peak || {}).map(([k, v]) => `${k} ${v.toFixed(0)} MB`).join(', ') || '—';
+md += `\n**Memória pico ${label}** — antes: ${pk(prev)}; agora: ${pk(cur)}\n\n🔺 = >15% mais lento, 🟢 = >13% mais rápido (ruído do runner ~10%).\n`;
+console.log(md);
