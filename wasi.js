@@ -11,6 +11,7 @@
 // own preopen: wasi-libc picks the longest matching preopen, so absolute paths still go to the real place.
 // Limits: "/" itself (os.listdir("/")) shows the shell's folder, a relative path that starts with a
 // top-level name ("tmp/x" in /home/u) goes to /tmp/x, os.getcwd() says "/"; no sockets.
+import { main as inkvideo } from './inkvideo.js?v=1';
 const E = { 1: 63, 2: 44, 4: 27, 5: 29, 9: 8, 11: 6, 12: 48, 13: 2, 17: 20, 18: 75, 20: 54, 21: 31, 22: 28, 24: 33, 28: 51, 29: 70, 30: 69, 32: 64, 36: 37, 38: 52, 39: 55, 40: 32, 95: 58 };
 const errno = (v) => E[-v] ?? 29;
 const ftype = (mode) => ({ 0o040000: 3, 0o100000: 4, 0o020000: 2, 0o060000: 1, 0o120000: 7, 0o140000: 6 })[mode & 0o170000] ?? 0;
@@ -47,12 +48,27 @@ export function runWasi(x, pid, opts = {}) {
     const out = n > 0 ? emem().slice(x.out_ptr(), x.out_ptr() + n) : null;
     return { r: x.wasi_ret(), out };
   }
-  return runModule({ bytes, args, envs, base: x.wasi_base(), size: x.wasi_buf_size(), sys });
+  return runModule({ bytes, args, envs, base: x.wasi_base(), size: x.wasi_buf_size(), sys, inline: true });
+}
+
+/** JS programs: a module that is only a custom section "inkshell.js" whose content names the program
+ *  (e.g. /usr/local/libexec/inkvideo-webcodecs = "inkvideo"); it runs as JS with the same calls. */
+const JS = { inkvideo };
+export function jsProgram(bytes) {
+  if (bytes.length > 64 || bytes[8] !== 0 || bytes[9] !== bytes.length - 10) return null;
+  const d = new TextDecoder(), n = bytes[10];
+  return d.decode(bytes.subarray(11, 11 + n)) === 'inkshell.js' ? JS[d.decode(bytes.subarray(11 + n))] || null : null;
 }
 
 /** Runs a WASI module whose calls go through `sys(nr, args, data, outLen) -> { r, out }`
  *  (a Linux call of the stub process; throws Exit when the process is gone). */
-export function runModule({ bytes, args, envs, base: BASE, size: SIZE, sys }) {
+export function runModule({ bytes, args, envs, base: BASE, size: SIZE, sys, inline = false }) {
+  const prog = jsProgram(bytes);
+  if (prog) { // its exit code (a Promise of it when it works asynchronously, as WebCodecs does)
+    const end = (c) => { try { sys(231, [c]); } catch {} return c; };
+    let r; try { r = prog({ args, sys, base: BASE, size: SIZE, inline }); } catch { return end(1); }
+    return typeof r === 'number' ? end(r) : r.then(end, () => end(1));
+  }
   const dec = new TextDecoder(), enc = new TextEncoder();
   const cstr = (s) => { const b = enc.encode(s), o = new Uint8Array(b.length + 1); o.set(b); return o; };
   // WASI fd -> Linux fd; 3... = the preopens (see "Folders" above)

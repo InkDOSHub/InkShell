@@ -221,6 +221,11 @@ if (hasWasi) {
     if (hasTool('ffprobe')) await step('cd /tmp/f && ffprobe -v error -show_entries stream=codec_name,sample_rate -of csv=p=0 t.flac && ffprobe -v error -show_entries stream=codec_name,width,height,nb_frames -of csv=p=0 v.mp4; cd\n',
       /^flac,8000\s+^mpeg4,32,32,5\s*$/m, 'ffprobe: FLAC 8 kHz, MPEG-4 32x32 with 5 frames');
   }
+  // inkvideo: WebCodecs of the page (node has none): exit 69 and a clear message; decode falls back to ffmpeg
+  await step('inkvideo info; echo iv-rc=$?; inkvideo transcode a.mov b.h264; echo iv-rc=$?; inkvideo bogus 2>&1 | head -1; inkvideo; echo iv-rc=$?\n',
+    /WebCodecs: no[\s\S]*fallback: [\s\S]*iv-rc=69[\s\S]*needs WebCodecs[\s\S]*iv-rc=69[\s\S]*unknown command: bogus[\s\S]*usage: inkvideo info[\s\S]*iv-rc=2/, 'inkvideo: no WebCodecs here -> exit 69 with a clear message; usage');
+  if (hasTool('ffmpeg')) await step('cd /tmp/f && inkvideo decode v.mp4 v.y4m; echo iv-rc=$?; head -1 v.y4m | cut -c1-17; h=$(head -1 v.y4m | wc -c); echo iv-frames=$(( ($(stat -c %s v.y4m) - h) / 1542 )); cd\n',
+    /using ffmpeg[\s\S]*iv-rc=0[\s\S]*YUV4MPEG2 W32 H32[\s\S]*iv-frames=5/, 'inkvideo: decode falls back to ffmpeg (Y4M, 5 frames)');
 } else console.log('(engine without WebAssembly programs: published engine.wasm older than the kernel source)');
 await step('trap "echo caught-usr1" USR1; kill -USR1 $$\n', /caught-usr1/, 'shell trap');
 await step('(nc -l -p 8098 > /tmp/nc.txt &) ; sleep 0.3; echo over-nc | nc 127.0.0.1 8098; sleep 0.3; cat /tmp/nc.txt\n', /^over-nc/m, 'nc server and client on this machine');

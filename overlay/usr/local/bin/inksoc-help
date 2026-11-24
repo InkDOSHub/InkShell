@@ -37,6 +37,8 @@ ${b}Files${n}
   browser does not let pages write to folders, e.g. Safari on iPhone).
   Media:  sudo apk add ffmpeg   then e.g.  ffmpeg -i in.mov -c copy out.mp4
   Copying streams (-c copy) is quick; re-encoding video is slow in this engine.
+  inkvideo        H.264/HEVC decode/transcode by the device's hardware (WebCodecs):
+                  inkvideo info | decode in.mov [out.y4m] | transcode in.mov out.h264
   The start panel's "Erase and start from zero" gives you a clean Alpine again.
 
 ${b}Speed${n}
