@@ -53,7 +53,7 @@ $('calib').onclick = async () => {
   $('calib').disabled = true;
   await stop(true);
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=38');
+  const c = new Worker('worker.js?v=39');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -78,7 +78,7 @@ showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
   stop(false).then(() => {
-    const r = new Worker('worker.js?v=38');
+    const r = new Worker('worker.js?v=39');
     r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
     r.postMessage({ type: 'reset' });
   });
@@ -106,6 +106,7 @@ function stop(save) {
 let w = null, starting = false;
 // WebAssembly programs: each runs in its own Worker; the service worker carries their calls to the engine
 const wasiWorkers = new Map();
+const wasiSlots = new Map(); // wasi.js cwdSlot results by module (each program's Worker is new)
 const swOn = () => !!(navigator.serviceWorker && navigator.serviceWorker.controller);
 if (navigator.serviceWorker) {
   navigator.serviceWorker.register('sw.js?v=1').catch(() => {});
@@ -113,10 +114,14 @@ if (navigator.serviceWorker) {
 }
 function wasiEnd(pid) { const b = wasiWorkers.get(pid); if (b) { b.terminate(); wasiWorkers.delete(pid); } }
 function wasiStart(m) {
-  const b = new Worker('wasi-worker.js?v=38', { type: 'module' });
+  const b = new Worker('wasi-worker.js?v=39', { type: 'module' });
   wasiWorkers.set(m.pid, b);
-  b.onmessage = (ev) => { if (ev.data.type === 'done') wasiEnd(m.pid); };
+  b.onmessage = (ev) => {
+    if (ev.data.type === 'done') wasiEnd(m.pid);
+    else if (ev.data.type === 'slot' && wasiSlots.size < 256) wasiSlots.set(ev.data.key, ev.data.slot);
+  };
   b.onerror = () => wasiEnd(m.pid);
+  m.slots = [...wasiSlots];
   b.postMessage(m, [m.bytes.buffer]);
 }
 let ctrl = false;
@@ -126,7 +131,7 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=38');
+  w = new Worker('worker.js?v=39');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;

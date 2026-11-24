@@ -2,10 +2,10 @@
    lists it). Each WASI call is a synchronous request through the service worker (sw.js) to the engine's
    worker, which makes it a Linux call of the program's process: the engine keeps running meanwhile.
    A JS program (wasi.js jsProgram: inkvideo, which uses this Worker's WebCodecs) may end asynchronously. */
-import { runModule, parseInfo, pack, unpack, Exit } from './wasi.js?v=5';
+import { runModule, parseInfo, pack, unpack, Exit } from './wasi.js?v=6';
 
 onmessage = async (ev) => {
-  const { pid, sid, info, bytes, base, size } = ev.data;
+  const { pid, sid, info, bytes, base, size, slots } = ev.data;
   const { args, envs } = parseInfo(info);
   const url = new URL('__wasi?s=' + encodeURIComponent(sid), self.location).href;
   const post = (h, data) => {
@@ -22,6 +22,7 @@ onmessage = async (ev) => {
     if (r.h.gone) throw new Exit(-1);
     return { r: r.h.r, out: r.out };
   };
-  const code = await runModule({ bytes, args, envs, base, size, sys });
+  const code = await runModule({ bytes, args, envs, base, size, sys,
+    slots: new Map(slots || []), onSlot: (key, slot) => postMessage({ type: 'slot', key, slot }) });
   postMessage({ type: 'done', pid, code });
 };

@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
-import { runWasi } from '../wasi.js';
+import { runWasi, cwdStats } from '../wasi.js';
 import { swapStore } from './swap-store.mjs';
 const wasmPath = process.argv[2] || 'engine.wasm';
 const POOL = 24; // MB of real RAM: small on purpose
@@ -198,6 +198,7 @@ if (hasWasi) {
     await step('pw1\n', /tester@inksoc/, 'python3: local catalog entry written');
     await step('apk add --no-network python3; echo add-rc=$?\n', /Password/, 'python3: apk add asks sudo');
     await step('pw1\n', /OK: python3 installed[\s\S]*add-rc=0/, 'python3: apk add installs the WebAssembly build');
+    const py0 = cwdStats.length;
     await step('python3 -c "print(6*7)"\n', /^42\s*$/m, 'python3: -c prints 42');
     await step(`mkdir -p /tmp/t && printf '%s\\n' 'import json, re' 'open("/tmp/t/d.json", "w").write(json.dumps({"a": [1, 2]}))' 'd = json.load(open("/tmp/t/d.json"))' 'print("py-file", d["a"][1], re.sub(r"[0-9]+", "N", "x12y3"))' > /tmp/t/s.py && (cd /tmp/t && python3 s.py)\n`, /py-file 2 xNyN/, 'python3: script by relative name, file in /tmp, json and re');
     await step('echo abc | python3 -c "import sys; print(sys.stdin.read().upper())"\n', /^ABC\s*$/m, 'python3: reads a pipe');
@@ -205,6 +206,12 @@ if (hasWasi) {
     // relative paths follow the shell's folder (wasi-libc's cwd is set to it), absolute paths the real root
     await step(`mkdir -p /tmp/rel && cd /tmp/rel && python3 -c "import os; open('rel.txt', 'w').write('rel-' + 'ok'); print(open('rel.txt').read().upper(), sorted(os.listdir('.')), open('/tmp/t/d.json').read()[:5])"; cd; cat /tmp/rel/rel.txt; echo\n`, /REL-OK \['rel\.txt'\] \{"a":[\s\S]*rel-ok/, 'python3: relative path in the shell folder, absolute path still works');
     await step(`cd /tmp/rel && python3 -c "import os; print('cwd=' + os.getcwd(), 'etc' in os.listdir('/'), 'alpine=' + open('/etc/alpine-release').read().strip()[:1], open('rel.txt').read())"; cd\n`, /cwd=\/tmp\/rel True alpine=\d rel-ok/, 'python3: getcwd() is the shell folder, "/" is the real root');
+    { // the cwd-pointer search runs once per module: 1st python3 run searches, the next ones reuse it
+      const py = cwdStats.slice(py0), f = (v) => v.toFixed(1);
+      console.log(`cwd detection (python3, ${py.length} runs): 1st ${py[0] ? f(py[0].ms) + ' ms' + (py[0].hit ? ' (hit)' : '') : '-'}, next ${py.slice(1).map((e) => f(e.ms) + (e.hit ? '' : '(miss)')).join(' ')} ms`);
+      const ok = py.length >= 2 && !py[0].hit && py.slice(1).every((e) => e.hit && e.ms < py[0].ms);
+      results.push(ok); console.log((ok ? 'PASS ' : 'FAIL ') + 'python3: cwd detection cached after the 1st run');
+    }
   }
   if (tools.length) { // 7-Zip, qpdf, ImageMagick, ffmpeg, sqlite, jq, lua, zip, unzip from the catalog (local file:// mirrors), one apk add
     const lines = tools.map((t) => `${t.name}\\tfile:///root/${t.file}.wasm\\t${crypto.createHash('sha256').update(t.bytes).digest('hex')}\\t${t.bytes.length}\\tlicense\\t${t.progs.split(',').map((p) => '/usr/local/bin/' + p).join(',')}\\t${t.name}\\n`);
