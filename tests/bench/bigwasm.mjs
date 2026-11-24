@@ -1,4 +1,4 @@
-// Table of the big-file run (bench.sh wasmio MB): the catalog's WebAssembly zip, unzip, 7zz (and
+// Table of the big-file run (bench.sh wasmio MB): the catalog's WebAssembly sha256sum, zip, unzip, 7zz (and
 // busybox sha256sum as reference) on the engine vs the same tools on the runner: time, x native and
 // peak memory (program's linear memory, engine heap, the swap that holds the Linux disk, node RSS).
 // usage: node tests/bench/bigwasm.mjs wasiprof.json engine.log native.log > bigwasm.md
@@ -22,7 +22,7 @@ const read = (f) => {
 };
 const E = read(lf), N = read(nf);
 const s = (ms) => (ms == null ? '—' : (ms / 1000).toFixed(1) + ' s');
-const LABEL = { sha256: '`sha256sum` (busybox x86; ref.)', zip: '`zip -1` (WASM)', '7za': '`7zz a -mx1` (WASM)', unzip: '`unzip` (WASM)', '7zx': '`7zz x` (WASM)', make: 'gerar arquivo (busybox x86)' };
+const LABEL = { sha256: '`sha256sum` (WASM, hashtools)', bbsha256: '`busybox sha256sum` (x86; ref.)', zip: '`zip -1` (WASM)', '7za': '`7zz a -mx1` (WASM)', unzip: '`unzip` (WASM)', '7zx': '`7zz x` (WASM)', make: 'gerar arquivo (busybox x86)' };
 const names = Object.keys(E.r).length ? Object.keys(E.r) : Object.keys(N.r);
 if (!names.length) { console.log('_Arquivo grande: sem marcadores w-* (o motor não rodou o wasmio?)._'); process.exit(0); }
 let md = '| passo | motor | nativo | x nativo | MB/s motor | memória linear WASM (pico) | heap motor | swap (disco Linux) | RSS node (pico no programa) | RSS nativo | fd_read: n / máx por chamada / total | fd_write: n / máx / total |\n|---|' + '---:|'.repeat(11) + '\n';

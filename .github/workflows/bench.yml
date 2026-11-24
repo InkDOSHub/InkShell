@@ -1,7 +1,7 @@
 name: Terminal benchmark
 # Performance of the Linux terminal (engine in node = same WebAssembly as the page) against the
 # runner itself: CPU (tests/src/cpubench.c), Python (x86 and the catalog's WebAssembly build, column
-# "wasm"), copy/sha256/zip/unzip of 64 MB and 1 GB, the catalog's WebAssembly zip/unzip/7zz on 1 GB,
+# "wasm"), copy/sha256/zip/unzip of 64 MB and 1 GB, the catalog's WebAssembly sha256sum/zip/unzip/7zz on 1 GB,
 # peak memory. Plus phase-2 pre-tests: WASI programs (probe, cpubench, CPython) in node.
 # Results: the run's summary page; logs: the artifacts. Every PR (and every main push, which becomes
 # the baseline) also shows the engine numbers side by side with the last successful main run.
@@ -76,12 +76,12 @@ jobs:
           /usr/bin/time -v -o out/wasm-py.time timeout 1800 node tests/bench-engine.mjs out/engine.wasm bench.sh=out/bench.sh pybench.py=out/pybench.py zpywasm.tar=out/zpywasm.tar -- sh /root/bench.sh py 2>&1 | tee out/wasm-py.log
           grep -q '@@T done' out/wasm-py.log || echo "- motor \`py\` (WebAssembly): não terminou (ver wasm-py.log)" | tee -a out/engine-fails.txt
           echo "::endgroup::"
-      - name: Big file through the catalog's WebAssembly zip, unzip, 7zz (item 30; measurement only)
+      - name: Big file through the catalog's WebAssembly sha256sum, zip, unzip, 7zz (items 30, 33; measurement only)
         if: ${{ !cancelled() }}
         continue-on-error: true
         run: |
           mkdir -p $RUNNER_TEMP/wt/usr/local/bin
-          for n in zip:zip unzip:unzip 7zip:7zz; do
+          for n in hashtools:sha256sum zip:zip unzip:unzip 7zip:7zz; do
             e=$(awk -F '\t' -v n="${n%%:*}" '$1 == n' overlay/etc/inksoc/wasm-catalog); f=$RUNNER_TEMP/wt/usr/local/bin/${n#*:}
             curl -fsSL --retry 3 -o "$f" "$(printf '%s' "$e" | cut -f2)"
             echo "$(printf '%s' "$e" | cut -f3)  $f" | sha256sum -c; chmod 755 "$f"

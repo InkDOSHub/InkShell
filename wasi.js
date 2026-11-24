@@ -30,7 +30,9 @@ export function parseInfo(bytes) {
 }
 
 /** Runs WebAssembly process `pid` (from x.wasi_next()) to its end inside the engine's own thread;
- *  returns its exit code. x = engine exports; opts.wait(n) is called when every process waits. */
+ *  returns its exit code. x = engine exports; opts.wait(n) is called when every process waits;
+ *  opts.serve() after each engine slice, to answer what the kernel asks the host meanwhile (pieces of
+ *  a device folder's file, linux_mount_fetch): a read of a big /mnt file waits on them. */
 export function runWasi(x, pid, opts = {}) {
   const emem = () => new Uint8Array(x.memory.buffer);
   const k = x.wasi_info(pid);
@@ -46,6 +48,7 @@ export function runWasi(x, pid, opts = {}) {
     let n, idle = 0;
     while ((n = x.wasi_take(pid)) === -1) {
       const st = x.run(500000);
+      if (opts.serve) opts.serve();
       if (st === 1 || st === 2) throw new Exit(-1);
       if (st === 3 && opts.wait) opts.wait(++idle); else idle = 0;
     }
