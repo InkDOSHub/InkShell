@@ -324,9 +324,17 @@ if (x.linux_save_next) { // big files: 4 KB blocks in swap slots (lxdata.rs), no
   const MB = 1048576, h0 = x.heap_used();
   await step('dd if=/dev/zero of=/tmp/z bs=1M count=3 2>/dev/null; printf ABC | dd of=/tmp/z bs=1 seek=2000000 conv=notrunc 2>/dev/null; dd if=/tmp/z bs=1 skip=1999999 count=5 2>/dev/null | od -c; stat -c %s /tmp/z; truncate -s 4000 /tmp/z; stat -c %s /tmp/z; truncate -s 2000002 /tmp/z; dd if=/tmp/z bs=1 skip=1999999 count=3 2>/dev/null | od -c; rm /tmp/z\n',
     /\\0\s+A\s+B\s+C\s+\\0[\s\S]*^3145728\s[\s\S]*^4000\s[\s\S]*\\0\s+\\0\s+\\0/m, 'file in blocks: write in the middle, read back, shrink, grow with zeros');
-  // cp (sendfile) and ln share the blocks (copy-on-write): changing a copy leaves the original as it was
-  await step('dd if=/dev/urandom of=/tmp/c1 bs=1M count=3 2>/dev/null; printf tail >> /tmp/c1; s0=$(md5sum < /tmp/c1); cp /tmp/c1 /tmp/c2; ln /tmp/c1 /tmp/c3; printf XYZ | dd of=/tmp/c2 bs=1 seek=70000 conv=notrunc 2>/dev/null; truncate -s 100000 /tmp/c3; echo abc >> /tmp/c3; [ "$s0" = "$(md5sum < /tmp/c1)" ] && echo orig-same; cmp -s /tmp/c1 /tmp/c2 || echo copy-differs; dd if=/tmp/c2 bs=1 skip=70000 count=3 2>/dev/null; echo; stat -c %s /tmp/c2 /tmp/c3; dd if=/tmp/c3 bs=1 skip=100000 count=4 2>/dev/null | od -c | head -1; rm /tmp/c1 /tmp/c2 /tmp/c3\n',
+  // cp (sendfile) shares the blocks (copy-on-write): changing a copy leaves the original as it was
+  await step('dd if=/dev/urandom of=/tmp/c1 bs=1M count=3 2>/dev/null; printf tail >> /tmp/c1; s0=$(md5sum < /tmp/c1); cp /tmp/c1 /tmp/c2; cp /tmp/c1 /tmp/c3; printf XYZ | dd of=/tmp/c2 bs=1 seek=70000 conv=notrunc 2>/dev/null; truncate -s 100000 /tmp/c3; echo abc >> /tmp/c3; [ "$s0" = "$(md5sum < /tmp/c1)" ] && echo orig-same; cmp -s /tmp/c1 /tmp/c2 || echo copy-differs; dd if=/tmp/c2 bs=1 skip=70000 count=3 2>/dev/null; echo; stat -c %s /tmp/c2 /tmp/c3; dd if=/tmp/c3 bs=1 skip=100000 count=4 2>/dev/null | od -c | head -1; rm /tmp/c1 /tmp/c2 /tmp/c3\n',
     /orig-same[\s\S]*copy-differs[\s\S]*XYZ[\s\S]*^3145732\s+^100004\s[\s\S]*a\s+b\s+c\s+\\n/m, 'copies share blocks: changing the copy (write, truncate, append) keeps the original');
+  // ln: a hard link is the same file (inode): same st_ino, st_nlink counts names, a change by one name shows
+  // by the other, removing one name keeps the file; small file (in memory) and one in blocks (> 1 MB)
+  await step('cd /tmp; rm -f f g h; echo a > f; ln f g; echo hl1:$(stat -c "%i %h" f g); echo b >> g; echo hl2:$(cat f); mv g h; echo hl3:$(stat -c %h f); rm f; echo hl4:$(cat h):$(stat -c %h h); rm h; cd\n',
+    /hl1:(\d+) 2 \1 2\s[\s\S]*hl2:a b\s[\s\S]*hl3:2\s[\s\S]*hl4:a b:1\s/, 'hard link (small file): same inode, nlink 2, append by one name seen by the other, rm one keeps it');
+  await step('dd if=/dev/urandom of=/tmp/B1 bs=1M count=2 2>/dev/null; ln /tmp/B1 /tmp/B2; echo bh1:$(stat -c "%i %h" /tmp/B1 /tmp/B2); printf XYZ | dd of=/tmp/B2 bs=1 seek=1500000 conv=notrunc 2>/dev/null; echo bh2:$(dd if=/tmp/B1 bs=1 skip=1500000 count=3 2>/dev/null); truncate -s 5 /tmp/B1; echo bh3:$(stat -c %s /tmp/B2); rm /tmp/B1; echo bh4:$(stat -c "%s %h" /tmp/B2); rm /tmp/B2\n',
+    /bh1:(\d+) 2 \1 2\s[\s\S]*bh2:XYZ\s[\s\S]*bh3:5\s[\s\S]*bh4:5 1\s/, 'hard link (file in blocks): same inode, write and truncate by one name seen by the other');
+  // kept in the saved tar (type 1): restored as one file with two names (hl0 sorts before its file hl1)
+  await step('echo keep > ~/hl1; ln ~/hl1 ~/hl0; echo hs:$(stat -c %h ~/hl0)\n', /hs:2\s/, 'hard link made for the saved tar');
   await step('dd if=/dev/urandom of=/tmp/big bs=1M count=64 2>/dev/null; sha256sum /tmp/big; cp /tmp/big ~/big2; sha256sum ~/big2; stat -c %s ~/big2; rm /tmp/big; echo big-done\n',
     /^([0-9a-f]{64})  \/tmp\/big\s[\s\S]*^\1  \/home\/tester\/big2\s[\s\S]*^67108864\s[\s\S]*big-done/m, 'big file (64 MB, more than the 24 MB RAM pool): write, copy, same sha256');
   const sum = (out.match(/^([0-9a-f]{64})  \/home\/tester\/big2/m) || [])[1];
@@ -394,8 +402,8 @@ if (x.linux_save_next) { // big files: 4 KB blocks in swap slots (lxdata.rs), no
       if (size > MB) big += size; else small += size;
       o += 512 + Math.ceil(size / 512) * 512;
     }
-    const r = await bootSaved(tar, 'sha256sum /home/tester/big2; stat -c %s /home/tester/big2; cat /etc/inksoc/user; echo restore-done\n');
-    const rok = r.out.includes(`${sum}  /home/tester/big2`) && /^67108864\s/m.test(r.out) && /^tester\s/m.test(r.out) && /restore-done/.test(r.out) && r.grow < small / MB + 16;
+    const r = await bootSaved(tar, 'sha256sum /home/tester/big2; stat -c %s /home/tester/big2; cat /etc/inksoc/user; echo rh:$(stat -c "%i %h" /home/tester/hl0 /home/tester/hl1); echo x >> /home/tester/hl0; echo rh2:$(tail -1 /home/tester/hl1); echo restore-done\n');
+    const rok = r.out.includes(`${sum}  /home/tester/big2`) && /^67108864\s/m.test(r.out) && /^tester\s/m.test(r.out) && /restore-done/.test(r.out) && /rh:(\d+) 2 \1 2\s[\s\S]*rh2:x\s/.test(r.out) && r.grow < small / MB + 16;
     results.push(rok); console.log((rok ? 'PASS' : 'FAIL') + ` restore from the saved tar in pieces: big file same sha256, heap +${r.grow.toFixed(1)} MB while loading (small files ${(small / MB).toFixed(1)} MB, big ${(big / MB).toFixed(0)} MB)` + (rok ? '' : '\n' + r.out.slice(-600)));
   }
   await step('rm ~/big2; ls ~/big2 2>&1 | grep -c "No such"\n', /^1\s*$/m, 'big file removed');

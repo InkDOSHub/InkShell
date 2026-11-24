@@ -18,7 +18,8 @@ const ENOTDIR: i64 = 20; const EISDIR: i64 = 21; const EINVAL: i64 = 22; const E
 const ESPIPE: i64 = 29; const ERANGE: i64 = 34; const ENOSYS: i64 = 38; const ENOTEMPTY: i64 = 39;
 const ECHILD: i64 = 10; const EPIPE: i64 = 32; const ENOEXEC: i64 = 8;
 
-pub enum Node { File(Data), Dir, Link(String) }
+// Hard(p): another name of the file whose data is at `p` (link(); same inode, see Lx::hard)
+pub enum Node { File(Data), Dir, Link(String), Hard(String) }
 use crate::lxdata::Data;
 
 #[derive(Clone)]
@@ -108,6 +109,9 @@ pub struct Lx {
     pub termios: Option<Vec<u8>>,
     pub winsize: (u16, u16), // rows, columns
     pub written: BTreeSet<String>,
+    // hard links: path holding a file's data -> its other names (Node::Hard); an entry whose node
+    // is no longer Hard(path) is stale and ignored (see aliases)
+    pub hard: BTreeMap<String, BTreeSet<String>>,
     // folders of the device mounted by the page (/mnt/NAME): files listed but not read yet are
     // empty here with their real size in `stubs`; opening one asks the page for it (`fetch`)
     pub mounts: BTreeSet<String>,
@@ -232,7 +236,7 @@ impl Lx {
             for (k, s) in parts.iter().enumerate() {
                 cur = format!("{}/{}", cur, s);
                 if k + 1 == parts.len() && !last { break; }
-                if let Some(Node::Link(t)) = self.fs.get(&cur) {
+                if let Some(Node::Link(t) | Node::Hard(t)) = self.fs.get(&cur) {
                     let base = cur.rsplit_once('/').map(|x| x.0).unwrap_or("");
                     let target = if t.starts_with('/') { t.clone() } else { format!("{}/{}", base, t) };
                     let rest: Vec<&str> = parts[k + 1..].iter().map(|s| s.as_str()).collect();
@@ -258,7 +262,60 @@ impl Lx {
         self.set_file(m, path.to_string(), data.into());
     }
     fn set_file(&mut self, m: &mut crate::mmu::Mmu, path: String, d: Data) {
-        if let Some(Node::File(mut old)) = self.fs.insert(path, Node::File(d)) { old.clear(&mut self.bc, m); }
+        match self.fs.insert(path.clone(), Node::File(d)) {
+            Some(Node::File(mut old)) => old.clear(&mut self.bc, m),
+            Some(Node::Hard(p)) => { if let Some(s) = self.hard.get_mut(&p) { s.remove(&path); } }
+            _ => {}
+        }
+    }
+    /// The other names of the file whose data is at `p` (hard links).
+    fn aliases(&self, p: &str) -> Vec<String> {
+        self.hard.get(p).map(|s| s.iter().filter(|a| matches!(self.fs.get(*a), Some(Node::Hard(t)) if t == p)).cloned().collect()).unwrap_or_default()
+    }
+    /// st_nlink of the file whose data is at `p`.
+    fn nlink(&self, p: &str) -> u64 { 1 + self.aliases(p).len() as u64 }
+    /// A second name `q` for the file whose data is at `p` (same inode).
+    fn hard_link(&mut self, p: &str, q: String) {
+        self.hard.entry(p.to_string()).or_default().insert(q.clone());
+        self.fs.insert(q, Node::Hard(p.to_string()));
+    }
+    /// Removes the name `q` (not a folder). When it held the data of a file with other names,
+    /// the first of them takes it (and open descriptors follow); otherwise the blocks are freed.
+    fn drop_name(&mut self, m: &mut crate::mmu::Mmu, q: &str) {
+        let meta = self.meta.remove(q);
+        let wr = self.written.remove(q);
+        self.stubs.remove(q); self.holes.remove(q); self.dirt.remove(q); self.us_names.remove(q);
+        match self.fs.remove(q) {
+            Some(Node::Hard(p)) => { if let Some(s) = self.hard.get_mut(&p) { s.remove(q); if s.is_empty() { self.hard.remove(&p); } } }
+            Some(Node::File(mut d)) => {
+                let al = self.aliases(q);
+                self.hard.remove(q);
+                let Some((n, rest)) = al.split_first() else { d.clear(&mut self.bc, m); return };
+                let n = n.clone();
+                self.fs.insert(n.clone(), Node::File(d));
+                for a in rest { self.fs.insert(a.clone(), Node::Hard(n.clone())); }
+                if !rest.is_empty() { self.hard.insert(n.clone(), rest.iter().cloned().collect()); }
+                if let Some(x) = meta { self.meta.insert(n.clone(), x); }
+                if wr { self.written.insert(n.clone()); }
+                let fix = |f: &mut Fd| if let Fd::File { path, .. } = f { if path == q { *path = n.clone(); } };
+                self.fds.values_mut().for_each(fix);
+                for pr in self.procs.values_mut() { if let Some(s) = pr.saved.as_mut() { s.fds.values_mut().for_each(fix); } }
+                for sh in self.shared.iter_mut() { if sh.3 == q { sh.3 = n.clone(); } }
+            }
+            _ => {}
+        }
+    }
+    /// After a rename of `f` (and what is under it) to `t`: hard links follow their files.
+    fn hard_moved(&mut self, f: &str, t: &str) {
+        if self.hard.is_empty() { return; }
+        let fp = format!("{}/", f);
+        let sub = |p: &String| -> String { if p == f || p.starts_with(&fp) { format!("{}{}", t, &p[f.len()..]) } else { p.clone() } };
+        for (p, s) in std::mem::take(&mut self.hard) {
+            let np = sub(&p);
+            let ns: BTreeSet<String> = s.iter().map(&sub).collect();
+            if np != p { for a in &ns { if let Some(Node::Hard(x)) = self.fs.get_mut(a) { if *x == p { *x = np.clone(); } } } }
+            self.hard.entry(np).or_default().extend(ns);
+        }
     }
     fn is_dir(&self, p: &str) -> bool { p == "/" || matches!(self.fs.get(p), Some(Node::Dir)) }
     fn children(&self, dir: &str) -> Vec<String> {
@@ -360,9 +417,10 @@ impl Untar {
             b'5' => { l.mkdirs(&path); }
             b'2' => { if let Some(Node::File(mut old)) = l.fs.insert(path, Node::Link(link)) { old.clear(&mut l.bc, m); } }
             b'1' => {
+                // a hard link: the same file (its data may come later in the tar)
                 let src = l.abs(&format!("/{}", link));
-                let d = match l.fs.get(&src) { Some(Node::File(d)) => Some(d.dup(&mut l.bc, m)), _ => None };
-                if let Some(d) = d { l.set_file(m, path, d); }
+                let src = match l.fs.get(&src) { Some(Node::Hard(p)) => p.clone(), _ => src };
+                if src != path && !matches!(l.fs.get(&path), Some(Node::Dir)) { if l.fs.contains_key(&path) { l.drop_name(m, &path); } l.hard_link(&src, path); }
             }
             b'0' | 0 | b'7' => match data {
                 Some(d) => l.set_file(m, path, d.into()),
@@ -423,6 +481,7 @@ impl Engine {
             l.bc = pre.bc;
             for (k, v) in pre.fs { if let Some(Node::File(mut old)) = l.fs.insert(k, v) { old.clear(&mut l.bc, &mut self.mmu); } }
             l.meta.extend(pre.meta);
+            for (k, s) in pre.hard { l.hard.entry(k).or_default().extend(s); }
         }
         for (k, v) in files { if k.ends_with(".tar") { l.untar(&mut self.mmu, &v); } else if k != name { l.put(&mut self.mmu, &format!("/root/{}", k), v); } }
         l.fs.insert("/etc/resolv.conf".into(), Node::File(b"nameserver 10.0.2.3\n".to_vec().into()));
@@ -566,7 +625,9 @@ fn stat_buf_own(e: &mut Engine, a: u64, mode: u32, size: u64, ino: u64, own: (u3
 
 fn stat_path(e: &mut Engine, path: &str, a: u64, follow: bool) -> i64 {
     let l = lx(e);
-    let p = l.resolve(path, follow);
+    let mut p = l.resolve(path, follow);
+    if let Some(Node::Hard(t)) = l.fs.get(&p) { p = t.clone(); } // lstat of a hard link: the file
+    let nl = if matches!(l.fs.get(&p), Some(Node::File(_))) { l.nlink(&p) } else { 1 };
     // terminals: the same inode as fstat of an open one (ttyname compares them)
     let ino = if let Some(n) = p.strip_prefix("/dev/pts/").and_then(|n| n.parse::<u64>().ok()) { 8000 + n } else if p == "/dev/console" || p == "/dev/tty" { 5 } else { p.bytes().fold(1469598103934665603u64, |h, c| (h ^ c as u64).wrapping_mul(1099511628211)) };
     let (mode, size) = match l.fs.get(&p) {
@@ -574,10 +635,12 @@ fn stat_path(e: &mut Engine, path: &str, a: u64, follow: bool) -> i64 {
         Some(Node::Dir) => (0o040000, 4096),
         Some(Node::File(d)) => (if p.starts_with("/dev/") { 0o020000 } else if l.us_names.contains_key(&p) { 0o140000 } else { 0o100000 }, l.stubs.get(&p).copied().unwrap_or(d.len())),
         Some(Node::Link(t)) => (0o120777, t.len() as u64),
-        None => return -ENOENT,
+        Some(Node::Hard(_)) | None => return -ENOENT, // Hard: its file is not there (yet)
     };
     let (bits, uid, gid) = if mode == 0o120777 { (0, 0, 0) } else { perm(l, &p, mode == 0o040000) };
-    stat_buf_own(e, a, mode | bits, size, ino, (uid, gid))
+    let r = stat_buf_own(e, a, mode | bits, size, ino, (uid, gid));
+    if r == 0 && nl > 1 { let _ = e.mmu.write_bytes(a + 16, &nl.to_le_bytes()); }
+    r
 }
 
 /// /proc files made when opened (memory, CPU, uptime) so free, top and htop have something to read.
@@ -1204,8 +1267,13 @@ pub fn syscall(e: &mut Engine) {
         82 | 264 | 316 => { // rename / renameat / renameat2
             let (f, t) = if nr == 82 { (e.read_cstr(a0, 4096), e.read_cstr(a1, 4096)) } else { (path_at(e, a0, a1), path_at(e, a2, a3)) };
             let (l, mm) = lxm(e); let (f, t) = (l.resolve(&f, false), l.resolve(&t, false));
+            let file = |n: Option<&Node>| matches!(n, Some(Node::File(_) | Node::Hard(_)));
+            if file(l.fs.get(&f)) && file(l.fs.get(&t)) {
+                if l.resolve(&f, true) == l.resolve(&t, true) { return ret(e, 0); } // two names of one file: nothing to do
+                l.drop_name(mm, &t);
+            }
             let keys: Vec<String> = l.fs.keys().filter(|k| **k == f || k.starts_with(&format!("{}/", f))).cloned().collect();
-            if keys.is_empty() { -ENOENT } else { for k in keys { let n = l.fs.remove(&k).unwrap(); let nk = format!("{}{}", t, &k[f.len()..]); l.written.remove(&k); if let Some(m) = l.meta.remove(&k) { l.meta.insert(nk.clone(), m); } if let Some(z) = l.stubs.remove(&k) { l.stubs.insert(nk.clone(), z); } if let Some(h) = l.holes.remove(&k) { l.holes.insert(nk.clone(), h); } else { l.holes.remove(&nk); } l.dirt.remove(&k); l.dirt.remove(&nk); if matches!(n, Node::File(_)) && !l.stubs.contains_key(&nk) && !l.holes.contains_key(&nk) { l.written.insert(nk.clone()); } if let Some(Node::File(mut old)) = l.fs.insert(nk, n) { old.clear(&mut l.bc, mm); } } 0 }
+            if keys.is_empty() { -ENOENT } else { for k in keys { let n = l.fs.remove(&k).unwrap(); let nk = format!("{}{}", t, &k[f.len()..]); l.written.remove(&k); if let Some(m) = l.meta.remove(&k) { l.meta.insert(nk.clone(), m); } if let Some(z) = l.stubs.remove(&k) { l.stubs.insert(nk.clone(), z); } if let Some(h) = l.holes.remove(&k) { l.holes.insert(nk.clone(), h); } else { l.holes.remove(&nk); } l.dirt.remove(&k); l.dirt.remove(&nk); if matches!(n, Node::File(_)) && !l.stubs.contains_key(&nk) && !l.holes.contains_key(&nk) { l.written.insert(nk.clone()); } if let Some(Node::File(mut old)) = l.fs.insert(nk, n) { old.clear(&mut l.bc, mm); } } l.hard_moved(&f, &t); 0 }
         }
         83 | 258 => { // mkdir / mkdirat
             let (p, m) = if nr == 83 { (e.read_cstr(a0, 4096), a1) } else { (path_at(e, a0, a1), a2) };
@@ -1221,15 +1289,24 @@ pub fn syscall(e: &mut Engine) {
                 Some(Node::Dir) if !l.children(&q).is_empty() => -ENOTEMPTY,
                 Some(Node::Dir) => { l.fs.remove(&q); 0 }
                 Some(_) if dir => -ENOTDIR,
-                Some(_) => { if let Some(Node::File(mut d)) = l.fs.remove(&q) { d.clear(&mut l.bc, mm); } l.written.remove(&q); l.stubs.remove(&q); l.holes.remove(&q); l.dirt.remove(&q); l.us_names.remove(&q); l.meta.remove(&q); 0 }
+                Some(_) => { l.drop_name(mm, &q); 0 }
             }
         }
         86 | 88 | 265 | 266 => { // link / symlink / linkat / symlinkat
             let (t, n) = match nr { 88 => (e.read_cstr(a0, 4096), e.read_cstr(a1, 4096)), 266 => (e.read_cstr(a0, 4096), path_at(e, a1, a2)), 86 => (e.read_cstr(a0, 4096), e.read_cstr(a1, 4096)), _ => (path_at(e, a0, a1), path_at(e, a2, a3)) };
             let (l, mm) = lxm(e); let q = l.resolve(&n, false);
             if l.fs.contains_key(&q) { -EEXIST } else if nr == 88 || nr == 266 { l.fs.insert(q, Node::Link(t)); 0 } else {
+                // a hard link: a second name for the same file (inode); the device's folders and
+                // /dev, /proc get a copy (blocks shared copy-on-write) as before
                 let src = l.resolve(&t, true);
-                match l.fs.get(&src) { Some(Node::File(d)) => { let d = d.dup(&mut l.bc, mm); l.fs.insert(q, Node::File(d)); 0 } _ => -ENOENT }
+                let mnt = |p: &str| p.starts_with("/dev/") || p.starts_with("/proc/") || l.mounts.iter().any(|m| p == m || p.starts_with(&format!("{}/", m)));
+                let copy = mnt(&src) || mnt(&q);
+                match l.fs.get(&src) {
+                    Some(Node::File(d)) if copy => { let d = d.dup(&mut l.bc, mm); l.fs.insert(q, Node::File(d)); 0 }
+                    Some(Node::File(_)) => { l.hard_link(&src, q); 0 }
+                    Some(Node::Dir) => -1, // EPERM
+                    _ => -ENOENT
+                }
             }
         }
         89 | 267 => { // readlink / readlinkat
@@ -1431,7 +1508,7 @@ fn statx(e: &mut Engine, path: &str, dirfd: i32, flags: u64, buf: u64) -> i64 {
     let mut b = [0u8; 256];
     b[0..4].copy_from_slice(&0x7FFu32.to_le_bytes());
     b[4..8].copy_from_slice(&4096u32.to_le_bytes());
-    b[16..20].copy_from_slice(&1u32.to_le_bytes());
+    b[16..20].copy_from_slice(&(g(16) as u32).to_le_bytes()); // nlink
     b[28..30].copy_from_slice(&(u32::from_le_bytes(st[24..28].try_into().unwrap()) as u16).to_le_bytes());
     b[20..28].copy_from_slice(&st[28..36]); // uid, gid
     b[32..40].copy_from_slice(&g(8).to_le_bytes());
@@ -1502,9 +1579,10 @@ fn getdents(e: &mut Engine, fd: i32, buf: u64, n: u64) -> i64 {
     while k < names.len() {
         let nm = &names[k];
         let full = if path == "/" { format!("/{}", nm) } else { format!("{}/{}", path, nm) };
-        let ty = match l.fs.get(&full) { Some(Node::Dir) => 4u8, Some(Node::Link(_)) => 10, Some(Node::File(_)) => 8, None => 4 };
+        let ty = match l.fs.get(&full) { Some(Node::Dir) => 4u8, Some(Node::Link(_)) => 10, Some(Node::File(_)) | Some(Node::Hard(_)) => 8, None => 4 };
         let rec = (19 + nm.len() + 1 + 7) & !7;
         if out.len() + rec > n as usize { break; }
+        let full = match l.fs.get(&full) { Some(Node::Hard(t)) => t.clone(), _ => full }; // same inode as its file
         let ino = full.bytes().fold(1469598103934665603u64, |h, c| (h ^ c as u64).wrapping_mul(1099511628211));
         out.extend_from_slice(&ino.to_le_bytes());
         out.extend_from_slice(&((k + 1) as u64).to_le_bytes());
@@ -3211,13 +3289,17 @@ fn tar_hdr(t: &mut Vec<u8>, name: &str, ty: u8, size: u64, link: &str, mode: u32
     t.extend_from_slice(&h);
 }
 
+/// Paths the saved tar leaves out: /proc, /dev, /tmp and the device's folders.
+fn save_skip(l: &Lx, p: &str) -> bool {
+    p.starts_with("/proc") || p.starts_with("/dev") || p.starts_with("/tmp/") || l.mounts.iter().any(|m| p == m || p.starts_with(&format!("{}/", m)))
+}
+
 /// Starts saving the file tree as a tar (without /proc, /dev, /tmp and the device's folders);
 /// linux_save_next then gives it piece by piece, so big files never sit whole in memory.
 #[no_mangle]
 pub extern "C" fn linux_save_begin() -> u32 {
     let Some(l) = crate::eng().s.lx.as_mut() else { return 0 };
-    let keys = l.fs.keys().filter(|p| !(p.starts_with("/proc") || p.starts_with("/dev") || p.starts_with("/tmp/")))
-        .filter(|p| !l.mounts.iter().any(|m| *p == m || p.starts_with(&format!("{}/", m)))).cloned().collect();
+    let keys = l.fs.keys().filter(|p| !save_skip(l, p)).cloned().collect();
     l.save = Some(SaveIter { keys, i: 0, cur: None, end: false });
     1
 }
@@ -3249,6 +3331,18 @@ pub extern "C" fn linux_save_next() -> u32 {
             Some(Node::Link(k)) => {
                 if k.len() > 99 { let mut d = k.as_bytes().to_vec(); d.push(0); tar_hdr(&mut t, "././@LongLink", b'K', d.len() as u64, "", 0o644, (0, 0)); t.extend_from_slice(&d); t.resize((t.len() + 511) / 512 * 512, 0); }
                 tar_hdr(&mut t, name, b'2', 0, k, 0o777, (0, 0))
+            }
+            Some(Node::Hard(k)) if !save_skip(l, k) => { // a hard link (tar type 1) to the file's data path
+                let k = k[1..].to_string();
+                if k.len() > 99 { let mut d = k.as_bytes().to_vec(); d.push(0); tar_hdr(&mut t, "././@LongLink", b'K', d.len() as u64, "", 0o644, (0, 0)); t.extend_from_slice(&d); t.resize((t.len() + 511) / 512 * 512, 0); }
+                tar_hdr(&mut t, name, b'1', 0, &k, 0o644, (0, 0))
+            }
+            Some(Node::Hard(k)) => { // its file is not saved (/tmp): this name gets the bytes
+                let k = k.clone();
+                let len = match l.fs.get(&k) { Some(Node::File(d)) => d.len(), _ => 0 };
+                let (m, u, g) = perm(l, &k, false);
+                tar_hdr(&mut t, name, b'0', len, "", m, (u, g));
+                if len > 0 { it.cur = Some((k, 0, len)); }
             }
             Some(Node::File(d)) => {
                 let (m, u, g) = perm(l, &p, false);
