@@ -551,6 +551,7 @@ pub extern "C" fn run(budget: u32) -> i32 {
         let rip = e.cpu.rip;
         if rip >= THUNK_BASE && rip < THUNK_BASE + 0x10000 {
             e.materialize();
+            jit::pc(9, 1);
             { let _g = lock::lock(); e.call_native(); }
             if lock::MT { lock::kick(); }
             continue;
@@ -562,6 +563,8 @@ pub extern "C" fn run(budget: u32) -> i32 {
                 e.cpu.jit_limit = before + lim;
                 jit::call(f);
                 let n = e.cpu.icount - before;
+                jit::pc(0, 1);
+                jit::pc(1, n);
                 #[cfg(feature = "prof")]
                 { jit::prof::add(0xB0000000, 1); jit::prof::add(0xB0000001, n); jit::prof::add(f, n); }
                 left = left.saturating_sub(n);
@@ -569,6 +572,8 @@ pub extern "C" fn run(budget: u32) -> i32 {
                 continue;
             }
             let n = cpu::step_trace(e, lim.min(4096));
+            jit::pc(2, 1);
+            jit::pc(3, n);
             #[cfg(feature = "prof")]
             { jit::prof::add(0xC0000000, 1); jit::prof::add(0xC0000001, n); }
             left = left.saturating_sub(n);
