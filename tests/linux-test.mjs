@@ -103,7 +103,7 @@ async function settle(maxMs = 120000) {
   for (let idle = 0; Date.now() - t0 < maxMs;) {
     const st = x.run(2000000);
     serveMount();
-    if (hasWasi) for (let pid; (pid = x.wasi_next());) runWasi(x, pid);
+    if (hasWasi) for (let pid; (pid = x.wasi_next());) runWasi(x, pid, { serve: serveMount }); // serveMount: a WASI read of a big /mnt file
     if (st === 1 || st === 2) return st;
     // waiting: a timer due soon (sleep, a timeout) is not idle; only waiting for the terminal is
     if (st === 3) { const ms = x.stat(17); if (ms >= 30 && !(x.linux_timer_ms?.() >= 0) && ++idle > 20) return 3; await new Promise((r) => setTimeout(r, Math.min(ms, 30) || 2)); } else idle = 0;
