@@ -329,7 +329,7 @@ if (x.linux_save_next) { // big files: 4 KB blocks in swap slots (lxdata.rs), no
     /orig-same[\s\S]*copy-differs[\s\S]*XYZ[\s\S]*^3145732\s+^100004\s[\s\S]*a\s+b\s+c\s+\\n/m, 'copies share blocks: changing the copy (write, truncate, append) keeps the original');
   // ln: a hard link is the same file (inode): same st_ino, st_nlink counts names, a change by one name shows
   // by the other, removing one name keeps the file; small file (in memory) and one in blocks (> 1 MB)
-  await step('cd /tmp; rm -f f g h; echo a > f; ln f g; echo hl1:$(stat -c "%i %h" f g); echo b >> g; echo hl2:$(cat f); mv g h; echo hl3:$(stat -c %h f); rm f; echo hl4:$(cat h):$(stat -c %h h); rm h; cd\n',
+  await step('mkdir -p /tmp/hl && cd /tmp/hl; rm -f f g h; echo a > f; ln f g; echo hl1:$(stat -c "%i %h" f g); echo b >> g; echo hl2:$(cat f); mv g h; echo hl3:$(stat -c %h f); rm f; echo hl4:$(cat h):$(stat -c %h h); rm h; cd\n',
     /hl1:(\d+) 2 \1 2\s[\s\S]*hl2:a b\s[\s\S]*hl3:2\s[\s\S]*hl4:a b:1\s/, 'hard link (small file): same inode, nlink 2, append by one name seen by the other, rm one keeps it');
   await step('dd if=/dev/urandom of=/tmp/B1 bs=1M count=2 2>/dev/null; ln /tmp/B1 /tmp/B2; echo bh1:$(stat -c "%i %h" /tmp/B1 /tmp/B2); printf XYZ | dd of=/tmp/B2 bs=1 seek=1500000 conv=notrunc 2>/dev/null; echo bh2:$(dd if=/tmp/B1 bs=1 skip=1500000 count=3 2>/dev/null); truncate -s 5 /tmp/B1; echo bh3:$(stat -c %s /tmp/B2); rm /tmp/B1; echo bh4:$(stat -c "%s %h" /tmp/B2); rm /tmp/B2\n',
     /bh1:(\d+) 2 \1 2\s[\s\S]*bh2:XYZ\s[\s\S]*bh3:5\s[\s\S]*bh4:5 1\s/, 'hard link (file in blocks): same inode, write and truncate by one name seen by the other');
