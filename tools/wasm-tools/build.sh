@@ -137,7 +137,7 @@ b_jq() { # no oniguruma (regex builtins test/match/sub report an error), decNumb
   compat; dl "https://github.com/jqlang/jq/releases/download/jq-$JQ/jq-$JQ.tar.gz" jq
   (cd "$WORK/jq" && [ -f Makefile ] || CFLAGS="-O2 $EMU -I$P/compat -include compat.h" LDFLAGS="-L$P/lib $STACK" LIBS="-lcompat $EMUL" \
     ./configure --host=$T --disable-shared --enable-static --without-oniguruma --disable-docs --disable-valgrind --disable-maintainer-mode 2>&1 | tail -5)
-  (cd "$WORK/jq" && make -j"$J" jq)
+  (cd "$WORK/jq" && make src/builtin.inc src/version.h && make -j"$J" jq) # make jq alone skips BUILT_SOURCES
   cp "$WORK/jq/jq" "$OUT/jq.wasm"
 }
 
@@ -160,10 +160,10 @@ b_zip() { # Info-ZIP zip 3.0 (Debian's copy of the upstream tarball), no bzip2; 
     -o "$OUT/zip.wasm" -L"$P/lib" -lcompat $EMUL $STACK)
 }
 
-b_unzip() { # Info-ZIP unzip 6.0 (Debian's copy of the upstream tarball), no bzip2; times are UTC (no time zones)
+b_unzip() { # Info-ZIP unzip 6.0 (Debian's copy of the upstream tarball), no bzip2; times are UTC (no time zones); its ztimbuf has the layout of struct utimbuf
   compat; dl "http://deb.debian.org/debian/pool/main/u/unzip/unzip_$UNZIP.orig.tar.gz" unzip
   sed -i 's/^    m_time += timezone; /    m_time += 0; /' "$WORK/unzip/fileio.c"
-  (cd "$WORK/unzip" && $CC -O2 $EMU -I"$P/compat" -include compat.h $IZ -I. -DDIRENT -DNO_LCHMOD -DDATE_FORMAT=DF_YMD \
+  (cd "$WORK/unzip" && $CC -O2 $EMU -I"$P/compat" -include compat.h $IZ -I. -DDIRENT -DNO_LCHMOD -DDATE_FORMAT=DF_YMD -Wno-error=incompatible-pointer-types \
     unzip.c crc32.c crypt.c envargs.c explode.c extract.c fileio.c globals.c inflate.c list.c match.c process.c ttyio.c \
     ubz2err.c unreduce.c unshrink.c zipinfo.c unix/unix.c -o "$OUT/unzip.wasm" -L"$P/lib" -lcompat $EMUL $STACK)
 }
