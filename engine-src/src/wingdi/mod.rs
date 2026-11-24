@@ -166,7 +166,37 @@ pub struct FontData {
     pub bold: bool,
     glyphs: Vec<(u8, u8, usize)>,
 }
+// Wine's Tahoma bitmap is LGPL-2.1+: only built with `--features tahoma`.
+// Default (terminal) build: blank metric-only font (same layout, no pixels).
+#[cfg(feature = "tahoma")]
 static FONT_BIN: &[u8] = include_bytes!("../../fonts/tahoma.bin");
+#[cfg(not(feature = "tahoma"))]
+static FONT_BIN: &[u8] = &BLANK_FONT;
+
+#[cfg(not(feature = "tahoma"))]
+const BLANK_LEN: usize = 2 + 224 * 2;
+#[cfg(not(feature = "tahoma"))]
+static BLANK_FONT: [u8; 1 + 4 * (4 + BLANK_LEN)] = {
+    // (h, asc, advance) per font: 11px regular/bold, 16px regular/bold
+    const M: [(u8, u8, u8); 4] = [(14, 11, 6), (14, 11, 7), (21, 17, 9), (21, 17, 10)];
+    let mut b = [0u8; 1 + 4 * (4 + BLANK_LEN)];
+    b[0] = 4;
+    let mut i = 0;
+    while i < 4 {
+        let p = 1 + i * (4 + BLANK_LEN);
+        b[p] = BLANK_LEN as u8;
+        b[p + 1] = (BLANK_LEN >> 8) as u8;
+        b[p + 4] = M[i].0;
+        b[p + 5] = M[i].1;
+        let mut g = 0;
+        while g < 224 {
+            b[p + 6 + 2 * g] = M[i].2; // advance; width 0 = nothing drawn
+            g += 1;
+        }
+        i += 1;
+    }
+    b
+};
 
 pub fn fonts() -> &'static Vec<FontData> {
     static F: OnceLock<Vec<FontData>> = OnceLock::new();
