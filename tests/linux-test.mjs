@@ -54,10 +54,16 @@ const pyBytes = hasPy ? fs.readFileSync(pyWasm) : null;
 if (hasPy) add('python.wasm', pyBytes);
 // tools from the catalog (test.yml downloads them to tests/NAME.wasm, sha256 checked): [catalog name, file, programs]
 const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagick', 'magick', 'magick,convert,identify'], ['ffmpeg', 'ffmpeg', 'ffmpeg'], ['ffprobe', 'ffprobe', 'ffprobe'],
-  ['sqlite', 'sqlite3', 'sqlite3'], ['jq', 'jq', 'jq'], ['lua5.4', 'lua', 'lua5.4,lua'], ['zip', 'zip', 'zip'], ['unzip', 'unzip', 'unzip'], ['ripgrep', 'rg', 'rg']]
+  ['sqlite', 'sqlite3', 'sqlite3'], ['jq', 'jq', 'jq'], ['lua5.4', 'lua', 'lua5.4,lua'], ['zip', 'zip', 'zip'], ['unzip', 'unzip', 'unzip'], ['ripgrep', 'rg', 'rg'],
+  ['hashtools', 'hashsum', 'sha256sum,sha1sum,sha224sum,sha384sum,sha512sum,md5sum,b2sum']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
+// hashtools: an 8 MB file whose digests node computes (and "abc"), to compare with the WebAssembly md5sum, sha*sum, b2sum
+const HASHES = [['md5', 'md5'], ['sha1', 'sha1'], ['sha224', 'sha224'], ['sha256', 'sha256'], ['sha384', 'sha384'], ['sha512', 'sha512'], ['b2', 'blake2b512']];
+const h8 = hasTool('hashtools') ? Buffer.alloc(8 << 20, 0).map((_, i) => (i * 131 + (i >> 9)) & 255) : null;
+if (h8) add('h8.bin', h8);
+const dig = (alg, b) => crypto.createHash(alg).update(b).digest('hex');
 if (hasTool('qpdf')) { // a one-page PDF with a correct cross-reference table
   const objs = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
     '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>', '<< /Length 27 >>\nstream\n0 0 1 rg 50 50 100 100 re f\nendstream'];
@@ -301,6 +307,18 @@ if (hasWasi) {
     // real cwd: no path lists the shell folder (relative names); /etc/passwd and ./etc/passwd in one command are two files
     await step("rm -rf /tmp/rq && mkdir -p /tmp/rq/etc/d && cd /tmp/rq && printf 'root:x:0\\nroot:x:0\\n' > etc/passwd && printf 'xmark\\n' > a.txt && printf 'xmark\\n' > etc/d/b.txt && rg --color never -l xmark | sort; rg --color never -c '^root:x:0' /etc/passwd ./etc/passwd; cd /tmp && rg --color never -l xmark /etc/passwd ./rq/a.txt; echo rg-same-done; cd\n",
       /^(\.\/)?a\.txt\s+^(\.\/)?etc\/d\/b\.txt\s+^\/etc\/passwd:1\s+^\.\/etc\/passwd:2\s+^\.\/rq\/a\.txt\s+^rg-same-done/m, 'ripgrep: lists the shell folder relative to it; absolute and relative paths in the same command each go to the right place');
+  }
+  if (hasTool('hashtools')) { // md5sum, sha1sum, sha224/256/384/512sum, b2sum (one WebAssembly program, picked by its name)
+    const abc = Buffer.from('abc');
+    await step(`cd /tmp && printf abc > abc.txt && for h in ${HASHES.map(([h]) => h).join(' ')}; do \${h}sum abc.txt; done; printf abc | sha256sum; sha256sum --tag abc.txt; b2sum -l 256 --tag abc.txt; echo abc-done; cd\n`,
+      new RegExp(HASHES.map(([, a]) => `^${dig(a, abc)}  abc\\.txt\\s+`).join('') + `^${dig('sha256', abc)}  -\\s+^SHA256 \\(abc\\.txt\\) = ${dig('sha256', abc)}\\s+^BLAKE2b-256 \\(abc\\.txt\\) = [0-9a-f]{64}\\s+^abc-done`, 'm'),
+      'hashtools: md5, sha1, sha224, sha256, sha384, sha512, b2 of "abc" match node; stdin; --tag; b2sum -l 256');
+    await step(`cd /root && for h in ${HASHES.map(([h]) => h).join(' ')}; do \${h}sum h8.bin; done; [ "$(sha256sum < h8.bin)" = "$(busybox sha256sum < h8.bin)" ] && [ "$(md5sum h8.bin)" = "$(busybox md5sum h8.bin)" ] && echo bb-same; cd\n`,
+      new RegExp(HASHES.map(([, a]) => `^${dig(a, h8)}  h8\\.bin\\s+`).join('') + '^bb-same', 'm'),
+      'hashtools: the 8 MB file (1 MB reads) matches node for every hash, and busybox sha256sum/md5sum byte for byte');
+    await step('cd /tmp && sha256sum abc.txt /root/h8.bin > s.sum && sha256sum -c s.sum && b2sum --tag abc.txt | b2sum -c && echo x >> abc.txt && sha256sum -c s.sum; echo c-rc=$?; sha256sum --status -c s.sum; echo st-rc=$?; md5sum nofile; echo nf-rc=$?; cd\n',
+      /^abc\.txt: OK\s+^\/root\/h8\.bin: OK\s+^abc\.txt: OK\s+^abc\.txt: FAILED\s+^\/root\/h8\.bin: OK[\s\S]*WARNING: 1 computed checksum did NOT match\s+^c-rc=1\s+^st-rc=1\s+^md5sum: nofile: No such file or directory\s+^nf-rc=1/m,
+      'hashtools: sha256sum -c (OK, FAILED, warning, exit 1), --status, b2sum -c of a --tag line, missing file');
   }
   if (hasTool('lua5.4')) { // Lua: script file, pcall/error (setjmp/longjmp), uncaught error exits 1
     await step('printf \'%s\\n\' \'local t = {}\' \'for i = 1, 10 do t[#t + 1] = i * i end\' \'print("lua-ok", #t, t[10], _VERSION, pcall(error, "boom"))\' > /tmp/t.lua && lua /tmp/t.lua; lua5.4 -e "error(\'x\')" 2> /dev/null; echo lua-rc=$?\n',
