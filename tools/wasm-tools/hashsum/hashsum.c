@@ -482,6 +482,9 @@ static int set_length(const char *s) {
 }
 
 int main(int argc, char **argv) {
+  /* wasi-libc reads the environment only when the program asks for it; wasi.js sets the cwd
+     (the shell's folder, relative paths) while handing over the environment, so ask once */
+  (void)getenv("PWD");
   if (argc > 0 && argv[0]) { const char *b = strrchr(argv[0], '/'); prog = b ? b + 1 : argv[0]; }
   A = &ALGOS[3];
   for (size_t i = 0; i < sizeof ALGOS / sizeof *ALGOS; i++) if (!strcmp(prog, ALGOS[i].prog)) A = &ALGOS[i];

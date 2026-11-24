@@ -12,8 +12,8 @@ on:
 permissions:
   contents: write
 env:
-  TAG: wasm-tools-6
-  PREV: wasm-tools-5
+  TAG: wasm-tools-7
+  PREV: wasm-tools-6
 concurrency:
   group: wasm-tools-${{ github.ref }}
 jobs:
@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tool: [hashsum] # wasm-tools-6: only hashsum is new; the other tools are copied from $PREV
+        tool: [hashsum] # wasm-tools-7: hashsum reads the environment (cwd); the other tools are copied from $PREV
     steps:
       - uses: actions/checkout@v4
       - name: Already published?
