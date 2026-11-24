@@ -80,10 +80,19 @@ async function settle(maxMs = 120000) {
 }
 // a device folder mounted at /mnt/t (the page's part: files are sent when a program opens them)
 const devFiles = new Map([['/mnt/t/a.txt', 'hello-dev\n'], ['/mnt/t/sub/b.txt', 'B']]);
+const devBig = new Map(), devServed = new Map(); let devPiece = 0; // big device files: served in pieces
 function serveMount() {
   const n = x.linux_mount_fetch();
   if (!n) return;
-  for (const p of dec.decode(new Uint8Array(mem.buffer, x.out_ptr(), n).slice()).split('\n')) {
+  for (const ln of dec.decode(new Uint8Array(mem.buffer, x.out_ptr(), n).slice()).split('\n')) {
+    const [p, off, len] = ln.split('\t');
+    if (len !== undefined) { // a piece of a big file (the page answers with File.slice)
+      const src = devBig.get(p) || Buffer.alloc(0), a = +off, d = src.subarray(a, a + +len);
+      devServed.set(p, (devServed.get(p) || 0) + d.length); devPiece = Math.max(devPiece, d.length);
+      const nm = enc.encode(p), b = new Uint8Array(nm.length + 17 + d.length), v = new DataView(b.buffer);
+      b.set(nm); v.setBigUint64(nm.length + 1, BigInt(a), true); v.setBigUint64(nm.length + 9, BigInt(+len), true); b.set(d, nm.length + 17);
+      put(b); x.linux_mount_data(); continue;
+    }
     const nm = enc.encode(p), d = enc.encode(devFiles.get(p) || ''), b = new Uint8Array(nm.length + 1 + d.length);
     b.set(nm); b.set(d, nm.length + 1); put(b); x.linux_put_file();
   }
@@ -243,6 +252,19 @@ if (x.linux_save_next) { // big files: 4 KB blocks in swap slots (lxdata.rs), no
   const sum = (out.match(/^([0-9a-f]{64})  \/home\/tester\/big2/m) || [])[1];
   const grow = (x.heap_used() - h0) / MB;
   results.push(grow < 16); console.log((grow < 16 ? 'PASS' : 'FAIL') + ` big file: engine heap grew ${grow.toFixed(1)} MB (heap ${(x.heap_used() / MB).toFixed(1)} MB)`);
+  if (x.linux_mount_data) { // a big device file is read in pieces (File.slice on the page), never whole in the engine
+    const big = crypto.randomBytes(64 * MB), want = crypto.createHash('sha256').update(big).digest('hex'), h1 = x.heap_used();
+    for (const n of ['big.bin', 'mid.bin', 'w.bin']) devBig.set('/mnt/b/' + n, big);
+    put(enc.encode('/mnt/b\nF\t/mnt/b/big.bin\t' + big.length + '\nF\t/mnt/b/mid.bin\t' + big.length + '\nF\t/mnt/b/w.bin\t' + big.length)); x.linux_mount();
+    const hex = (o, n) => [...big.subarray(o, o + n)].map((c) => c.toString(16).padStart(2, '0')).join('\\s+');
+    await step('stat -c %s /mnt/b/big.bin; sha256sum /mnt/b/big.bin; dd if=/mnt/b/mid.bin bs=1 skip=40000003 count=8 2>/dev/null | od -An -tx1; printf Z | dd of=/mnt/b/w.bin bs=1 seek=3 conv=notrunc 2>/dev/null; dd if=/mnt/b/w.bin bs=1 skip=60000000 count=4 2>/dev/null | od -An -tx1; dd if=/mnt/b/w.bin bs=1 count=4 2>/dev/null | od -An -c; echo mnt-big-done\n',
+      new RegExp(`^67108864\\s[\\s\\S]*^${want}  /mnt/b/big\\.bin\\s[\\s\\S]*${hex(40000003, 8)}[\\s\\S]*${hex(60000000, 4)}[\\s\\S]*Z[\\s\\S]*mnt-big-done`, 'm'),
+      'device folder: big file (64 MB) read in pieces: size, sha256, dd skip in the middle, write keeps the rest');
+    const g = (x.heap_used() - h1) / MB, mid = devServed.get('/mnt/b/mid.bin') || 0;
+    const ok = g < 16 && mid <= 4 * MB && devPiece <= 4 * MB && devServed.get('/mnt/b/big.bin') >= big.length;
+    results.push(ok); console.log((ok ? 'PASS' : 'FAIL') + ` device folder big file: engine heap grew ${g.toFixed(1)} MB; served ${(devServed.get('/mnt/b/big.bin') / MB).toFixed(0)} MB for sha256, ${(mid / MB).toFixed(1)} MB for dd skip, pieces <= ${(devPiece / MB).toFixed(0)} MB`);
+    put(enc.encode('/mnt/b')); x.linux_remove(); devBig.clear();
+  }
   // the saved tar (what the page writes to OPFS) comes in pieces: the 64 MB file never sits whole in the heap
   x.linux_save_begin();
   const parts = []; let peak = 0;

@@ -38,7 +38,7 @@ pub enum Fd {
 
 /// What a waiting Linux thread waits for.
 #[derive(Clone)]
-pub enum Cond { PipeRead(u32), Child { parent: u32, pid: i64 }, Stdin, Until, Socks(Vec<u32>), Fds(Vec<(Fd, u16)>), Futex { addr: u64 }, Signal, SigWait(u64), Fetch(String), Wasi(u32) }
+pub enum Cond { PipeRead(u32), Child { parent: u32, pid: i64 }, Stdin, Until, Socks(Vec<u32>), Fds(Vec<(Fd, u16)>), Futex { addr: u64 }, Signal, SigWait(u64), Fetch(String), Range(String, u32), Wasi(u32) }
 
 /// A process that is not running right now keeps its state here.
 pub struct Saved {
@@ -112,6 +112,10 @@ pub struct Lx {
     // empty here with their real size in `stubs`; opening one asks the page for it (`fetch`)
     pub mounts: BTreeSet<String>,
     pub stubs: BTreeMap<String, u64>,
+    // mounted files bigger than lxdata::BIG: a file in blocks of their full size whose 64 KB
+    // extents are fetched from the page when a call needs them (bit set = not fetched yet), so
+    // a 10 GB file is never read whole; see `mnt_gate` and linux_mount_data
+    pub holes: BTreeMap<String, Vec<u64>>,
     pub fetch: Vec<String>,
     pub unknown: BTreeSet<u64>,
     want: Option<Cond>,
@@ -608,6 +612,7 @@ fn open(e: &mut Engine, path: &str, flags: u64, mode: u64) -> i64 {
             return NORET;
         }
     }
+    if flags & 0x200 != 0 && flags & 3 != 0 { l.holes.remove(&p); }
     let exists = p == "/" || l.fs.contains_key(&p);
     if l.is_dir(&p) {
         if flags & 3 != 0 { return -EISDIR; }
@@ -800,6 +805,7 @@ pub fn syscall(e: &mut Engine) {
         if matches!(nr, 34 | 130) || (slow && flags & SA_RESTART == 0) { deliver(e, sig, (-EINTR) as u64, rip); } else { deliver(e, sig, nr, rip - 2); }
         return;
     }
+    if !lx(e).holes.is_empty() && mnt_gate(e, nr) { return; }
     if matches!(nr, 2 | 257 | 76 | 77 | 82 | 264 | 316 | 83 | 258 | 84 | 87 | 263 | 86 | 88 | 265 | 266) || (matches!(nr, 1 | 18 | 20) && matches!(lx(e).fds.get(&(a0 as i32)), Some(Fd::File { .. }))) { lx(e).dirty = true; }
     let v: i64 = match nr {
         0 => do_read(e, a0 as i32, a1, a2),
@@ -1155,7 +1161,7 @@ pub fn syscall(e: &mut Engine) {
             let (f, t) = if nr == 82 { (e.read_cstr(a0, 4096), e.read_cstr(a1, 4096)) } else { (path_at(e, a0, a1), path_at(e, a2, a3)) };
             let (l, mm) = lxm(e); let (f, t) = (l.resolve(&f, false), l.resolve(&t, false));
             let keys: Vec<String> = l.fs.keys().filter(|k| **k == f || k.starts_with(&format!("{}/", f))).cloned().collect();
-            if keys.is_empty() { -ENOENT } else { for k in keys { let n = l.fs.remove(&k).unwrap(); let nk = format!("{}{}", t, &k[f.len()..]); l.written.remove(&k); if let Some(m) = l.meta.remove(&k) { l.meta.insert(nk.clone(), m); } if let Some(z) = l.stubs.remove(&k) { l.stubs.insert(nk.clone(), z); } if matches!(n, Node::File(_)) && !l.stubs.contains_key(&nk) { l.written.insert(nk.clone()); } if let Some(Node::File(mut old)) = l.fs.insert(nk, n) { old.clear(&mut l.bc, mm); } } 0 }
+            if keys.is_empty() { -ENOENT } else { for k in keys { let n = l.fs.remove(&k).unwrap(); let nk = format!("{}{}", t, &k[f.len()..]); l.written.remove(&k); if let Some(m) = l.meta.remove(&k) { l.meta.insert(nk.clone(), m); } if let Some(z) = l.stubs.remove(&k) { l.stubs.insert(nk.clone(), z); } if let Some(h) = l.holes.remove(&k) { l.holes.insert(nk.clone(), h); } else { l.holes.remove(&nk); } if matches!(n, Node::File(_)) && !l.stubs.contains_key(&nk) && !l.holes.contains_key(&nk) { l.written.insert(nk.clone()); } if let Some(Node::File(mut old)) = l.fs.insert(nk, n) { old.clear(&mut l.bc, mm); } } 0 }
         }
         83 | 258 => { // mkdir / mkdirat
             let (p, m) = if nr == 83 { (e.read_cstr(a0, 4096), a1) } else { (path_at(e, a0, a1), a2) };
@@ -1171,7 +1177,7 @@ pub fn syscall(e: &mut Engine) {
                 Some(Node::Dir) if !l.children(&q).is_empty() => -ENOTEMPTY,
                 Some(Node::Dir) => { l.fs.remove(&q); 0 }
                 Some(_) if dir => -ENOTDIR,
-                Some(_) => { if let Some(Node::File(mut d)) = l.fs.remove(&q) { d.clear(&mut l.bc, mm); } l.written.remove(&q); l.stubs.remove(&q); l.us_names.remove(&q); l.meta.remove(&q); 0 }
+                Some(_) => { if let Some(Node::File(mut d)) = l.fs.remove(&q) { d.clear(&mut l.bc, mm); } l.written.remove(&q); l.stubs.remove(&q); l.holes.remove(&q); l.us_names.remove(&q); l.meta.remove(&q); 0 }
             }
         }
         86 | 88 | 265 | 266 => { // link / symlink / linkat / symlinkat
@@ -1568,6 +1574,7 @@ pub fn ready(e: &mut Engine, c: &Cond, pid: u32, tid: u32) -> bool {
         Cond::Futex { .. } | Cond::Signal => false,
         Cond::SigWait(set) => l.pend.get(&pid).map_or(false, |p| p & set != 0),
         Cond::Fetch(p) => !l.stubs.contains_key(p), // the page sent the file of a mounted folder
+        Cond::Range(p, j) => !hole(l, p, *j), // the page sent that piece of a mounted file
         Cond::Wasi(p) => l.wasi.get(p).map_or(true, |w| w.req.is_some()),
     }
 }
@@ -2080,7 +2087,7 @@ pub extern "C" fn linux_put_file() {
     // relative names go to the user's home (the Alpine terminal keeps the user name in /etc/inksoc/user)
     let home = match l.fs.get("/etc/inksoc/user") { Some(Node::File(d)) if !d.is_empty() => format!("/home/{}", String::from_utf8_lossy(d.mem()).trim()), _ => "/root".to_string() };
     let path = l.abs(&if name.starts_with('/') { name } else { format!("{}/{}", home, name) });
-    let fetched = l.stubs.remove(&path).is_some();
+    let fetched = l.stubs.remove(&path).is_some() | l.holes.remove(&path).is_some();
     l.put(&mut e.mmu, &path, b.get(nl + 1..).unwrap_or(&[]).to_vec());
     if !fetched { l.dirty = true; }
 }
@@ -2090,13 +2097,14 @@ pub extern "C" fn linux_put_file() {
 #[no_mangle]
 pub extern "C" fn linux_remove() -> u32 {
     let b = unsafe { crate::take_buf() };
-    let Some(l) = crate::eng().s.lx.as_mut() else { return 0 };
+    let e = crate::eng();
+    let Some(l) = e.s.lx.as_mut() else { return 0 };
     let p = l.abs(&String::from_utf8_lossy(&b));
     if p == "/" { return 0; }
     let pre = format!("{}/", p);
     let keys: Vec<String> = l.fs.keys().filter(|k| **k == p || k.starts_with(&pre)).cloned().collect();
     if keys.is_empty() { return 0; }
-    for k in keys { l.fs.remove(&k); l.written.remove(&k); l.stubs.remove(&k); l.us_names.remove(&k); l.meta.remove(&k); }
+    for k in keys { if let Some(Node::File(mut d)) = l.fs.remove(&k) { d.clear(&mut l.bc, &mut e.mmu); } l.written.remove(&k); l.stubs.remove(&k); l.holes.remove(&k); l.us_names.remove(&k); l.meta.remove(&k); }
     l.dirty = true;
     1
 }
@@ -2114,7 +2122,7 @@ pub extern "C" fn linux_mount() {
     if !root.starts_with("/mnt/") || root.len() < 6 { return; }
     let pre = format!("{}/", root);
     let old: Vec<String> = l.fs.range(pre.clone()..).take_while(|(k, _)| k.starts_with(&pre)).map(|(k, _)| k.clone()).collect();
-    for k in old { if let Some(Node::File(mut d)) = l.fs.remove(&k) { d.clear(&mut l.bc, &mut e.mmu); } l.stubs.remove(&k); l.written.remove(&k); }
+    for k in old { if let Some(Node::File(mut d)) = l.fs.remove(&k) { d.clear(&mut l.bc, &mut e.mmu); } l.stubs.remove(&k); l.holes.remove(&k); l.written.remove(&k); }
     l.mkdirs(&root);
     l.mounts.insert(root.clone());
     // owned by the terminal's user (the owner of their home folder), open to everyone
@@ -2125,13 +2133,118 @@ pub extern "C" fn linux_mount() {
         if f.len() < 2 || !f[1].starts_with(&pre) { continue; }
         match f[0] {
             "D" => { l.mkdirs(f[1]); l.meta.insert(f[1].to_string(), (0o777, own.0, own.1)); }
-            "F" => { l.put(&mut e.mmu, f[1], Vec::new()); l.stubs.insert(f[1].to_string(), f.get(2).and_then(|n| n.parse().ok()).unwrap_or(0)); l.meta.insert(f[1].to_string(), (0o666, own.0, own.1)); }
+            "F" => {
+                let size: u64 = f.get(2).and_then(|n| n.parse().ok()).unwrap_or(0);
+                if size > crate::lxdata::BIG { if let Some((dir, _)) = f[1].rsplit_once('/') { l.mkdirs(dir); } mount_big(l, &mut e.mmu, f[1], size); } else { l.put(&mut e.mmu, f[1], Vec::new()); l.stubs.insert(f[1].to_string(), size); }
+                l.meta.insert(f[1].to_string(), (0o666, own.0, own.1));
+            }
             _ => {}
         }
     }
 }
 
+/// A piece of a big mounted file from the page. Buffer: "path\0", offset and length asked
+/// (u64 little-endian each), then the bytes (fewer at the end of the file or when the device
+/// could not read: the rest stays zeros). The extents of [offset, offset+length) count as fetched.
+#[no_mangle]
+pub extern "C" fn linux_mount_data() {
+    let b = unsafe { crate::take_buf() };
+    let e = crate::eng();
+    let Some(l) = e.s.lx.as_mut() else { return };
+    let nl = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+    if b.len() < nl + 17 { return; }
+    let p = String::from_utf8_lossy(&b[..nl]).into_owned();
+    let off = u64::from_le_bytes(b[nl + 1..nl + 9].try_into().unwrap());
+    let n = u64::from_le_bytes(b[nl + 9..nl + 17].try_into().unwrap());
+    let data = &b[nl + 17..];
+    let Some(h) = l.holes.get_mut(&p) else { return };
+    let Some(Node::File(d)) = l.fs.get_mut(&p) else { return };
+    let len = d.len();
+    let data = &data[..data.len().min(n.min(len.saturating_sub(off)) as usize)];
+    let ext = crate::lxdata::EXT as u64;
+    let j0 = off.div_ceil(ext);
+    let j1 = if off.saturating_add(n) >= len { len.div_ceil(ext) } else { (off + n) / ext }; // whole extents, and the last one of the file
+    for j in j0..j1 {
+        let (w, bt) = ((j / 64) as usize, 1u64 << (j % 64));
+        if w >= h.len() || h[w] & bt == 0 { continue; }
+        // only the bytes of extents not fetched yet (a fetched one may have been written since)
+        let (a, z) = (j * ext, ((j + 1) * ext).min(len));
+        if a >= off && z <= off + data.len() as u64 { d.write(&mut l.bc, &mut e.mmu, a, &data[(a - off) as usize..(z - off) as usize]); }
+        else if a >= off && a < off + data.len() as u64 { d.write(&mut l.bc, &mut e.mmu, a, &data[(a - off) as usize..]); }
+        h[w] &= !bt;
+    }
+    if h.iter().all(|&w| w == 0) { l.holes.remove(&p); }
+}
+
+/// Is extent `j` of mounted file `p` still to be fetched from the page?
+fn hole(l: &Lx, p: &str, j: u32) -> bool {
+    l.holes.get(p).map_or(false, |h| h.get(j as usize / 64).map_or(false, |w| w & (1u64 << (j % 64)) != 0))
+}
+
+/// Before a call that touches the bytes of a big mounted file not fetched yet: asks the page for
+/// the first missing piece (up to 4 MB from there, read-ahead) and makes the call wait; it runs
+/// again when the piece is in (and asks for the next one if it still misses some). Reads need
+/// just their range; writes, truncation, links, exec and shared mappings need the whole file
+/// (the page then rewrites it whole when it changed). true when the call waits.
+fn mnt_gate(e: &mut Engine, nr: u64) -> bool {
+    let r = e.cpu.regs;
+    let (a0, a1, a2, a3) = (r[7], r[6], r[2], r[10]);
+    const ALL: u64 = u64::MAX;
+    let fd_path = |e: &mut Engine, fd: u64| match lx(e).fds.get(&(fd as i32)) { Some(Fd::File { path, pos, .. }) => Some((path.clone(), *pos)), _ => None };
+    let mut need: Vec<(String, u64, u64)> = Vec::new();
+    match nr {
+        0 => if let Some((p, pos)) = fd_path(e, a0) { need.push((p, pos, a2.min(1 << 24))); },
+        17 => if let Some((p, _)) = fd_path(e, a0) { need.push((p, a3, a2.min(1 << 24))); },
+        19 => if let Some((p, pos)) = fd_path(e, a0) {
+            let mut n = 0u64;
+            for k in 0..a2.min(1024) { n = n.saturating_add(e.r64(a1 + 16 * k + 8)); }
+            need.push((p, pos, n.min(1 << 26)));
+        },
+        40 => {
+            if let Some((p, pos)) = fd_path(e, a1) { let at = if a2 != 0 { e.r64(a2) } else { pos }; need.push((p, at, a3.min(1 << 20))); }
+            if let Some((p, _)) = fd_path(e, a0) { need.push((p, 0, ALL)); }
+        }
+        9 => if r[8] as i32 >= 0 && a3 & 0x20 == 0 { if let Some((p, _)) = fd_path(e, r[8]) { need.push((p, if a3 & 1 != 0 { 0 } else { r[9] }, if a3 & 1 != 0 { ALL } else { a1 })); } },
+        1 | 18 | 20 | 77 | 285 => if let Some((p, _)) = fd_path(e, a0) { need.push((p, 0, ALL)); },
+        59 | 76 | 86 => { let s = e.read_cstr(a0, 4096); let q = lx(e).resolve(&s, true); need.push((q, 0, ALL)); }
+        265 => { let s = path_at(e, a0, a1); let q = lx(e).resolve(&s, true); need.push((q, 0, ALL)); }
+        _ => {}
+    }
+    let l = lx(e);
+    let ext = crate::lxdata::EXT as u64;
+    for (p, off, n) in need {
+        let Some(h) = l.holes.get(&p) else { continue };
+        let len = match l.fs.get(&p) { Some(Node::File(d)) => d.len(), _ => continue };
+        if n == 0 || off >= len { continue; }
+        let (j0, j1) = (off / ext, (off.saturating_add(n)).min(len).div_ceil(ext));
+        let miss = |j: u64| h.get((j / 64) as usize).map_or(false, |w| w & (1u64 << (j % 64)) != 0);
+        let Some(first) = (j0..j1).find(|&j| miss(j)) else { continue };
+        let total = len.div_ceil(ext);
+        let mut last = first + 1;
+        while last < total && last - first < 64 && miss(last) { last += 1; }
+        let (a, z) = (first * ext, (last * ext).min(len));
+        let req = format!("{}\t{}\t{}", p, a, z - a);
+        if !l.fetch.contains(&req) { l.fetch.push(req); }
+        e.cpu.rip -= 2;
+        e.block_linux(Cond::Range(p, first as u32), None);
+        return true;
+    }
+    false
+}
+
+/// A big mounted file: blocks of its full size, none fetched yet (read piece by piece, mnt_gate).
+fn mount_big(l: &mut Lx, m: &mut crate::mmu::Mmu, p: &str, size: u64) {
+    let mut d = crate::lxdata::Data::new_blk();
+    d.resize(&mut l.bc, m, size);
+    if let Some(Node::File(mut old)) = l.fs.insert(p.to_string(), Node::File(d)) { old.clear(&mut l.bc, m); }
+    let n = size.div_ceil(crate::lxdata::EXT as u64) as usize;
+    let mut h = vec![!0u64; n.div_ceil(64)];
+    if n % 64 != 0 { *h.last_mut().unwrap() = (1u64 << (n % 64)) - 1; }
+    l.holes.insert(p.to_string(), h);
+}
+
 /// Files programs are waiting for (one path per line, in out_ptr()); their total length.
+/// A line "path\toffset\tlength" asks for that piece of a big file (linux_mount_data).
 #[no_mangle]
 pub extern "C" fn linux_mount_fetch() -> u32 {
     let Some(l) = crate::eng().s.lx.as_mut() else { return 0 };
@@ -2176,7 +2289,8 @@ pub extern "C" fn linux_mount_evict() -> u32 {
     if l.shared.iter().any(|m| m.3 == p) { return 0; }
     if l.fds.values().any(is) || l.procs.values().any(|q| q.saved.as_ref().map_or(false, |s| s.fds.values().any(is))) { return 0; }
     let size = match l.fs.get_mut(&p) { Some(Node::File(d)) => { let n = d.len(); d.clear(&mut l.bc, &mut e.mmu); n } _ => return 0 };
-    l.stubs.insert(p, size);
+    l.holes.remove(&p);
+    if size > crate::lxdata::BIG { mount_big(l, &mut e.mmu, &p, size); } else { l.stubs.insert(p, size); }
     1
 }
 
@@ -2187,6 +2301,7 @@ pub extern "C" fn linux_get_file() -> i32 {
     let b = unsafe { crate::take_buf() };
     let Some(l) = e.s.lx.as_mut() else { return -1 };
     let p = l.resolve(&String::from_utf8_lossy(&b), true);
+    if l.holes.contains_key(&p) { return -1; } // a mounted file not fetched whole: the page has it
     match l.fs.get(&p) { Some(Node::File(d)) => crate::set_out(d.all(&mut l.bc, &mut e.mmu)) as i32, _ => -1 }
 }
 

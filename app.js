@@ -53,7 +53,7 @@ $('calib').onclick = async () => {
   $('calib').disabled = true;
   await stop(true);
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=34');
+  const c = new Worker('worker.js?v=35');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -78,7 +78,7 @@ showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
   stop(false).then(() => {
-    const r = new Worker('worker.js?v=34');
+    const r = new Worker('worker.js?v=35');
     r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
     r.postMessage({ type: 'reset' });
   });
@@ -113,7 +113,7 @@ if (navigator.serviceWorker) {
 }
 function wasiEnd(pid) { const b = wasiWorkers.get(pid); if (b) { b.terminate(); wasiWorkers.delete(pid); } }
 function wasiStart(m) {
-  const b = new Worker('wasi-worker.js?v=34', { type: 'module' });
+  const b = new Worker('wasi-worker.js?v=35', { type: 'module' });
   wasiWorkers.set(m.pid, b);
   b.onmessage = (ev) => { if (ev.data.type === 'done') wasiEnd(m.pid); };
   b.onerror = () => wasiEnd(m.pid);
@@ -126,7 +126,7 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=34');
+  w = new Worker('worker.js?v=35');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;
@@ -432,7 +432,16 @@ $('mount').onclick = async () => {
 $('mountdir').onchange = () => { const l = [...$('mountdir').files]; $('mountdir').value = ''; if (l.length) addMount(mountFiles(l)); };
 const rootOf = (p) => { for (const r of mounted.keys()) if (p.startsWith(r + '/')) return r; return null; };
 async function mountFetch(paths) {
-  for (const p of paths) {
+  for (const ln of paths) {
+    const [p, off, len] = ln.split('\t');
+    if (len !== undefined) { // a piece of a big file: only that slice is read from the device
+      const m = mounted.get(rootOf(p)), a = +off, n = +len;
+      let data = new ArrayBuffer(0);
+      try { const h = m && m.files.get(p); const f = h && (h.getFile ? await h.getFile() : h); if (f) data = await f.slice(a, a + n).arrayBuffer(); else note(p + ': not found in the device folder'); }
+      catch (er) { note(p + ': could not read (' + er.message + ')'); }
+      if (w) w.postMessage({ type: 'mdata', name: p, off: a, len: n, data }, [data]);
+      continue;
+    }
     const m = mounted.get(rootOf(p));
     let data = new ArrayBuffer(0);
     try { const h = m && m.files.get(p); const f = h && (h.getFile ? await h.getFile() : h); if (f) data = await f.arrayBuffer(); else note(p + ': not found in the device folder'); }
