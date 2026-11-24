@@ -5,12 +5,16 @@
 // Calls are synchronous. In node (tests) the module runs in the engine's thread (runWasi); on the
 // page it runs in its own Worker (wasi-worker.js) and each call is a synchronous request that the
 // service worker (sw.js) passes to the engine's worker, which keeps running meanwhile.
-// Folders: wasi-libc keeps its own working directory, always "/" at start (preview1 has no initial one),
-// so "x.txt" and "/x.txt" both reach the "/" preopen as "x.txt". To make relative paths follow the
-// shell's folder, "/" is preopened as that folder and each top-level folder ("/tmp", "/usr"...) gets its
+// Folders: wasi-libc keeps its own working directory, always "/" at start (preview1 has no initial one).
+// When the module has wasi-libc's chdir/getcwd (its cwd pointer, a word in the data that points at "/"
+// and is used by the code, is found by cwdSlot), "/" is preopened as the real root and the pointer is set
+// to the shell's folder (the "PWD=..." string that environ_get writes in the program's own memory): relative
+// paths follow the shell's folder, absolute paths the real root, os.getcwd() is the shell's folder.
+// Otherwise (no chdir in the module: wasi-libc then sends "x.txt" and "/x.txt" alike to the "/" preopen as
+// "x.txt"), "/" is preopened as the shell's folder and each top-level folder ("/tmp", "/usr"...) gets its
 // own preopen: wasi-libc picks the longest matching preopen, so absolute paths still go to the real place.
-// Limits: "/" itself (os.listdir("/")) shows the shell's folder, a relative path that starts with a
-// top-level name ("tmp/x" in /home/u) goes to /tmp/x, os.getcwd() says "/"; no sockets.
+// Limits of that fallback: "/" itself shows the shell's folder, a relative path that starts with a
+// top-level name ("tmp/x" in /home/u) goes to /tmp/x, getcwd() says "/". No sockets.
 import { main as inkvideo } from './inkvideo.js?v=1';
 const E = { 1: 63, 2: 44, 4: 27, 5: 29, 9: 8, 11: 6, 12: 48, 13: 2, 17: 20, 18: 75, 20: 54, 21: 31, 22: 28, 24: 33, 28: 51, 29: 70, 30: 69, 32: 64, 36: 37, 38: 52, 39: 55, 40: 32, 95: 58 };
 const errno = (v) => E[-v] ?? 29;
@@ -60,6 +64,50 @@ export function jsProgram(bytes) {
   return d.decode(bytes.subarray(11, 11 + n)) === 'inkshell.js' ? JS[d.decode(bytes.subarray(11 + n))] || null : null;
 }
 
+/** wasi-libc's working-directory pointer (__wasilibc_cwd, initially the address of a "/" string):
+ *  { ptr, lit } when exactly one word of the active data segments points at a "/\0" string and that
+ *  address is an i32.const in the code; null otherwise (then the module keeps the fallback folders). */
+export function cwdSlot(b) {
+  let p = 8, code = null; const segs = [];
+  const leb = () => { let r = 0, s = 0, c; do { c = b[p++]; r += (c & 127) * 2 ** s; s += 7; } while (c & 128); return r; };
+  try {
+    while (p < b.length) {
+      const id = b[p++], len = leb(), end = p + len;
+      if (id === 10) code = [p, end];
+      if (id === 11) for (let n = leb(); n > 0; n--) {
+        const fl = leb();
+        if (fl === 1) { p += leb(); continue; }
+        if (fl === 2) leb();
+        if (b[p++] !== 0x41) return null;
+        const off = leb(); p++; const l = leb(); // i32.const (a positive value reads the same as unsigned), end
+        segs.push([off, p, l]); p += l;
+      }
+      p = end;
+    }
+  } catch { return null; }
+  const top = segs.reduce((t, [o, , l]) => Math.max(t, o + l), 0);
+  if (!code || top > 1 << 28) return null;
+  const m = new Uint8Array(top + 1); // the data as it is in memory at start
+  for (const [o, q, l] of segs) m.set(b.subarray(q, q + l), o);
+  const at = (a) => (a < top ? m[a] : 0);
+  const found = [];
+  for (const [o, q, l] of segs) {
+    for (let i = (4 - o % 4) % 4; i + 4 <= l; i += 4) {
+      const v = b[q + i] | b[q + i + 1] << 8 | b[q + i + 2] << 16 | b[q + i + 3] << 24;
+      if (v > 0 && at(v) === 47 && at(v + 1) === 0) found.push({ ptr: o + i, lit: v });
+      if (found.length > 64) return null;
+    }
+  }
+  const want = new Map(found.map((f) => [f.ptr, f])), used = new Set();
+  for (let i = code[0]; i < code[1] - 5; i++) { // every i32.const that names one of them
+    if (b[i] !== 0x41) continue;
+    let v = 0, k = 0, c;
+    do { c = b[i + 1 + k]; v += (c & 127) * 2 ** (7 * k); k++; } while (c & 128 && k < 5);
+    if (!(c & 64) && want.has(v)) used.add(want.get(v));
+  }
+  return used.size === 1 ? [...used][0] : null;
+}
+
 /** Runs a WASI module whose calls go through `sys(nr, args, data, outLen) -> { r, out }`
  *  (a Linux call of the stub process; throws Exit when the process is gone). */
 export function runModule({ bytes, args, envs, base: BASE, size: SIZE, sys, inline = false }) {
@@ -77,10 +125,16 @@ export function runModule({ bytes, args, envs, base: BASE, size: SIZE, sys, inli
   let nextFd = 3;
   const opendir = (p) => sys(257, [-100, BASE, 0x10000 | 0x80000], cstr(p)).r;
   const preopen = (lfd, name) => { if (lfd >= 0) { fds.set(nextFd, lfd); pre.set(nextFd++, name); } };
+  let slot = null;
   try {
     const { r, out } = sys(79, [BASE, 4096], null, 4096);
     const cwd = r > 1 ? dec.decode(out.subarray(0, r - 1)) : '/';
-    if (cwd !== '/') {
+    slot = cwd !== '/' ? cwdSlot(bytes) : null;
+    if (slot) { // real root at "/", the shell's folder becomes wasi-libc's cwd (see environ_get)
+      envs = [...envs.filter((e) => !e.startsWith('PWD=')), 'PWD=' + cwd];
+      slot.at = envs.slice(0, -1).reduce((n, e) => n + enc.encode(e).length + 1, 4);
+    }
+    if (cwd !== '/' && !slot) {
       const root = opendir('/');
       while (root >= 0) {
         const { r: n, out: b } = sys(217, [root, BASE, 65536], null, 65536);
@@ -96,10 +150,10 @@ export function runModule({ bytes, args, envs, base: BASE, size: SIZE, sys, inli
       }
       if (root >= 0) sys(3, [root]);
     }
-    const c = opendir(cwd);
+    const c = slot ? -1 : opendir(cwd);
     preopen(c >= 0 ? c : opendir('/'), '/');
     // a program argument that names a file in the shell's folder also becomes its full path
-    if (cwd !== '/') {
+    if (cwd !== '/' && !slot) {
       args = args.slice();
       for (let i = 1; i < args.length; i++) {
         const a = args[i];
@@ -165,7 +219,11 @@ export function runModule({ bytes, args, envs, base: BASE, size: SIZE, sys, inli
   const exit = (code) => { try { sys(231, [code]); } catch {} throw new Exit(code); };
   const w = {
     args_get: (a, b) => strings(args, a, b), args_sizes_get: (a, b) => sizes(args, a, b),
-    environ_get: (a, b) => strings(envs, a, b), environ_sizes_get: (a, b) => sizes(envs, a, b),
+    environ_get: (a, b) => { // the "PWD=..." string, in the program's memory now, becomes its cwd
+      strings(envs, a, b);
+      if (slot && dv().getUint32(slot.ptr, true) === slot.lit) dv().setUint32(slot.ptr, b + slot.at, true);
+      return 0;
+    }, environ_sizes_get: (a, b) => sizes(envs, a, b),
     clock_res_get: (id, p) => { dv().setBigUint64(p, 1000n, true); return 0; },
     clock_time_get: (id, prec, p) => { dv().setBigUint64(p, id === 0 ? BigInt(Date.now()) * 1000000n : BigInt(Math.round(performance.now() * 1e6)), true); return 0; },
     random_get: (p, n) => { const b = new Uint8Array(n); for (let o = 0; o < n; o += 65536) crypto.getRandomValues(b.subarray(o, Math.min(n, o + 65536))); u8().set(b, p); return 0; },
