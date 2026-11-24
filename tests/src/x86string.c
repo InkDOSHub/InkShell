@@ -1,4 +1,4 @@
-// REP MOVS / REP STOS (byte, word, dword, qword) against a plain element-by-element model:
+// REP MOVS / REP STOS (byte, word, dword, qword; also plain MOVS/STOS) against a plain element-by-element model:
 // many sizes, alignments, overlaps both ways, DF=1, page crossings, long counts, libc
 // memcpy/memmove/memset, and a fault at an unmapped page. Prints "x86string ok <n>".
 // Built static: gcc -O2 -fno-tree-loop-distribute-patterns -static -o tests/x86string tests/src/x86string.c
@@ -100,6 +100,39 @@ static void one_stos(int sz, int back, long doff, uint64_t n) {
   check("stos rdi", r[2], (uint64_t)(A + doff + dn), sz, doff, (long)n);
 }
 
+// MOVS/STOS without REP: one element, rsi/rdi step by the size (back with DF=1)
+static void plain(int sz, int back) {
+  uint8_t *s = A + 64 + rnd() % 4000, *d = A + AREA / 2 + rnd() % 4000;
+  uint64_t v = ((uint64_t)rnd() << 32) | rnd(), got = 0, want = sz == 8 ? v : v & ((1ull << 8 * sz) - 1);
+  long st = back ? -sz : sz;
+  memcpy(s, &v, 8); memset(d, 0, 8);
+  void *ss = s, *dd = d;
+  if (back) __asm__ volatile("std" ::: "memory");
+  switch (sz) {
+  case 1: __asm__ volatile("movsb" : "+S"(ss), "+D"(dd) :: "memory"); break;
+  case 2: __asm__ volatile("movsw" : "+S"(ss), "+D"(dd) :: "memory"); break;
+  case 4: __asm__ volatile("movsl" : "+S"(ss), "+D"(dd) :: "memory"); break;
+  default: __asm__ volatile("movsq" : "+S"(ss), "+D"(dd) :: "memory"); break;
+  }
+  if (back) __asm__ volatile("cld" ::: "memory");
+  memcpy(&got, d, 8);
+  check("movs value", got, want, sz, back, 0);
+  check("movs rsi", (uint64_t)ss, (uint64_t)(s + st), sz, back, 0);
+  check("movs rdi", (uint64_t)dd, (uint64_t)(d + st), sz, back, 0);
+  memset(d, 0, 8); dd = d;
+  if (back) __asm__ volatile("std" ::: "memory");
+  switch (sz) {
+  case 1: __asm__ volatile("stosb" : "+D"(dd) : "a"(v) : "memory"); break;
+  case 2: __asm__ volatile("stosw" : "+D"(dd) : "a"(v) : "memory"); break;
+  case 4: __asm__ volatile("stosl" : "+D"(dd) : "a"(v) : "memory"); break;
+  default: __asm__ volatile("stosq" : "+D"(dd) : "a"(v) : "memory"); break;
+  }
+  if (back) __asm__ volatile("cld" ::: "memory");
+  memcpy(&got, d, 8);
+  check("stos value", got, want, sz, back, 0);
+  check("stos rdi", (uint64_t)dd, (uint64_t)(d + st), sz, back, 0);
+}
+
 int main(void) {
   A = aligned_alloc(4096, AREA); B = aligned_alloc(4096, AREA);
   static const uint64_t ns[] = { 0, 1, 2, 7, 8, 31, 64, 255, 1000, 2047 };
@@ -120,6 +153,8 @@ int main(void) {
             if (gaps[g] && fits(s0 - gaps[g], n, sz, back)) one_movs(sz, back, s0 - gaps[g], s0, n);
           }
         }
+
+  for (int it = 0; it < 4000; it++) plain(1 << (it & 3), (it >> 2) & 1); // hot for the JIT
 
   // long counts: 6 MB copy and fill, and 40 MB (more than one pause of the engine's bulk loop)
   long big = 6 << 20;

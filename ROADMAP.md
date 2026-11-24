@@ -22,6 +22,7 @@ Foco: terminal Linux sólido e rápido no WebKit. Ferramenta com WASM roda diret
 | 9 | Bench x86 no CI (perfil: onde o tempo vai) | x86 | 1 | feito (#33: motor `--features ophist` à parte no bench.yml, tests/bench/profile.mjs → resumo do job + comentário do PR. PERFIL: calls (fib, ~27x nativo, ~110 ms) roda 100% no JIT, 65 instr/bloco, só ~1M voltas ao dispatcher, 0 fallback; 32% das saídas por ret/indireto; custo está dentro do código JIT (8,6M loads + 7,7M stores p/ 62M instr = push/pop/ret pela memória), não no dispatcher/flags → item 10 só volta mirando acesso à pilha. float (~8x) também 100% JIT, 0 fallback, 0 opcode interpretado → item 11 sem prova (SSE já está no JIT; lentidão é a qualidade do código). Gargalo real = sort (14x, ~20 s): 351M fallbacks dentro do JIT (movsb 241M, movs 60M, shl/shr cl 32M, tzcnt 15M) + 416M saídas por rip calculado (99% das execuções de bloco)) | PR mostra perfil por bloco/instrução |
 | 10 | x86: call/ret rápido no JIT | x86 | 2 | travado (#26, 6 queimado: região c/ ret/jmp indireto e registradores residentes sem ganho, calls 28–31x antes e depois; hipótese: gargalo fora do call/ret, ex. dispatcher/flags. Retomar só c/ perfil do item 9) | calls ≤ ~5x nativo |
 | 11 | x86: SSE/x87 no JIT | x86 | 3,5 | aberto (precisa prova do item 9) | bench float melhor |
+| 12 | x86 JIT: fallbacks do sort (movs, shift cl, tzcnt) | x86 | 2 | feito (#34: sort 19,7x → 9,4x nativo (main re-medido); instr. interpretadas no sort 351M → 2,4M (shld/shrd); contador de fallback 62,6M = REP movs que roda rep_bulk num passo sem sair do bloco. Próximo: 416M saídas por rip calculado = ret/call indireto (comparador do qsort, memcpy) → encadear ret com pilha-sombra) | sort melhor no bench |
 
 Ordem após item 7: 6 → 8 → 9 → pacotes catálogo → 11 → 10 (regra anti-insistência no CLAUDE.md).
 
@@ -63,6 +64,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-24 | 1 | 6: inkvideo WebCodecs + fallback | #31 | 2 |
 | 2026-11-24 | 1 | 8: x86 BMI1/BMI2/POPCNT/LZCNT/TZCNT + teste | #32 | 2 |
 | 2026-11-24 | 1 | 9: perfil x86 no CI (JIT/interp/opcodes) | #33 | 1 |
+| 2026-11-24 | 1 | 12: JIT sem fallback p/ movs/shift cl/tzcnt | #34 | 2 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
