@@ -45,6 +45,20 @@ const pyWasm = new URL('./python.wasm', import.meta.url);
 const hasPy = hasWasi && fs.existsSync(pyWasm);
 const pyBytes = hasPy ? fs.readFileSync(pyWasm) : null;
 if (hasPy) add('python.wasm', pyBytes);
+// tools from the catalog (test.yml downloads them to tests/NAME.wasm, sha256 checked): [catalog name, file, programs]
+const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagick', 'magick', 'magick,convert,identify'], ['ffmpeg', 'ffmpeg', 'ffmpeg'], ['ffprobe', 'ffprobe', 'ffprobe']]
+  .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
+for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
+const hasTool = (name) => tools.some((t) => t.name === name);
+if (hasTool('qpdf')) { // a one-page PDF with a correct cross-reference table
+  const objs = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>', '<< /Length 27 >>\nstream\n0 0 1 rg 50 50 100 100 re f\nendstream'];
+  let pdf = '%PDF-1.4\n'; const offs = [];
+  objs.forEach((o, i) => { offs.push(pdf.length); pdf += `${i + 1} 0 obj\n${o}\nendobj\n`; });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n` + offs.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('') + `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  add('t.pdf', enc.encode(pdf));
+}
 put(enc.encode('busybox\0sh /etc/inksoc/start'));
 if (x.start() !== 0) { console.log('FAIL start:', dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()))); process.exit(1); }
 x.linux_winsize(30, 100);
@@ -176,6 +190,34 @@ if (hasWasi) {
     await step('python3 -c "raise SystemExit(5)"; echo py-rc=$?\n', /py-rc=5/, 'python3: exit code');
     // relative paths follow the shell's folder (the host preopens it as "/" and each top-level folder on its own)
     await step(`mkdir -p /tmp/rel && cd /tmp/rel && python3 -c "import os; open('rel.txt', 'w').write('rel-' + 'ok'); print(open('rel.txt').read().upper(), sorted(os.listdir('.')), open('/tmp/t/d.json').read()[:5])"; cd; cat /tmp/rel/rel.txt; echo\n`, /REL-OK \['rel\.txt'\] \{"a":[\s\S]*rel-ok/, 'python3: relative path in the shell folder, absolute path still works');
+  }
+  if (tools.length) { // 7-Zip, qpdf, ImageMagick, ffmpeg from the catalog (local file:// mirrors), one apk add
+    const lines = tools.map((t) => `${t.name}\\tfile:///root/${t.file}.wasm\\t${crypto.createHash('sha256').update(t.bytes).digest('hex')}\\t${t.bytes.length}\\tlicense\\t${t.progs.split(',').map((p) => '/usr/local/bin/' + p).join(',')}\\t${t.name}\\n`).join('');
+    await step(`sudo sh -c "printf '${lines}' >> /etc/inksoc/wasm-catalog.local"\n`, /Password/, 'tools: local catalog entries (sudo asks)');
+    await step('pw1\n', /tester@inksoc/, 'tools: local catalog entries written');
+    await step(`apk add --no-network ${tools.map((t) => t.name).join(' ')}; echo add-rc=$?\n`, /Password/, 'tools: apk add asks sudo');
+    await step('pw1\n', new RegExp(tools.map((t) => `OK: ${t.name} installed`).join('[\\s\\S]*') + '[\\s\\S]*add-rc=0'), `tools: apk add installs ${tools.map((t) => t.name).join(', ')}`);
+  }
+  if (hasTool('7zip')) { // 7-Zip: create, list, extract, compare (7z and zip)
+    await step('mkdir -p /tmp/sz/in/sub && cd /tmp/sz && echo one > in/a.txt && seq 1 3000 > in/sub/n.txt && 7zz a -bd t.7z in > /dev/null && 7z l t.7z | grep -c "\\.txt$"; mkdir x && cd x && 7z x -bd ../t.7z > /dev/null && diff -r ../in in && echo 7z-same; cd /tmp/sz && 7zz a -bd -tzip t.zip in > /dev/null && unzip -l t.zip | grep -c "\\.txt$" && 7zz t t.zip | grep -c "Everything is Ok"; cd\n',
+      /^2\s+7z-same\s+2\s+1\s*$/m, '7-Zip: 7z archive create, list, extract same files; zip readable by unzip');
+    await step('7zz x -bd /root/hello.wasm; echo 7z-rc=$?\n', /7z-rc=2/, '7-Zip: not an archive (C++ exception path) exits 2');
+  }
+  if (hasTool('qpdf')) { // qpdf: check, linearize round trip, error on a non-PDF (C++ exceptions)
+    await step('qpdf --check /root/t.pdf; mkdir -p /tmp/q && cd /tmp/q && qpdf --linearize /root/t.pdf l.pdf && qpdf --check-linearization l.pdf && qpdf --show-npages l.pdf; qpdf --check /root/hello.wasm > /dev/null 2>&1; echo q-rc=$?; cd\n',
+      /No syntax or stream encoding errors found[\s\S]*no linearization errors[\s\S]*^1\s+q-rc=2/m, 'qpdf: check, linearize and check it, page count; not a PDF exits 2');
+  }
+  if (hasTool('imagemagick')) { // ImageMagick: PPM to PNG to JPEG, identify, pixel colour
+    await step("mkdir -p /tmp/m && cd /tmp/m && printf 'P3\\n2 2\\n255\\n255 0 0 0 255 0\\n0 0 255 255 255 255\\n' > a.ppm && magick a.ppm -scale 400% b.png && od -An -c -N4 b.png && identify -format '%m %wx%h\\n' b.png && convert b.png c.jpg && magick identify -format '%m %wx%h\\n' c.jpg && magick b.png -format '%[pixel:p{7,0}]\\n' info:; cd\n",
+      /P\s+N\s+G[\s\S]*^PNG 8x8\s[\s\S]*^JPEG 8x8\s+^(lime|green|srgb\(0,255,0\))\s*$/m, 'ImageMagick: PPM to PNG to JPEG (convert link warns it is deprecated), identify, pixel colour');
+  }
+  if (hasTool('ffmpeg')) { // ffmpeg: LGPL build; 1 s WAV made by a filter, to FLAC and back, a short MPEG-4 video
+    await step('ffmpeg -hide_banner -L | grep -c "Lesser General Public"; ffmpeg -hide_banner -buildconf | grep -c enable-gpl\n', /^[1-9]\d*\s+^0\s*$/m, 'ffmpeg: LGPL build (no --enable-gpl)');
+    await step('mkdir -p /tmp/f && cd /tmp/f && ffmpeg -nostdin -hide_banner -loglevel error -filter_complex "sine=frequency=440:sample_rate=8000:duration=1" t.wav && ffmpeg -nostdin -hide_banner -loglevel error -i t.wav t.flac && ffmpeg -nostdin -hide_banner -loglevel error -i t.flac -ar 16000 u.wav && stat -c %s t.wav u.wav && echo ff-done; cd\n',
+      /^160\d\d\s+^3[12]\d{3}\s+ff-done/m, 'ffmpeg: WAV made by a filter, to FLAC, back to WAV at 16 kHz');
+    await step('cd /tmp/f && ffmpeg -nostdin -hide_banner -loglevel error -filter_complex "color=c=red:s=32x32:d=1:r=5" -c:v mpeg4 v.mp4 && echo mp4-ok; cd\n', /mp4-ok/, 'ffmpeg: 1 s MPEG-4 video in MP4');
+    if (hasTool('ffprobe')) await step('cd /tmp/f && ffprobe -v error -show_entries stream=codec_name,sample_rate -of csv=p=0 t.flac && ffprobe -v error -show_entries stream=codec_name,width,height,nb_frames -of csv=p=0 v.mp4; cd\n',
+      /^flac,8000\s+^mpeg4,32,32,5\s*$/m, 'ffprobe: FLAC 8 kHz, MPEG-4 32x32 with 5 frames');
   }
 } else console.log('(engine without WebAssembly programs: published engine.wasm older than the kernel source)');
 await step('trap "echo caught-usr1" USR1; kill -USR1 $$\n', /caught-usr1/, 'shell trap');
