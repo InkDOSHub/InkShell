@@ -104,6 +104,7 @@ try {
   check(await waitBtn('hello-wasm', 'Remove'), 'store: Install installs hello-wasm', await p.evaluate(() => $('st-msg').textContent + '\n' + $('st-log').textContent));
   check(/hello-wasm installed/.test(await p.evaluate(() => $('st-msg').textContent + $('st-log').textContent)), 'store: shows the result');
   check(await p.evaluate((s) => { const r = document.querySelector(s); return r && r.dataset.pct === '100' && /hello-wasm: \d+\/\d+ KB 100%/.test($('st-log').textContent); }, row('hello-wasm')), 'store: download progress reaches 100%', await p.evaluate(() => $('st-log').textContent));
+  check(await p.evaluate(() => { stSamples.length = 0; stRate('x', 0, 10485760, 0); return stRate('x', 3145728, 10485760, 2000); }) === '1,5 MB/s · 5 s', 'store: shows speed and ETA');
   check((await text()) === shellBefore, 'store: nothing typed into the shell');
   await p.click('#st-x');
   await send('hello-wasm S < /dev/null; echo rc=$?\r');
