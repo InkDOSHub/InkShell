@@ -1337,6 +1337,8 @@ pub fn syscall(e: &mut Engine) {
         140 => 20, // getpriority: nice 0 (the kernel answers 20 - nice)
         143 => { e.w32(a1, 0); 0 } // sched_getparam: priority 0
         145 | 146 | 147 => 0, // sched_getscheduler (SCHED_OTHER) / get_priority_max / min
+        // membarrier: threads run one at a time under the engine's lock, so every barrier already holds
+        324 => match a0 { 0 => 1 | 8 | 16, 1 | 2 | 4 | 8 | 16 => 0, _ => -EINVAL },
         309 => { if a0 != 0 { e.w32(a0, 0); } if a1 != 0 { e.w32(a1, 0); } 0 } // getcpu: CPU 0, node 0
         191 | 192 | 193 | 197 | 198 | 199 => -61, // getxattr / lgetxattr / fgetxattr / remove*: ENODATA (no extended attributes)
         194 | 195 | 196 => 0, // listxattr / llistxattr / flistxattr: none
