@@ -23,7 +23,7 @@ Foco: terminal Linux sólido e rápido no WebKit. Ferramenta com WASM roda diret
 | 10 | x86: call/ret rápido no JIT | x86 | 2 | travado (#26, 6 queimado: região c/ ret/jmp indireto e registradores residentes sem ganho, calls 28–31x antes e depois; hipótese: gargalo fora do call/ret, ex. dispatcher/flags. Retomar só c/ perfil do item 9) | calls ≤ ~5x nativo |
 | 11 | x86: SSE/x87 no JIT | x86 | 3,5 | aberto (precisa prova do item 9) | bench float melhor |
 | 12 | x86 JIT: fallbacks do sort (movs, shift cl, tzcnt) | x86 | 2 | feito (#34: sort 19,7x → 10,4x nativo (main re-medido); instr. interpretadas no sort 351M → 2,4M (shld/shrd); contador de fallback 62,6M = REP movs que roda rep_bulk num passo sem sair do bloco. Próximo: 416M saídas por rip calculado = ret/call indireto (comparador do qsort, memcpy) → encadear ret com pilha-sombra) | sort melhor no bench |
-| 13 | /mnt por File.slice (leitura em pedaços) | 4 | 2 | feito (#N: arquivo > 1 MB do /mnt vira arquivo em blocos do tamanho real; leitura pede só a faixa (extents 64 KB, pedaço até 4 MB c/ read-ahead) e a página responde com File.slice; escrita/truncate/link/exec buscam o arquivo inteiro em pedaços (p/ swap) antes. Sobra: escrita ainda regrava o arquivo inteiro na página (createWritable em pedaços não feito); download pelo Files de arquivo grande do /mnt lê pela página) | arquivo grande do /mnt sem ler inteiro |
+| 13 | /mnt por File.slice (leitura em pedaços) | 4 | 2 | feito (#35: arquivo > 1 MB do /mnt vira arquivo em blocos do tamanho real; leitura pede só a faixa (extents 64 KB, pedaço até 4 MB c/ read-ahead) e a página responde com File.slice; escrita/truncate/link/exec buscam o arquivo inteiro em pedaços (p/ swap) antes. Sobra: escrita ainda regrava o arquivo inteiro na página (createWritable em pedaços não feito); download pelo Files de arquivo grande do /mnt lê pela página) | arquivo grande do /mnt sem ler inteiro |
 
 Ordem após item 7: 6 → 8 → 9 → pacotes catálogo → 11 → 10 (regra anti-insistência no CLAUDE.md).
 
@@ -66,7 +66,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-24 | 1 | 8: x86 BMI1/BMI2/POPCNT/LZCNT/TZCNT + teste | #32 | 2 |
 | 2026-11-24 | 1 | 9: perfil x86 no CI (JIT/interp/opcodes) | #33 | 1 |
 | 2026-11-24 | 1 | 12: JIT sem fallback p/ movs/shift cl/tzcnt | #34 | 2 |
-| 2026-11-24 | 1 | 13: /mnt lê em pedaços (File.slice) | #N | 2 |
+| 2026-11-24 | 1 | 13: /mnt lê em pedaços (File.slice) | #35 | 2 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
