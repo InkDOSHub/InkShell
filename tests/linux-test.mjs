@@ -274,10 +274,15 @@ if (hasWasi) {
   if (hasTool('jq')) { // jq: filter JSON from a pipe, @csv, bad JSON fails
     await step('echo \'{"a":[1,2,3],"b":"hi"}\' | jq -cM \'{n: (.a | add), b, k: (keys | length)}\'; echo \'[{"x":1},{"x":5}]\' | jq -r \'map(.x * 2) | @csv\'; echo \'{\' | jq . > /dev/null 2>&1; echo jq-rc=$?\n',
       /^\{"n":6,"b":"hi","k":2\}\s+^2,10\s+^jq-rc=[1-9]/m, 'jq: filter JSON from a pipe, @csv; bad JSON exits non-zero');
+    // no chdir in jq: "/tmp/x.json" is the real /tmp, "tmp/y.json" the shell's folder (which has its own tmp)
+    await step("printf '{\"k\":7}' > /tmp/x.json && mkdir -p /tmp/jqd/tmp && printf '{\"k\":1}' > /tmp/jqd/tmp/y.json && cd /tmp/jqd && jq -cM .k /tmp/x.json tmp/y.json; cd /tmp && jq -cM .k x.json; cd /etc && jq -cM .k /tmp/x.json; echo jq-cwd-done; cd\n",
+      /^7\s+^1\s+^7\s+^7\s+^jq-cwd-done/m, 'jq: absolute path is the real root, relative path the shell folder (even a name that is also a top-level folder)');
   }
   if (hasTool('ripgrep')) { // ripgrep: count, line number, list files of a folder, no match exits 1, stdin with "-"
     await step("mkdir -p /tmp/rg/s && cd /tmp/rg && printf 'alpha\\nbeta\\ngamma\\n' > s/a.txt && printf 'beta2\\n' > b.txt && rg --color never -c beta s/a.txt; rg --color never -n gam s/a.txt; rg --color never -l beta . | sort; rg --color never zzz s/a.txt; echo rg-rc=$?; printf 'x1\\ny\\n' | rg --color never x -; cd\n",
       /^1\s+^3:gamma\s+^(\.\/)?b\.txt\s+^(\.\/)?s\/a\.txt\s+^rg-rc=1\s+^x1\s*$/m, 'ripgrep: count, line number, files of a folder, no match exits 1, stdin with -');
+    await step("mkdir -p /tmp/rg/etc && printf 'root-here\\n' > /tmp/rg/etc/f.txt && cd /tmp/rg && rg --color never -l root-here etc; rg --color never -l '^root:' /etc | grep -x /etc/passwd; cd /etc && rg --color never -c '^root:' /etc/passwd passwd | sort; rg --color never -l '^root:x' /etc | grep -x /etc/passwd; echo rg-cwd-done; cd\n",
+      /^etc\/f\.txt\s+^\/etc\/passwd\s+^\/etc\/passwd:1\s+^passwd:1\s+^\/etc\/passwd\s+^rg-cwd-done/m, 'ripgrep: relative folder named like a top-level one is the shell folder; absolute paths are the real root, in /etc too');
   }
   if (hasTool('lua5.4')) { // Lua: script file, pcall/error (setjmp/longjmp), uncaught error exits 1
     await step('printf \'%s\\n\' \'local t = {}\' \'for i = 1, 10 do t[#t + 1] = i * i end\' \'print("lua-ok", #t, t[10], _VERSION, pcall(error, "boom"))\' > /tmp/t.lua && lua /tmp/t.lua; lua5.4 -e "error(\'x\')" 2> /dev/null; echo lua-rc=$?\n',

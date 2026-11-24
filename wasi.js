@@ -10,11 +10,10 @@
 // and is used by the code, is found by cwdSlot), "/" is preopened as the real root and the pointer is set
 // to the shell's folder (the "PWD=..." string that environ_get writes in the program's own memory): relative
 // paths follow the shell's folder, absolute paths the real root, os.getcwd() is the shell's folder.
-// Otherwise (no chdir in the module: wasi-libc then sends "x.txt" and "/x.txt" alike to the "/" preopen as
-// "x.txt"), "/" is preopened as the shell's folder and each top-level folder ("/tmp", "/usr"...) gets its
-// own preopen: wasi-libc picks the longest matching preopen, so absolute paths still go to the real place.
-// Limits of that fallback: "/" itself shows the shell's folder, a relative path that starts with a
-// top-level name ("tmp/x" in /home/u) goes to /tmp/x, getcwd() says "/". No sockets.
+// Otherwise (no chdir in the module, e.g. jq, rg: wasi-libc then sends "x.txt" and "/x.txt" alike to the "/"
+// preopen as "x.txt") each path on the "/" preopen goes to the shell's folder or to the real root (pick):
+// the argument it comes from ("/etc" or "etc") says which, else the side that has its first name.
+// Limits: getcwd() says "/"; a name in both places that no argument names goes to the folder. No sockets.
 import { main as inkvideo } from './inkvideo.js?v=1';
 const E = { 1: 63, 2: 44, 4: 27, 5: 29, 9: 8, 11: 6, 12: 48, 13: 2, 17: 20, 18: 75, 20: 54, 21: 31, 22: 28, 24: 33, 28: 51, 29: 70, 30: 69, 32: 64, 36: 37, 38: 52, 39: 55, 40: 32, 95: 58 };
 const errno = (v) => E[-v] ?? 29;
@@ -173,7 +172,25 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
   let nextFd = 3;
   const opendir = (p) => sys(257, [-100, BASE, 0x10000 | 0x80000], cstr(p)).r;
   const preopen = (lfd, name) => { if (lfd >= 0) { fds.set(nextFd, lfd); pre.set(nextFd++, name); } };
-  let slot = null;
+  let slot = null, vroot = -1, cwdFd = -1, rootFd = -1;
+  const hints = []; // { h: path without the leading "/" or "./", abs: it began with "/" }
+  const strip = (x) => { for (;;) { if (x[0] === '/') x = x.slice(1); else if (x.startsWith('./')) x = x.slice(2); else if (x === '.') x = ''; else break; } return x.replace(/\/+$/, ''); };
+  const has = (lfd, name) => sys(262, [lfd, BASE, BASE + 4096, 0x100], cstr(name), 4096 + 144).r === 0;
+  /** Without chdir in the module wasi-libc sends "x" and "/x" alike, as "x" on the "/" preopen: true when the
+   *  real root is meant. The longest argument path that contains it says which; else the one of the shell's
+   *  folder and the real root that has its first name; else an argument "/" or "." (alone); else the folder. */
+  const pick = (p) => {
+    const q = strip(p); let best = 0, kinds = new Set(), zero = new Set();
+    for (const { h, abs } of hints) {
+      if (!h) { zero.add(abs); continue; }
+      if (q !== h && !q.startsWith(h + '/')) continue;
+      if (h.length > best) { best = h.length; kinds = new Set([abs]); } else if (h.length === best) kinds.add(abs);
+    }
+    if (kinds.size === 1) return [...kinds][0];
+    const first = q.split('/')[0];
+    if (first && first !== '..') { const r = has(rootFd, first); if (r !== has(cwdFd, first)) return r; }
+    return zero.size === 1 && [...zero][0];
+  };
   try {
     const { r, out } = sys(79, [BASE, 4096], null, 4096);
     const cwd = r > 1 ? dec.decode(out.subarray(0, r - 1)) : '/';
@@ -182,34 +199,20 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
       envs = [...envs.filter((e) => !e.startsWith('PWD=')), 'PWD=' + cwd];
       slot.at = envs.slice(0, -1).reduce((n, e) => n + enc.encode(e).length + 1, 4);
     }
-    if (cwd !== '/' && !slot) {
-      const root = opendir('/');
-      while (root >= 0) {
-        const { r: n, out: b } = sys(217, [root, BASE, 65536], null, 65536);
-        if (n <= 0) break;
-        const s = new DataView(b.buffer);
-        for (let o = 0; o < n;) {
-          const rl = s.getUint16(o + 16, true), ty = s.getUint8(o + 18);
-          let e = o + 19; while (e < o + rl && b[e]) e++;
-          const name = dec.decode(b.subarray(o + 19, e));
-          if ((ty === 4 || ty === 10) && name !== '.' && name !== '..') preopen(opendir('/' + name), '/' + name);
-          o += rl;
+    if (cwd !== '/' && !slot) { // one "/" preopen for both: each path goes to the shell's folder or the real root (pick)
+      cwdFd = opendir(cwd); rootFd = opendir('/');
+      if (cwdFd >= 0 && rootFd >= 0) {
+        vroot = nextFd;
+        for (let i = 1; i < args.length; i++) { // the paths named in the arguments ("--out=x" too)
+          let a = args[i]; if (!a || a.length > 1024) continue;
+          if (a[0] === '-') { const e = a.indexOf('='); if (e < 0) continue; a = a.slice(e + 1); }
+          const abs = a[0] === '/', h = strip(a), first = h.split('/')[0];
+          if (!h || first === '..' || has(abs ? rootFd : cwdFd, first)) hints.push({ h, abs });
         }
       }
-      if (root >= 0) sys(3, [root]);
     }
-    const c = slot ? -1 : opendir(cwd);
+    const c = slot ? -1 : vroot >= 0 ? cwdFd : opendir(cwd);
     preopen(c >= 0 ? c : opendir('/'), '/');
-    // a program argument that names a file in the shell's folder also becomes its full path
-    if (cwd !== '/' && !slot) {
-      args = args.slice();
-      for (let i = 1; i < args.length; i++) {
-        const a = args[i];
-        if (!a || a[0] === '-' || a[0] === '/' || a.length > 1024) continue;
-        const { r: sr, out: so } = sys(262, [-100, BASE, BASE + 4096, 0], cstr(a), 4096 + 144);
-        if (sr === 0 && (new DataView(so.buffer, so.byteOffset + 4096).getUint32(24, true) & 0o170000) === 0o100000) args[i] = cwd.replace(/\/+$/, '') + '/' + a;
-      }
-    }
   } catch { return -1; } // ended before it started
   const dirs = new Map(); // fd -> entries read by fd_readdir
   let inst, mem;
@@ -217,9 +220,10 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
   const u8 = () => new Uint8Array(mem.buffer);
   const L = (fd) => fds.get(fd);
   const str = (p, n) => dec.decode(u8().slice(p, p + n));
+  const at = (fd, p) => (fd === vroot ? (pick(p) ? rootFd : cwdFd) : L(fd)); // the Linux fd for a path on fd
   const pathCall = (nr, fd, p, n, extra = [], outLen = 0) => {
-    const lfd = L(fd); if (lfd == null) return { r: -9 };
-    return sys(nr, [lfd, BASE, ...extra], cstr(str(p, n)), outLen);
+    const s = str(p, n), lfd = at(fd, s); if (lfd == null) return { r: -9 };
+    return sys(nr, [lfd, BASE, ...extra], cstr(s), outLen);
   };
   const filestat = (b, ptr) => {
     const s = new DataView(b.buffer, b.byteOffset), d = dv();
@@ -352,13 +356,13 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     path_unlink_file: (fd, p, n) => { const { r } = pathCall(263, fd, p, n, [0]); return r < 0 ? errno(r) : 0; },
     path_remove_directory: (fd, p, n) => { const { r } = pathCall(263, fd, p, n, [0x200]); return r < 0 ? errno(r) : 0; },
     path_rename: (fd, p, n, fd2, p2, n2) => {
-      const a = L(fd), b = L(fd2); if (a == null || b == null) return 8;
+      const a = at(fd, str(p, n)), b = at(fd2, str(p2, n2)); if (a == null || b == null) return 8;
       const s1 = cstr(str(p, n)), s2 = cstr(str(p2, n2)), d = new Uint8Array(4096 + s2.length); d.set(s1); d.set(s2, 4096);
       const { r } = sys(264, [a, BASE, b, BASE + 4096], d); return r < 0 ? errno(r) : 0;
     },
     path_readlink: (fd, p, n, buf, len, np) => { const { r, out } = pathCall(267, fd, p, n, [BASE + 4096, len], 4096 + len); if (r < 0) return errno(r); u8().set(out.subarray(4096, 4096 + r), buf); dv().setUint32(np, r, true); return 0; },
     path_symlink: (p, n, fd, p2, n2) => {
-      const b = L(fd); if (b == null) return 8;
+      const b = at(fd, str(p2, n2)); if (b == null) return 8;
       const s1 = cstr(str(p, n)), s2 = cstr(str(p2, n2)), d = new Uint8Array(4096 + s2.length); d.set(s1); d.set(s2, 4096);
       const { r } = sys(266, [BASE, b, BASE + 4096], d); return r < 0 ? errno(r) : 0;
     },
