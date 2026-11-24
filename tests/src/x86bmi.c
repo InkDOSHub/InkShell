@@ -2,7 +2,8 @@
 // MULX, RORX, SARX, SHLX, SHRX) against a plain C model: 16/32/64-bit forms, register and
 // memory operands, random values plus edges (0, ~0, single bits, low masks), the defined flags
 // (CF/ZF/SF/OF, PF for POPCNT), flags kept by the BMI2 ops, and the CPUID bits; also
-// SHL/SHR/SAR by CL (flags, count 0 keeps them) and BSF/BSR.
+// SHL/SHR/SAR by CL (flags, count 0 keeps them), BSF/BSR, and SHLD/SHRD/ROL/ROR (imm, 1, CL;
+// 16/32/64 bits; CF/OF, kept flags, count 0).
 // Prints "x86bmi ok <n>".
 // Built static: gcc -O2 -mbmi -mbmi2 -mpopcnt -mlzcnt -static -o tests/x86bmi tests/src/x86bmi.c
 #include <cpuid.h>
@@ -91,6 +92,30 @@ MODEL static uint64_t m_shf(int op, uint64_t x, int k, int n, uint64_t *fl, uint
   *fm = CF | ZF | SF | (k == 1 ? OF : 0);
   *fl = (cf ? CF : 0) | zs(r, n) | (k == 1 && of ? OF : 0);
   return r;
+}
+MODEL static uint64_t m_par(uint64_t r) { uint64_t p = 1; for (int i = 0; i < 8; i++) p ^= (r >> i) & 1; return p ? PF : 0; }
+// SHLD (left) / SHRD of the n-bit a by k (1..n) bits filled from b: result, flags (*fl) and their mask (*fm)
+MODEL static uint64_t m_shd(int left, uint64_t a, uint64_t b, int k, int n, uint64_t *fl, uint64_t *fm) {
+  uint64_t m = msk(n), cf = 0, a0;
+  a &= m; b &= m; a0 = a;
+  for (int i = 0; i < k; i++) {
+    if (left) { cf = (a >> (n - 1)) & 1; a = ((a << 1) | ((b >> (n - 1)) & 1)) & m; b = (b << 1) & m; }
+    else { cf = a & 1; a = (a >> 1) | ((b & 1) << (n - 1)); b >>= 1; }
+  }
+  *fm = CF | ZF | SF | PF | (k == 1 ? OF : 0);
+  *fl = (cf ? CF : 0) | zs(a, n) | m_par(a) | (k == 1 && ((a ^ a0) & sgn(n)) ? OF : 0);
+  return a;
+}
+// ROL (left) / ROR of the n-bit x by k (1..n-1): ZF/SF/PF kept (from fi), CF, OF when k == 1
+MODEL static uint64_t m_rot(int left, uint64_t x, int k, int n, uint64_t fi, uint64_t *fl, uint64_t *fm) {
+  uint64_t m = msk(n), cf, of;
+  x &= m;
+  for (int i = 0; i < k; i++) x = left ? ((x << 1) | (x >> (n - 1))) & m : (x >> 1) | ((x & 1) << (n - 1));
+  if (left) { cf = x & 1; of = ((x >> (n - 1)) & 1) ^ cf; }
+  else { cf = (x >> (n - 1)) & 1; of = cf ^ ((x >> (n - 2)) & 1); }
+  *fm = CF | ZF | SF | PF | (k == 1 ? OF : 0);
+  *fl = (cf ? CF : 0) | (fi & (ZF | SF | PF)) | (k == 1 && of ? OF : 0);
+  return x;
 }
 
 // ---- the instructions ----
@@ -220,6 +245,42 @@ static void one(int i) {
     SHC("shlq", "", 64, 0, x); SHC("shrq", "", 64, 1, x); SHC("sarq", "", 64, 2, x);
     SHC("shll", "k", 32, 0, x32); SHC("shrl", "k", 32, 1, x32); SHC("sarl", "k", 32, 2, x32);
 #undef SHC
+    // SHLD/SHRD by an immediate and by CL; ROL/ROR by an immediate, by 1 and by CL (flags read by pushf)
+    uint64_t up = y & ~0xFFFFull;
+#define SHDI(ins, reg, n, left, k, a0, b0, hi) do { r = (a0); \
+    asm volatile(PRE ins " %[kk], %" reg "[b], %" reg "[r]" POST : [r] "+&r"(r), [fo] "=&r"(fo) : [b] "r"(b0), [kk] "i"(k), [fi] "r"(fi) : "cc", "memory"); \
+    want = (hi) | m_shd(left, (a0), (b0), (k) & (n == 64 ? 63 : 31), n, &fl, &fm); check(ins " imm " #k, r, want, a0, b0); \
+    check(ins " imm flags " #k, fo & fm, fl, a0, b0); } while (0)
+    SHDI("shldq", "", 64, 1, 1, x, y, 0); SHDI("shldq", "", 64, 1, 13, x, y, 0); SHDI("shldq", "", 64, 1, 63, x, y, 0);
+    SHDI("shrdq", "", 64, 0, 1, x, y, 0); SHDI("shrdq", "", 64, 0, 17, x, y, 0); SHDI("shrdq", "", 64, 0, 63, x, y, 0);
+    SHDI("shldl", "k", 32, 1, 1, x32, y32, 0); SHDI("shldl", "k", 32, 1, 7, x32, y32, 0); SHDI("shldl", "k", 32, 1, 31, x32, y32, 0);
+    SHDI("shrdl", "k", 32, 0, 1, x32, y32, 0); SHDI("shrdl", "k", 32, 0, 22, x32, y32, 0); SHDI("shrdl", "k", 32, 0, 31, x32, y32, 0);
+    SHDI("shldw", "w", 16, 1, 1, y, x & 0xFFFF, up); SHDI("shldw", "w", 16, 1, 9, y, x & 0xFFFF, up); SHDI("shldw", "w", 16, 1, 16, y, x & 0xFFFF, up);
+    SHDI("shrdw", "w", 16, 0, 1, y, x & 0xFFFF, up); SHDI("shrdw", "w", 16, 0, 5, y, x & 0xFFFF, up); SHDI("shrdw", "w", 16, 0, 15, y, x & 0xFFFF, up);
+#undef SHDI
+#define SHDC(ins, reg, n, left, a0, b0, hi, lim) do { int k = (int)(cl & (n == 64 ? 63 : 31)); if (k > (lim)) break; r = (a0); \
+    asm volatile(PRE ins " %%cl, %" reg "[b], %" reg "[r]" POST : [r] "+&r"(r), [fo] "=&r"(fo) : [b] "r"(b0), "c"(cl), [fi] "r"(fi) : "cc", "memory"); \
+    if (k == 0) { check(ins " cl=0", r, (a0), a0, cl); KEEP(ins " cl=0"); } \
+    else { want = (hi) | m_shd(left, (a0), (b0), k, n, &fl, &fm); check(ins " cl", r, want, a0, cl); check(ins " cl flags", fo & fm, fl, a0, cl); } } while (0)
+    SHDC("shldq", "", 64, 1, x, y, 0, 64); SHDC("shrdq", "", 64, 0, x, y, 0, 64);
+    SHDC("shldl", "k", 32, 1, x32, y32, 0, 32); SHDC("shrdl", "k", 32, 0, x32, y32, 0, 32);
+    SHDC("shldw", "w", 16, 1, y, x & 0xFFFF, up, 16); SHDC("shrdw", "w", 16, 0, y, x & 0xFFFF, up, 16);
+#undef SHDC
+#define ROTI(ins, reg, n, left, k, in) do { r = (in); \
+    asm volatile(PRE ins " %[kk], %" reg "[r]" POST : [r] "+&r"(r), [fo] "=&r"(fo) : [kk] "i"(k), [fi] "r"(fi) : "cc", "memory"); \
+    want = m_rot(left, (in), k, n, fi, &fl, &fm); check(ins " imm " #k, r, want, in, k); check(ins " imm flags " #k, fo & fm, fl, in, k); } while (0)
+    ROTI("rolq", "", 64, 1, 1, x); ROTI("rolq", "", 64, 1, 19, x); ROTI("rorq", "", 64, 0, 1, x); ROTI("rorq", "", 64, 0, 41, x);
+    ROTI("roll", "k", 32, 1, 1, x32); ROTI("roll", "k", 32, 1, 5, x32); ROTI("rorl", "k", 32, 0, 1, x32); ROTI("rorl", "k", 32, 0, 13, x32);
+#undef ROTI
+#define ROTC(ins, reg, n, left, in) do { int k = (int)(cl & (n == 64 ? 63 : 31)); r = (in); \
+    asm volatile(PRE ins " %%cl, %" reg "[r]" POST : [r] "+&r"(r), [fo] "=&r"(fo) : "c"(cl), [fi] "r"(fi) : "cc", "memory"); \
+    if (k == 0) { check(ins " cl=0", r, (in), in, cl); KEEP(ins " cl=0"); } \
+    else { want = m_rot(left, (in), k, n, fi, &fl, &fm); check(ins " cl", r, want, in, cl); check(ins " cl flags", fo & fm, fl, in, cl); } } while (0)
+    ROTC("rolq", "", 64, 1, x); ROTC("rorq", "", 64, 0, x); ROTC("roll", "k", 32, 1, x32); ROTC("rorl", "k", 32, 0, x32);
+#undef ROTC
+    // rotates with dead flags, as in sha256 (ror; xor)
+    r = x32; asm volatile("rorl $6, %k[r]\n xorl %k[y], %k[r]" : [r] "+r"(r) : [y] "r"(y32) : "cc");
+    check("ror;xor", r, m_ror(x32, 6, 32) ^ y32, x, y);
     // BSF/BSR: a zero source keeps the destination
     r = y; asm volatile(PRE "bsfq %[x], %[r]" POST : [r] "+&r"(r), [fo] "=&r"(fo) : [x] "r"(x), [fi] "r"(fi) : "cc", "memory");
     check("bsf64", r, x ? m_tzcnt(x, 64) : y, x, y); FL("bsf64", ZF, x ? 0 : ZF);
@@ -241,6 +302,14 @@ static void one(int i) {
     asm volatile("blsr %[m], %[r]" : [r] "=r"(r) : [m] "m"(mem) : "cc"); check("blsr mem", r, m_blsr(x, 64), x, 0);
     asm volatile("tzcnt %[m], %[r]" : [r] "=r"(r) : [m] "m"(mem) : "cc"); check("tzcnt mem", r, m_tzcnt(x, 64), x, 0);
     asm volatile("rorxq $13, %[m], %[r]" : [r] "=r"(r) : [m] "m"(mem)); check("rorx mem", r, m_ror(x, 13, 64), x, 13);
+    {
+      uint64_t fl, fm, want = m_shd(1, x, y, 9, 64, &fl, &fm);
+      asm volatile("shldq $9, %[y], %[m]" : [m] "+m"(mem) : [y] "r"(y) : "cc"); check("shld mem", mem, want, x, y);
+      mem = x; want = m_shd(0, x, y, (int)(y & 63), 64, &fl, &fm);
+      if (y & 63) { asm volatile("shrdq %%cl, %[y], %[m]" : [m] "+m"(mem) : [y] "r"(y), "c"(y) : "cc"); check("shrd mem cl", mem, want, x, y); }
+      mem = x; asm volatile("rorq $3, %[m]" : [m] "+m"(mem) :: "cc"); check("ror mem", mem, m_ror(x, 3, 64), x, 3);
+      mem = x;
+    }
     uint64_t hi, lo, wh, wl;
     asm volatile("mulxq %[m], %[lo], %[hi]" : [hi] "=&r"(hi), [lo] "=&r"(lo) : [m] "m"(mem), "d"(y));
     m_mul(y, x, 64, &wh, &wl); check("mulx mem hi", hi, wh, x, y); check("mulx mem lo", lo, wl, x, y);
