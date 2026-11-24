@@ -15,7 +15,7 @@
 // preopen as "x.txt") each path on the "/" preopen goes to the shell's folder or to the real root (pick):
 // the argument it comes from ("/etc" or "etc") says which, else the side that has its first name.
 // Limits: getcwd() says "/"; a name in both places that no argument names goes to the folder. No sockets.
-import { main as inkvideo } from './inkvideo.js?v=1';
+import { main as inkvideo } from './inkvideo.js?v=2';
 const E = { 1: 63, 2: 44, 4: 27, 5: 29, 9: 8, 11: 6, 12: 48, 13: 2, 17: 20, 18: 75, 20: 54, 21: 31, 22: 28, 24: 33, 28: 51, 29: 70, 30: 69, 32: 64, 36: 37, 38: 52, 39: 55, 40: 32, 95: 58 };
 const errno = (v) => E[-v] ?? 29;
 const ftype = (mode) => ({ 0o040000: 3, 0o100000: 4, 0o020000: 2, 0o060000: 1, 0o120000: 7, 0o140000: 6 })[mode & 0o170000] ?? 0;

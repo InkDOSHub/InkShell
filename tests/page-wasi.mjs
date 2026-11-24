@@ -63,6 +63,30 @@ try {
     await send(`inkvideo transcode /tmp/st.bin /tmp/t2.${stc.startsWith('avc1') ? 'h264' : '265'} --codec ${stc.startsWith('avc1') ? 'h264' : 'hevc'}; echo iv4-rc=$?\r`);
     check(await until(/transcoded 30 frames 320x240[\s\S]*iv4-rc=0/, 60000), 'inkvideo transcode: decode -> encode');
   }
+  // MP4 out (own muxer): selftest -> st.mp4, read back; transcode with --scale -> t.mp4 (VP9: Chromium here
+  // may have no H.264 encoder); info + decode of the result; then the browser's own <video> opens it
+  await send('inkvideo selftest /tmp/st.mp4; echo iv5-rc=$?; inkvideo info /tmp/st.mp4\r');
+  check(await until(/decoded 30\/30\s+iv5-rc=0\s+\/tmp\/st\.mp4: MP4, video \S+ 320x240, 30 frames, 30\.00 fps/, 60000), 'inkvideo selftest: MP4 out, its boxes read back (320x240, 30 frames)');
+  await send('inkvideo transcode /tmp/st.mp4 /tmp/t.mp4 --codec vp9 -s 160x-1; echo iv6-rc=$?\r');
+  check(await until(/transcoded 30 frames 320x240 -> 160x120[\s\S]*iv6-rc=0/, 60000), 'inkvideo transcode: MP4 -> VP9 MP4 scaled to 160x120');
+  await send('inkvideo info /tmp/t.mp4; inkvideo decode /tmp/t.mp4; echo iv7-rc=$?\r');
+  check(await until(/\/tmp\/t\.mp4: MP4, video vp09\S* 160x120, 30 frames[\s\S]*decoded 30 frames 160x120[\s\S]*iv7-rc=0/, 60000), 'inkvideo: the transcoded MP4 has 30 frames 160x120 and decodes');
+  const vid = await p.evaluate(() => new Promise((res) => {
+    const old = dlGot, t = setTimeout(() => res('timeout'), 60000);
+    dlGot = (m) => {
+      if (m.path !== '/tmp/t.mp4') return old(m);
+      dlGot = old;
+      if (!m.data) { clearTimeout(t); return res('no data'); }
+      const v = document.createElement('video'); v.muted = true;
+      if (!v.canPlayType('video/mp4; codecs="vp09.00.21.08"')) { clearTimeout(t); return res('cannot-play mp4/vp9 here'); }
+      v.onloadedmetadata = () => { clearTimeout(t); res(v.videoWidth + 'x' + v.videoHeight + ' ' + v.duration.toFixed(2)); };
+      v.onerror = () => { clearTimeout(t); res('error ' + (v.error && (v.error.code + ' ' + v.error.message))); };
+      v.src = URL.createObjectURL(new Blob([m.data], { type: 'video/mp4' }));
+    };
+    w.postMessage({ type: 'get', path: '/tmp/t.mp4', to: 'dl' });
+  }));
+  console.log('inkvideo t.mp4 in <video>: ' + vid);
+  check(/^cannot-play|^160x120 (0\.9\d|1\.0\d)$/.test(vid), 'inkvideo: the browser <video> opens the MP4 (160x120, 1 s)', vid);
   // ☰ Store: lists the catalog; Install runs apk add in Linux through the worker, not in the shell.
   // hello-wasm comes from a local catalog entry (file:// in the home folder): no network needed.
   const hsum = crypto.createHash('sha256').update(wasmBytes).digest('hex');
