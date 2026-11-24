@@ -27,8 +27,9 @@ jobs:
             gcc -O2 -static -o tests/x86pwrite tests/src/x86pwrite.c &&
             gcc -O2 -static -o tests/x86sha tests/src/x86sha.c &&
             gcc -O2 -o tests/x86ssl tests/src/x86ssl.c -lcrypto &&
+            gcc -O2 -fno-tree-vectorize -mssse3 -msse4.1 -msse4.2 -mcx16 -static -o tests/x86v2 tests/src/x86v2.c &&
             echo "native (this runner):" && grep -m1 "model name" /proc/cpuinfo && (grep -qw sha_ni /proc/cpuinfo && echo sha_ni || echo "no sha_ni") &&
-            tests/x86sha && tests/x86sha bench 512 && tests/x86ssl 1024 && OPENSSL_ia32cap=:~0x20000000 tests/x86ssl 1024'
+            tests/x86sha && tests/x86v2 && tests/x86sha bench 512 && tests/x86ssl 1024 && OPENSSL_ia32cap=:~0x20000000 tests/x86ssl 1024'
       - name: python3 from the WebAssembly catalog (URL and sha256 from the catalog)
         run: |
           e=$(awk -F '\t' '$1 == "python3"' overlay/etc/inksoc/wasm-catalog)

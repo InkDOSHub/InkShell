@@ -134,6 +134,7 @@ impl Engine {
         }
         let a = ea(self, m, next);
         match bytes {
+            2 => self.mmu.read16(a).map(|v| v as u128).map_err(|_| self.fault(a)),
             4 => self.mmu.read32(a).map(|v| v as u128).map_err(|_| self.fault(a)),
             8 => self.mmu.read64(a).map(|v| v as u128).map_err(|_| self.fault(a)),
             _ => self.read128(a),
@@ -291,6 +292,28 @@ pub fn sse(e: &mut Engine, d: &mut Dec, buf: &[u8; 16], rip: u64, rex: u8, p66: 
                 from_f32s([a[0] - b[0], a[1] + b[1], a[2] - b[2], a[3] + b[3]])
             });
         }
+        // SSE3 haddpd / hsubpd (66) and haddps / hsubps (F2): pairs of dst, then pairs of src
+        0x7C | 0x7D if kind == 1 || kind == 3 => {
+            let sv = g!(e, e.xsrc(&m, next, 16));
+            let sub = op == 0x7D;
+            out = Some(if kind == 1 {
+                let (a, b) = (f64s(dst), f64s(sv));
+                if sub {
+                    from_f64s([a[0] - a[1], b[0] - b[1]])
+                } else {
+                    from_f64s([a[0] + a[1], b[0] + b[1]])
+                }
+            } else {
+                let (a, b) = (f32s(dst), f32s(sv));
+                if sub {
+                    from_f32s([a[0] - a[1], a[2] - a[3], b[0] - b[1], b[2] - b[3]])
+                } else {
+                    from_f32s([a[0] + a[1], a[2] + a[3], b[0] + b[1], b[2] + b[3]])
+                }
+            });
+        }
+        // SSE3 lddqu (F2 0F F0 m128)
+        0xF0 if kind == 3 && m.md != 3 => out = Some(g!(e, e.xsrc(&m, next, 16))),
         0x2A => {
             if kind < 2 {
                 e.unsupported(buf);
@@ -769,15 +792,32 @@ fn shift(v: u128, grp: u8, sub: u8, n: u32) -> u128 {
     }
 }
 
-// ---- 0F 38 / 0F 3A: SSSE3 PSHUFB/PALIGNR, SSE4.1 PBLENDW and the SHA extensions ----
-// (Intel SDM definitions; only SHA is announced in CPUID, the others are what SHA code uses)
+// ---- 0F 38 / 0F 3A: SSSE3, SSE4.1, SSE4.2 and the SHA extensions (Intel SDM definitions) ----
+// MMX (no 66 prefix) forms of SSSE3 are not supported, like the rest of MMX.
 
 /// Whether `code` (0x38XX / 0x3AXX) with this 66 prefix is one of the ops below.
 pub fn op3_ok(code: u32, p66: bool) -> bool {
     match code {
-        0x3800 | 0x3A0E | 0x3A0F => p66,
+        0x3800..=0x380B | 0x3810 | 0x3814 | 0x3815 | 0x3817 | 0x381C..=0x381E | 0x3820..=0x3825 | 0x3828..=0x382B | 0x3830..=0x3835
+        | 0x3837..=0x3841 | 0x3A08..=0x3A0F | 0x3A14..=0x3A17 | 0x3A20..=0x3A22 | 0x3A40..=0x3A42 | 0x3A60..=0x3A63 => p66,
         0x38C8..=0x38CD | 0x3ACC => !p66,
         _ => false,
+    }
+}
+
+/// Ops that only read xmm dst/src (+ xmm0) and write xmm dst: what `op3` computes.
+/// The others (PTEST, PEXTR*/EXTRACTPS, PINSRB/D/Q, PCMPxSTRx) run in `op3_step`.
+pub fn op3_pure(code: u32) -> bool {
+    !matches!(code, 0x3817 | 0x3A14..=0x3A17 | 0x3A20 | 0x3A22 | 0x3A60..=0x3A63)
+}
+
+/// Bytes a memory source of `code` reads (PMOVSX/ZX, ROUNDSS/SD and INSERTPS read less than 16).
+pub fn op3_src_bytes(code: u32) -> u32 {
+    match code {
+        0x3820 | 0x3823 | 0x3825 | 0x3830 | 0x3833 | 0x3835 | 0x3A0B => 8,
+        0x3821 | 0x3824 | 0x3831 | 0x3834 | 0x3A0A | 0x3A21 => 4,
+        0x3822 | 0x3832 => 2,
+        _ => 16,
     }
 }
 
@@ -788,7 +828,59 @@ fn sig1(x: u32) -> u32 {
     x.rotate_right(17) ^ x.rotate_right(19) ^ (x >> 10)
 }
 
-/// Result of op `code` on dst `d` and source `s` (x0 = xmm0, SHA256RNDS2's implicit operand).
+/// Horizontal op on words/dwords: pairs of d, then pairs of s.
+fn hpairs16(d: u128, s: u128, f: impl Fn(i16, i16) -> u16) -> u128 {
+    let (a, b) = (u16s(d), u16s(s));
+    from_u16s(core::array::from_fn(|i| {
+        let v = if i < 4 { a } else { b };
+        let k = 2 * (i & 3);
+        f(v[k] as i16, v[k + 1] as i16)
+    }))
+}
+fn hpairs32(d: u128, s: u128, f: impl Fn(u32, u32) -> u32) -> u128 {
+    let (a, b) = (u32s(d), u32s(s));
+    from_u32s([f(a[0], a[1]), f(a[2], a[3]), f(b[0], b[1]), f(b[2], b[3])])
+}
+
+/// ROUNDxx: imm bits 1:0 = mode (nearest even, down, up, truncate), bit 2 = MXCSR.RC
+/// (always round to nearest here: MXCSR is fixed at 0x1F80). NaNs come back quiet.
+fn round_f64(x: f64, imm: u8) -> f64 {
+    if x.is_nan() {
+        return f64::from_bits(x.to_bits() | 1 << 51);
+    }
+    match if imm & 4 != 0 { 0 } else { imm & 3 } {
+        0 => x.round_ties_even(),
+        1 => x.floor(),
+        2 => x.ceil(),
+        _ => x.trunc(),
+    }
+}
+fn round_f32(x: f32, imm: u8) -> f32 {
+    if x.is_nan() {
+        return f32::from_bits(x.to_bits() | 1 << 22);
+    }
+    match if imm & 4 != 0 { 0 } else { imm & 3 } {
+        0 => x.round_ties_even(),
+        1 => x.floor(),
+        2 => x.ceil(),
+        _ => x.trunc(),
+    }
+}
+
+/// PMOVSX/PMOVZX: `k` = 0..5 for BW, BD, BQ, WD, WQ, DQ; `sx` = sign extension.
+fn pmovx(s: u128, k: u32, sx: bool) -> u128 {
+    let (from, to) = [(8u32, 16u32), (8, 32), (8, 64), (16, 32), (16, 64), (32, 64)][k as usize];
+    let mut out = 0u128;
+    for i in 0..128 / to {
+        let raw = (s >> (from * i)) as u64 & ((1u64 << from) - 1);
+        let v = if sx { ((raw << (64 - from)) as i64 >> (64 - from)) as u64 } else { raw };
+        let m = if to == 64 { u64::MAX } else { (1u64 << to) - 1 };
+        out |= ((v & m) as u128) << (to * i);
+    }
+    out
+}
+
+/// Result of op `code` on dst `d` and source `s` (x0 = xmm0: SHA256RNDS2, PBLENDVB, BLENDVPS/PD).
 pub fn op3(code: u32, d: u128, s: u128, imm: u8, x0: u128) -> u128 {
     match code {
         // PSHUFB: byte i = d[s[i] & 15], or 0 when bit 7 of s[i] is set
@@ -796,7 +888,92 @@ pub fn op3(code: u32, d: u128, s: u128, imm: u8, x0: u128) -> u128 {
             let (a, m) = (u8s(d), u8s(s));
             from_u8s(core::array::from_fn(|i| if m[i] & 0x80 != 0 { 0 } else { a[(m[i] & 15) as usize] }))
         }
-        // PBLENDW: word k from s when imm bit k is set
+        // PHADDW / PHADDD / PHADDSW / PHSUBW / PHSUBD / PHSUBSW
+        0x3801 => hpairs16(d, s, |x, y| x.wrapping_add(y) as u16),
+        0x3802 => hpairs32(d, s, |x, y| x.wrapping_add(y)),
+        0x3803 => hpairs16(d, s, |x, y| sat_i16(x as i32 + y as i32)),
+        0x3805 => hpairs16(d, s, |x, y| x.wrapping_sub(y) as u16),
+        0x3806 => hpairs32(d, s, |x, y| x.wrapping_sub(y)),
+        0x3807 => hpairs16(d, s, |x, y| sat_i16(x as i32 - y as i32)),
+        // PMADDUBSW: unsigned bytes of d times signed bytes of s, pairs added with saturation
+        0x3804 => {
+            let (a, b) = (u8s(d), u8s(s));
+            from_u16s(core::array::from_fn(|i| sat_i16(a[2 * i] as i32 * b[2 * i] as i8 as i32 + a[2 * i + 1] as i32 * b[2 * i + 1] as i8 as i32)))
+        }
+        // PSIGNB/W/D: d negated, zeroed or kept by the sign of s
+        0x3808 => map_u8(d, s, |a, b| if (b as i8) < 0 { a.wrapping_neg() } else if b == 0 { 0 } else { a }),
+        0x3809 => map_u16(d, s, |a, b| if (b as i16) < 0 { a.wrapping_neg() } else if b == 0 { 0 } else { a }),
+        0x380A => map_u32(d, s, |a, b| if (b as i32) < 0 { a.wrapping_neg() } else if b == 0 { 0 } else { a }),
+        // PMULHRSW: (a*b >> 14) + 1 >> 1
+        0x380B => map_u16(d, s, |a, b| ((((a as i16 as i32 * b as i16 as i32) >> 14) + 1) >> 1) as u16),
+        // PABSB/W/D
+        0x381C => map_u8(s, s, |a, _| (a as i8).unsigned_abs()),
+        0x381D => map_u16(s, s, |a, _| (a as i16).unsigned_abs()),
+        0x381E => map_u32(s, s, |a, _| (a as i32).unsigned_abs()),
+        // PBLENDVB / BLENDVPS / BLENDVPD: by the top bit of each xmm0 element
+        0x3810 => {
+            let (a, b, m) = (u8s(d), u8s(s), u8s(x0));
+            from_u8s(core::array::from_fn(|i| if m[i] & 0x80 != 0 { b[i] } else { a[i] }))
+        }
+        0x3814 => {
+            let (a, b, m) = (u32s(d), u32s(s), u32s(x0));
+            from_u32s(core::array::from_fn(|i| if m[i] >> 31 != 0 { b[i] } else { a[i] }))
+        }
+        0x3815 => {
+            let (a, b, m) = (u64s(d), u64s(s), u64s(x0));
+            from_u64s(core::array::from_fn(|i| if m[i] >> 63 != 0 { b[i] } else { a[i] }))
+        }
+        0x3820..=0x3825 => pmovx(s, code - 0x3820, true),
+        0x3830..=0x3835 => pmovx(s, code - 0x3830, false),
+        // PMULDQ: signed dwords 0 and 2 to quadwords
+        0x3828 => {
+            let (a, b) = (u32s(d), u32s(s));
+            from_u64s([(a[0] as i32 as i64 * b[0] as i32 as i64) as u64, (a[2] as i32 as i64 * b[2] as i32 as i64) as u64])
+        }
+        0x3829 => map_u64(d, s, |a, b| if a == b { u64::MAX } else { 0 }),
+        // MOVNTDQA (a load)
+        0x382A => s,
+        // PACKUSDW
+        0x382B => {
+            let (a, b) = (u32s(d), u32s(s));
+            from_u16s(core::array::from_fn(|i| (if i < 4 { a[i] } else { b[i - 4] } as i32).clamp(0, 65535) as u16))
+        }
+        // PCMPGTQ (SSE4.2)
+        0x3837 => map_u64(d, s, |a, b| if (a as i64) > (b as i64) { u64::MAX } else { 0 }),
+        0x3838 => map_u8(d, s, |a, b| (a as i8).min(b as i8) as u8),
+        0x3839 => map_u32(d, s, |a, b| (a as i32).min(b as i32) as u32),
+        0x383A => map_u16(d, s, |a, b| a.min(b)),
+        0x383B => map_u32(d, s, |a, b| a.min(b)),
+        0x383C => map_u8(d, s, |a, b| (a as i8).max(b as i8) as u8),
+        0x383D => map_u32(d, s, |a, b| (a as i32).max(b as i32) as u32),
+        0x383E => map_u16(d, s, |a, b| a.max(b)),
+        0x383F => map_u32(d, s, |a, b| a.max(b)),
+        0x3840 => map_u32(d, s, |a, b| a.wrapping_mul(b)),
+        // PHMINPOSUW: smallest word of s and its (first) index
+        0x3841 => {
+            let w = u16s(s);
+            let mut k = 0;
+            for i in 1..8 {
+                if w[i] < w[k] {
+                    k = i;
+                }
+            }
+            w[k] as u128 | (k as u128) << 16
+        }
+        // ROUNDPS / ROUNDPD / ROUNDSS / ROUNDSD
+        0x3A08 => from_f32s(f32s(s).map(|x| round_f32(x, imm))),
+        0x3A09 => from_f64s(f64s(s).map(|x| round_f64(x, imm))),
+        0x3A0A => (d & !0xFFFF_FFFF) | round_f32(f32::from_bits(s as u32), imm).to_bits() as u128,
+        0x3A0B => (d & !(u64::MAX as u128)) | round_f64(f64::from_bits(s as u64), imm).to_bits() as u128,
+        // BLENDPS / BLENDPD / PBLENDW: element k from s when imm bit k is set
+        0x3A0C => {
+            let (a, b) = (u32s(d), u32s(s));
+            from_u32s(core::array::from_fn(|k| if imm >> k & 1 != 0 { b[k] } else { a[k] }))
+        }
+        0x3A0D => {
+            let (a, b) = (u64s(d), u64s(s));
+            from_u64s(core::array::from_fn(|k| if imm >> k & 1 != 0 { b[k] } else { a[k] }))
+        }
         0x3A0E => {
             let (a, b) = (u16s(d), u16s(s));
             from_u16s(core::array::from_fn(|k| if imm >> k & 1 != 0 { b[k] } else { a[k] }))
@@ -813,6 +990,37 @@ pub fn op3(code: u32, d: u128, s: u128, imm: u8, x0: u128) -> u128 {
             } else {
                 s >> (8 * n) | d << (8 * (16 - n))
             }
+        }
+        // INSERTPS: s element imm[7:6] into d element imm[5:4], then zero the elements of imm[3:0]
+        // (a memory source is one float: op3_step clears imm[7:6])
+        0x3A21 => {
+            let mut a = u32s(d);
+            a[(imm >> 4 & 3) as usize] = u32s(s)[(imm >> 6) as usize];
+            for k in 0..4 {
+                if imm >> k & 1 != 0 {
+                    a[k] = 0;
+                }
+            }
+            from_u32s(a)
+        }
+        // DPPS / DPPD: products of the imm[7:4] elements, summed in the SDM's order, to the imm[3:0] elements
+        0x3A40 => {
+            let (a, b) = (f32s(d), f32s(s));
+            let p: [f32; 4] = core::array::from_fn(|i| if imm >> (4 + i) & 1 != 0 { a[i] * b[i] } else { 0.0 });
+            let t = (p[0] + p[1]) + (p[2] + p[3]);
+            from_f32s(core::array::from_fn(|i| if imm >> i & 1 != 0 { t } else { 0.0 }))
+        }
+        0x3A41 => {
+            let (a, b) = (f64s(d), f64s(s));
+            let p: [f64; 2] = core::array::from_fn(|i| if imm >> (4 + i) & 1 != 0 { a[i] * b[i] } else { 0.0 });
+            let t = p[0] + p[1];
+            from_f64s(core::array::from_fn(|i| if imm >> i & 1 != 0 { t } else { 0.0 }))
+        }
+        // MPSADBW: 8 sums of absolute differences of 4 bytes; d from byte 4*imm[2], s block imm[1:0]
+        0x3A42 => {
+            let (a, b) = (u8s(d), u8s(s));
+            let (o1, o2) = (4 * (imm >> 2 & 1) as usize, 4 * (imm & 3) as usize);
+            from_u16s(core::array::from_fn(|i| (0..4).map(|k| (a[o1 + i + k] as i32 - b[o2 + k] as i32).unsigned_abs() as u16).sum()))
         }
         // SHA1NEXTE: s with its top dword + rol(d.top, 30)
         0x38C8 => {
@@ -899,9 +1107,118 @@ pub fn op3(code: u32, d: u128, s: u128, imm: u8, x0: u128) -> u128 {
     }
 }
 
+/// PCMPxSTRx (SSE4.2): compares `a` (xmm1) with `b` (xmm2/m128) of lengths `la`, `lb` in
+/// elements; returns IntRes2 (after polarity). imm: [1:0] format, [3:2] aggregation, [5:4] polarity.
+pub fn pcmpstr(a: u128, b: u128, la: usize, lb: usize, imm: u8) -> u32 {
+    let n = if imm & 1 != 0 { 8 } else { 16 };
+    let el = |v: u128, i: usize| -> i32 {
+        match imm & 3 {
+            0 => (v >> (8 * i)) as u8 as i32,
+            1 => (v >> (16 * i)) as u16 as i32,
+            2 => (v >> (8 * i)) as u8 as i8 as i32,
+            _ => (v >> (16 * i)) as u16 as i16 as i32,
+        }
+    };
+    let mut r1 = 0u32;
+    match imm >> 2 & 3 {
+        // equal any: b[j] is one of a[0..la]
+        0 => {
+            for j in 0..lb {
+                if (0..la).any(|i| el(b, j) == el(a, i)) {
+                    r1 |= 1 << j;
+                }
+            }
+        }
+        // ranges: a[2k] <= b[j] <= a[2k+1] for a pair whose two ends are valid
+        1 => {
+            for j in 0..lb {
+                let v = el(b, j);
+                if (0..la / 2).any(|k| v >= el(a, 2 * k) && v <= el(a, 2 * k + 1)) {
+                    r1 |= 1 << j;
+                }
+            }
+        }
+        // equal each: both invalid = true, one invalid = false
+        2 => {
+            for i in 0..n {
+                let t = if i < la && i < lb { el(a, i) == el(b, i) } else { i >= la && i >= lb };
+                if t {
+                    r1 |= 1 << i;
+                }
+            }
+        }
+        // equal ordered: a (needle) at b[j..]; an invalid a element matches anything,
+        // a valid one against an invalid b element does not
+        _ => {
+            for j in 0..n {
+                let mut t = true;
+                for k in 0..n - j {
+                    if k >= la {
+                        break;
+                    }
+                    if j + k >= lb || el(a, k) != el(b, j + k) {
+                        t = false;
+                        break;
+                    }
+                }
+                if t {
+                    r1 |= 1 << j;
+                }
+            }
+        }
+    }
+    let full = (1u32 << n) - 1;
+    match imm >> 4 & 3 {
+        1 => !r1 & full,
+        3 => r1 ^ ((1u32 << lb) - 1),
+        _ => r1,
+    }
+}
+
+/// Elements before the first zero one (n when there is none): implicit length of PCMPIxxx.
+fn str_len(v: u128, words: bool) -> usize {
+    if words {
+        u16s(v).iter().position(|&x| x == 0).unwrap_or(8)
+    } else {
+        u8s(v).iter().position(|&x| x == 0).unwrap_or(16)
+    }
+}
+
+/// CRC32 (SSE4.2): CRC-32C (Castagnoli, reflected) of the `bytes` low bytes of `v`, from `crc`.
+pub fn crc32c(mut crc: u32, v: u64, bytes: u32) -> u32 {
+    for i in 0..bytes {
+        crc ^= (v >> (8 * i)) as u8 as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0x82F6_3B78 } else { crc >> 1 };
+        }
+    }
+    crc
+}
+
 /// Interpreter: 0F 38 / 0F 3A (`op2` = the 38/3A byte, already read).
 pub fn op3_step(e: &mut Engine, d: &mut Dec, buf: &[u8; 16], rip: u64, rex: u8, p66: bool, rep: u8, op2: u8) {
     let code = (op2 as u32) << 8 | d.u8() as u32;
+    let w = rex & 8 != 0;
+    // CRC32 r32/r64, r/m8 (F0) or r/m16/32/64 (F1)
+    if rep == 0xF2 && matches!(code, 0x38F0 | 0x38F1) {
+        let m = modrm(d, e, rex);
+        let next = rip + d.p as u64;
+        let size = if code == 0x38F0 {
+            8
+        } else if w {
+            64
+        } else if p66 {
+            16
+        } else {
+            32
+        };
+        let Ok(v) = e.get(crate::cpu::rm_loc(e, &m, next, size, rex), size) else { return };
+        let r = m.reg as usize;
+        let c = crc32c(e.cpu.regs[r] as u32, v, size / 8);
+        e.cpu.regs[r] = c as u64;
+        e.cpu.rip = next;
+        return;
+    }
     if rep != 0 || !op3_ok(code, p66) {
         e.unsupported(buf);
         return;
@@ -909,9 +1226,113 @@ pub fn op3_step(e: &mut Engine, d: &mut Dec, buf: &[u8; 16], rip: u64, rex: u8, 
     let m = modrm(d, e, rex);
     let imm = if op2 == 0x3A { d.u8() } else { 0 };
     let next = rip + d.p as u64;
-    let Ok(s) = e.xsrc(&m, next, 16) else { return };
     let r = m.reg as usize;
-    e.cpu.xmm[r] = op3(code, e.cpu.xmm[r], s, imm, e.cpu.xmm[0]);
+    let x = e.cpu.xmm[r];
+    match code {
+        // PEXTRB / PEXTRW / PEXTRD / PEXTRQ / EXTRACTPS r/m, xmm, imm
+        0x3A14..=0x3A17 => {
+            let (size, v) = match code {
+                0x3A14 => (8, u8s(x)[(imm & 15) as usize] as u64),
+                0x3A15 => (16, u16s(x)[(imm & 7) as usize] as u64),
+                0x3A16 if w => (64, u64s(x)[(imm & 1) as usize]),
+                _ => (32, u32s(x)[(imm & 3) as usize] as u64),
+            };
+            let res = if m.md == 3 {
+                e.set(Loc::Reg(m.rm, false), if size == 64 { 64 } else { 32 }, v)
+            } else {
+                let a = ea(e, &m, next);
+                e.set(Loc::Mem(a), size, v)
+            };
+            if res.is_err() {
+                return;
+            }
+        }
+        // PINSRB / PINSRD / PINSRQ xmm, r/m, imm
+        0x3A20 | 0x3A22 => {
+            let size = if code == 0x3A20 {
+                8
+            } else if w {
+                64
+            } else {
+                32
+            };
+            let l = if m.md == 3 { Loc::Reg(m.rm, false) } else { Loc::Mem(ea(e, &m, next)) };
+            let Ok(v) = e.get(l, size) else { return };
+            e.cpu.xmm[r] = match size {
+                8 => {
+                    let mut a = u8s(x);
+                    a[(imm & 15) as usize] = v as u8;
+                    from_u8s(a)
+                }
+                32 => {
+                    let mut a = u32s(x);
+                    a[(imm & 3) as usize] = v as u32;
+                    from_u32s(a)
+                }
+                _ => {
+                    let mut a = u64s(x);
+                    a[(imm & 1) as usize] = v;
+                    from_u64s(a)
+                }
+            };
+        }
+        // PTEST: ZF = (d & s) == 0, CF = (s & !d) == 0, the other flags 0
+        0x3817 => {
+            let Ok(s) = e.xsrc(&m, next, 16) else { return };
+            e.materialize();
+            let c = &mut e.cpu;
+            c.zf = x & s == 0;
+            c.cf = s & !x == 0;
+            c.of = false;
+            c.sf = false;
+            c.pf = false;
+        }
+        // PCMPESTRM / PCMPESTRI / PCMPISTRM / PCMPISTRI
+        0x3A60..=0x3A63 => {
+            let Ok(s) = e.xsrc(&m, next, 16) else { return };
+            let words = imm & 1 != 0;
+            let n: usize = if words { 8 } else { 16 };
+            let (la, lb) = if code < 0x3A62 {
+                let len = |v: u64| -> usize {
+                    let v = if w { v as i64 } else { v as u32 as i32 as i64 };
+                    v.unsigned_abs().min(n as u64) as usize
+                };
+                (len(e.cpu.regs[0]), len(e.cpu.regs[2]))
+            } else {
+                (str_len(x, words), str_len(s, words))
+            };
+            let r2 = pcmpstr(x, s, la, lb, imm);
+            if code & 1 != 0 {
+                let idx = if r2 == 0 {
+                    n as u32
+                } else if imm & 0x40 != 0 {
+                    31 - r2.leading_zeros()
+                } else {
+                    r2.trailing_zeros()
+                };
+                e.cpu.regs[1] = idx as u64;
+            } else if imm & 0x40 == 0 {
+                e.cpu.xmm[0] = r2 as u128;
+            } else {
+                let bits = if words { 16 } else { 8 };
+                let one = (1u128 << bits) - 1;
+                e.cpu.xmm[0] = (0..n).filter(|&i| r2 >> i & 1 != 0).fold(0u128, |acc, i| acc | one << (bits * i));
+            }
+            e.materialize();
+            let c = &mut e.cpu;
+            c.cf = r2 != 0;
+            c.zf = lb < n;
+            c.sf = la < n;
+            c.of = r2 & 1 != 0;
+            c.pf = false;
+        }
+        _ => {
+            let Ok(s) = e.xsrc(&m, next, op3_src_bytes(code)) else { return };
+            // INSERTPS from memory: the loaded float is element 0
+            let imm = if code == 0x3A21 && m.md != 3 { imm & 0x3F } else { imm };
+            e.cpu.xmm[r] = op3(code, x, s, imm, e.cpu.xmm[0]);
+        }
+    }
     e.cpu.rip = next;
 }
 

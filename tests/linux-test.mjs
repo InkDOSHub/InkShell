@@ -42,6 +42,7 @@ add('x86bmi', fs.readFileSync(new URL('./x86bmi', import.meta.url))); // tests/s
 add('x86pwrite', fs.readFileSync(new URL('./x86pwrite', import.meta.url))); // tests/src/x86pwrite.c, built static in CI (Alpine)
 add('x86sha', fs.readFileSync(new URL('./x86sha', import.meta.url))); // tests/src/x86sha.c, built static in CI (Alpine)
 add('x86ssl', fs.readFileSync(new URL('./x86ssl', import.meta.url))); // tests/src/x86ssl.c, built in CI (Alpine), uses the rootfs libcrypto
+add('x86v2', fs.readFileSync(new URL('./x86v2', import.meta.url))); // tests/src/x86v2.c, built static in CI (Alpine)
 // WebAssembly programs (kernel with wasi_next; the published engine.wasm may be older)
 const wasiHello = new URL('./wasihello.wasm', import.meta.url); // tests/src/wasihello.c, built in CI (wasi-sdk)
 const hasWasi = !!x.wasi_next;
@@ -196,9 +197,14 @@ await step('/root/x86string\n', /x86string ok \d+/, 'rep movs/stos: sizes, align
 await step('/root/x86bmi\n', /x86bmi ok \d+/, 'POPCNT/LZCNT/TZCNT, BMI1, BMI2 (VEX): values, flags, memory operands, CPUID bits');
 // the published engine.wasm may predate SHA in CPUID (then the program says skip)
 await step('/root/x86sha\n', wasmPath === 'engine.wasm' ? /x86sha (ok \d+|skip)/ : /x86sha ok \d+/, 'SHA extensions, PSHUFB/PALIGNR/PBLENDW: model, memory operands, SHA-256/SHA-1 of abc and 1 MB');
-{ // speed (log only): our SHA code vs scalar C, and libcrypto with its SHA-NI path and with it masked
+// the published engine.wasm may predate x86-64-v2 in CPUID (then the program says skip)
+await step('/root/x86v2\n', wasmPath === 'engine.wasm' ? /x86v2 (ok \d+|skip)/ : /x86v2 ok \d+/, 'x86-64-v2: SSE3/SSSE3/SSE4.1/SSE4.2 (PCMPxSTRx, CRC32), CMPXCHG16B, LAHF/SAHF: model, memory operands, flags, CPUID bits');
+{ // speed (log only): our SHA code vs scalar C, and libcrypto (aes, chacha20, sha256, sha1) as is,
+  // with SSSE3 masked (OpenSSL's code before x86-64-v2) and with SHA-NI masked
   const b = out.length;
-  await step('/root/x86sha bench 64; /root/x86ssl 64; OPENSSL_ia32cap=:~0x20000000 /root/x86ssl 64\n', /x86ssl sha1 \(ia32cap mask\)/, 'SHA speed: x86sha bench, libcrypto (x86ssl)');
+  await step('/root/x86sha bench 64; /root/x86ssl 64\n', /x86ssl sha1: /, 'SHA speed: x86sha bench, libcrypto (x86ssl)');
+  await step('OPENSSL_ia32cap=~0x20000000000 /root/x86ssl 64\n', /x86ssl sha1 \(ia32cap ~0x20000000000\)/, 'libcrypto speed with SSSE3 masked');
+  await step('OPENSSL_ia32cap=:~0x20000000 /root/x86ssl 64\n', /x86ssl sha1 \(ia32cap :~0x20000000\)/, 'libcrypto speed with SHA-NI masked');
   console.log(out.slice(b).split(/\r?\n/).filter((l) => /^x86s(sl|ha (bench|skip))/.test(l)).map((l) => '  ' + l).join('\n'));
 }
 await step('/root/stage1 threads\n', /threads 200000/, 'threads, mutex and condition variable (futex)');

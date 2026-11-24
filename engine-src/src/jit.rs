@@ -3237,19 +3237,24 @@ fn bitscan(g: &mut G, i: &Ins, live: bool) -> bool {
     true
 }
 
-/// 0F 38 / 0F 3A ops of sse::op3: PSHUFB, PALIGNR, PBLENDW as wasm SIMD; the SHA ops
-/// through a call to sse::jit_op3 (the block goes on).
+/// 0F 38 / 0F 3A ops of sse::op3: PSHUFB, PALIGNR, PBLENDW as wasm SIMD; the other xmm-only
+/// ops (SHA, SSSE3, SSE4.1/4.2) through a call to sse::jit_op3 (the block goes on). Ops with
+/// flags or general registers (PTEST, PEXTR/PINSR, PCMPxSTRx, CRC32) end the block (interpreter).
 fn op3(g: &mut G, i: &Ins) -> Option<bool> {
     if !matches!(i.op & 0xFFFF00, 0x0F3800 | 0x0F3A00) {
         return None;
     }
     let code = i.op & 0xFFFF;
     let imm = i.imm as u8;
-    if i.rep != 0 || !crate::sse::op3_ok(code, i.p66) || (code == 0x3A0F && imm >= 16) {
+    if i.rep != 0 || !crate::sse::op3_ok(code, i.p66) || (code == 0x3A0F && imm >= 16) || !crate::sse::op3_pure(code) {
         return Some(false);
     }
     let m = i.m.unwrap();
     let mem = m.md != 3;
+    // memory sources narrower than 16 bytes (PMOVSX/ZX, ROUNDSS/SD, INSERTPS): interpreter
+    if mem && crate::sse::op3_src_bytes(code) != 16 {
+        return Some(false);
+    }
     let (r, x) = (m.reg, m.rm);
     if mem {
         g.ea(&m, i.next);
