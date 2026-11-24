@@ -21,6 +21,15 @@ Terminal Alpine Linux no navegador (iPad XeOS principal, iPhone Safari). Motor =
 - Registrar linha no quadro de pontos no mesmo PR.
 - Fase estourou peso → último item da semana vai p/ seguinte.
 
+## Anti-insistência (consumo consciente)
+Gastar só no que tira gargalo e deixa ganho duradouro.
+- **Prova antes**: item de desempenho só começa com medida (bench/perfil) mostrando que ELE é o gargalo. Sem prova → item vira "medir X" (1 pt) primeiro.
+- **Orçamento de rodadas**: cada item tem teto de rodadas de CI = 2 × pontos (1→2, 2→4, 3,5→7). Commit de debug no CI conta como rodada.
+- **Sem ganho = não feito**: CI verde mas bench sem ganho medido → sem merge.
+- **Estourou teto ou sem ganho** → PARAR. Item = `travado`. Nota no ROADMAP: o que tentou, número medido, hipótese de outro gargalo. Pontos gastos entram no quadro como `queimado` (contam no teto igual).
+- **Trocar de frente**: depois de um `travado`, próximo item de OUTRO subsistema (ex.: JIT travou → terminal/WASM/instruções).
+- **Retomar**: `travado` só volta com dado novo (perfil/outro item mudou o cenário) + aval do gerente. 1 retomada; falhou de novo = `descartado`.
+
 ## Ao mudar arquivos servidos
 Bump query string: `engine.wasm?v=`, `worker.js?v=`, `app.js?v=`, `overlay.tar?v=`.
 
