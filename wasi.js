@@ -10,7 +10,8 @@
 // and is used by the code, is found by cwdSlot), "/" is preopened as the real root and the pointer is set
 // to the shell's folder (the "PWD=..." string that environ_get writes in the program's own memory): relative
 // paths follow the shell's folder, absolute paths the real root, os.getcwd() is the shell's folder.
-// Otherwise (no chdir in the module, e.g. jq, rg: wasi-libc then sends "x.txt" and "/x.txt" alike to the "/"
+// The catalog tools (tools/wasm-tools/build.sh) are linked with chdir forced in, so they all take this path.
+// Otherwise (a third-party module without chdir: wasi-libc then sends "x.txt" and "/x.txt" alike to the "/"
 // preopen as "x.txt") each path on the "/" preopen goes to the shell's folder or to the real root (pick):
 // the argument it comes from ("/etc" or "etc") says which, else the side that has its first name.
 // Limits: getcwd() says "/"; a name in both places that no argument names goes to the folder. No sockets.
@@ -66,7 +67,7 @@ export function jsProgram(bytes) {
 
 /** wasi-libc's working-directory pointer (__wasilibc_cwd, initially the address of a "/" string):
  *  { ptr, lit } when exactly one word of the active data segments points at a "/\0" string and that
- *  address is an i32.const in the code; null otherwise (then the module keeps the fallback folders). */
+ *  address is an i32.const in the code (or, when none is, the offset of an "i32.const 0; i32.load"); null otherwise (then the module keeps the fallback folders). */
 export function cwdSlot(b) {
   let p = 8, code = null; const segs = [];
   const leb = () => { let r = 0, s = 0, c; do { c = b[p++]; r += (c & 127) * 2 ** s; s += 7; } while (c & 128); return r; };
@@ -104,6 +105,13 @@ export function cwdSlot(b) {
     let v = 0, k = 0, c;
     do { c = b[i + 1 + k]; v += (c & 127) * 2 ** (7 * k); k++; } while (c & 128 && k < 5);
     if (!(c & 64) && want.has(v)) used.add(want.get(v));
+  }
+  if (!used.size) for (let i = code[0]; i < code[1] - 8; i++) { // newer clang: "i32.const 0; i32.load offset=ptr"
+    if (b[i] !== 0x41 || b[i + 1] !== 0 || b[i + 2] !== 0x28) continue;
+    let j = i + 3, v = 0, k = 0, c;
+    while (b[j++] & 128); // alignment
+    do { c = b[j++]; v += (c & 127) * 2 ** (7 * k); k++; } while (c & 128 && k < 5);
+    if (want.has(v)) used.add(want.get(v));
   }
   return used.size === 1 ? [...used][0] : null;
 }

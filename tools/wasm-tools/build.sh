@@ -20,7 +20,10 @@ EMU="-D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_MM
 EMUL="-lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-mman -lwasi-emulated-getpid"
 EH="-fwasm-exceptions -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false" # C++ exceptions and setjmp/longjmp: standard wasm exception handling
 SJLJ="-mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false" # setjmp/longjmp in C (libpng, ImageMagick), link -lsetjmp
-STACK="-Wl,-z,stack-size=8388608"
+# wasi-libc links its working-directory support (__wasilibc_cwd, cwd-relative path lookup) only when the program
+# references chdir/getcwd; force it so every tool resolves relative paths against the cwd that wasi.js sets
+CWDL="-Wl,--undefined=chdir"
+STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
 SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1
@@ -178,6 +181,7 @@ b_rg() { # ripgrep (Rust, wasm32-wasip1): one thread (WASI has none), no PCRE2
   fetch BurntSushi/ripgrep $RG ripgrep
   rustup target add wasm32-wasip1
   (cd "$WORK/ripgrep" && env -u CC -u CXX -u AR -u RANLIB -u NM -u STRIP CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=true \
+    CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS="-C link-arg=--undefined=chdir" \
     cargo build --release --locked --target wasm32-wasip1)
   cp "$WORK/ripgrep/target/wasm32-wasip1/release/rg.wasm" "$OUT/rg.wasm"
 }
