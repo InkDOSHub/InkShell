@@ -46,6 +46,7 @@ const LZ_SHR: u32 = 7;
 const LZ_SAR: u32 = 8;
 const LZ_ADC: u32 = 9;
 const LZ_SBB: u32 = 10;
+const LZ_SHRD: u32 = 11;
 
 #[derive(Clone)]
 pub struct Jit {
@@ -427,6 +428,7 @@ fn flag_use(i: &Ins) -> (bool, bool) {
         0xF6 | 0xF7 => (false, sub != 2),
         0xFE | 0xFF if sub < 2 => (true, true),
         0xC0 | 0xC1 | 0xD0 | 0xD1 => (sub < 4 || i.imm & 31 == 0 && i.op < 0xD0, true),
+        0x0FA4 | 0x0FAC => (i.imm & 31 == 0, true),
         0x0FAF | 0x69 | 0x6B | 0x0F2E | 0x0F2F | 0x0FB8 => (false, true),
         0x0F10..=0x0F17 | 0x0F28..=0x0F2D | 0x0F50..=0x0F7F | 0x0FC2 | 0x0FC6 | 0x0FD0..=0x0FFF => (false, false),
         0x50..=0x5F
@@ -1814,8 +1816,13 @@ fn native(g: &mut G, i: &Ins, live: bool, n: u32) -> bool {
             if cl {
                 // count from cl; a zero count keeps the flags: when they are live, the lazy
                 // flags of the shift are stored only for a nonzero count (rotates: dead flags only)
-                if size < 32 || sub == 2 || sub == 3 || sub == 6 || (live && sub < 4) {
+                if size < 32 || sub == 2 || sub == 3 || sub == 6 {
                     return false;
+                }
+                let rot = sub < 2;
+                if rot && live {
+                    // rotates keep ZF/SF/PF: make the flags exact first, then set CF/OF
+                    g.exact_flags();
                 }
                 let r = rm(g, size);
                 let a = g.val(r, size);
@@ -1864,7 +1871,15 @@ fn native(g: &mut G, i: &Ins, live: bool, n: u32) -> bool {
                 }
                 g.set(res);
                 g.opd_put(r, size, res);
-                if live {
+                if rot && live {
+                    g.get(c);
+                    g.b(I64EQZ);
+                    g.b(I32EQZ);
+                    g.if_hint(VOID, true);
+                    g.rot_flags(sub, size, res);
+                    g.b(END);
+                    g.flags_direct();
+                } else if live {
                     g.spill_flags();
                     g.get(c);
                     g.b(I64EQZ);
@@ -1887,8 +1902,12 @@ fn native(g: &mut G, i: &Ins, live: bool, n: u32) -> bool {
             if sub == 2 || sub == 3 {
                 return false;
             }
-            if (sub == 0 || sub == 1) && (live || size < 32) {
+            if (sub == 0 || sub == 1) && size < 32 {
                 return false;
+            }
+            let rot_live = sub < 2 && live;
+            if rot_live {
+                g.exact_flags();
             }
             let r = rm(g, size);
             let a = g.val(r, size);
@@ -1946,6 +1965,71 @@ fn native(g: &mut G, i: &Ins, live: bool, n: u32) -> bool {
                 g.i64c(cnt as u64);
                 g.set(b);
                 g.set_prod(kind, size, a, b, res);
+            } else if rot_live {
+                g.rot_flags(sub, size, res);
+                g.flags_direct();
+            }
+        }
+        0x0FA4 | 0x0FA5 | 0x0FAC | 0x0FAD => {
+            // shld / shrd: CF = last bit shifted out of the destination (lazy SHL / SHRD kinds)
+            let mm = m.unwrap();
+            let cl = i.op & 1 == 1;
+            let left = i.op < 0x0FAC;
+            let size = osz;
+            let cmask: u64 = if size == 64 { 63 } else { 31 };
+            // 16 bits with a count above 16 is undefined: the interpreter's result stays the reference
+            if size == 16 && (cl || i.imm & 31 > 16) {
+                return false;
+            }
+            let cnt = i.imm & cmask;
+            if !cl && cnt == 0 {
+                return true;
+            }
+            let r = rm(g, size);
+            let a = g.val(r, size);
+            let b = g.val(Opd::Reg(mm.reg, false), size);
+            let c = g.tmp();
+            if cl {
+                g.rd_reg(1, false, 64);
+                g.i64c(cmask);
+                g.b(I64AND);
+            } else {
+                g.i64c(cnt);
+            }
+            g.set(c);
+            let res = g.tmp();
+            g.get(a);
+            g.get(c);
+            g.b(if left { I64SHL } else { I64SHRU });
+            g.get(b);
+            g.i64c(size as u64);
+            g.get(c);
+            g.b(I64SUB);
+            g.b(if left { I64SHRU } else { I64SHL });
+            g.b(I64OR);
+            g.mask(size);
+            if cl && size == 64 {
+                // a zero count keeps the destination (wasm shifts by 64 = by 0)
+                g.set(res);
+                g.get(a);
+                g.get(res);
+                g.get(c);
+                g.b(I64EQZ);
+                g.b(SELECT);
+            }
+            g.set(res);
+            g.opd_put(r, size, res);
+            let kind = if left { LZ_SHL } else { LZ_SHRD };
+            if !cl {
+                g.set_prod(kind, size, a, c, res);
+            } else if live {
+                g.spill_flags();
+                g.get(c);
+                g.b(I64EQZ);
+                g.b(I32EQZ);
+                g.if_hint(VOID, true);
+                g.store_lazy(kind, size, a, c, res, NONE);
+                g.b(END);
             }
         }
         0xF6 | 0xF7 => {
@@ -2268,6 +2352,46 @@ impl G {
     fn st_flag(&mut self, off: u32) {
         let a = self.cpu + off;
         self.mem(I32STORE8, 0, a);
+    }
+    /// Makes the cpu flag fields exact (lazy producer stored and materialized).
+    fn exact_flags(&mut self) {
+        self.spill_flags();
+        self.i32c(0);
+        self.call(F_COND);
+        self.b(DROP);
+    }
+    /// CF/OF of rol (sub 0) / ror (sub 1) from the result (other flags kept).
+    fn rot_flags(&mut self, sub: u8, size: u32, res: u32) {
+        let top = size as u64 - 1;
+        self.st_base();
+        self.get(res);
+        if sub == 1 {
+            self.i64c(top);
+            self.b(I64SHRU);
+        }
+        self.b(I32WRAP);
+        self.i32c(1);
+        self.b(I32AND);
+        self.st_flag(off!(cf));
+        // rol: msb ^ lsb; ror: msb ^ (msb - 1)
+        self.st_base();
+        self.get(res);
+        self.get(res);
+        if sub == 0 {
+            self.i64c(top);
+            self.b(I64SHRU);
+            self.b(I64XOR);
+        } else {
+            self.i64c(1);
+            self.b(I64SHL);
+            self.b(I64XOR);
+            self.i64c(top);
+            self.b(I64SHRU);
+        }
+        self.b(I32WRAP);
+        self.i32c(1);
+        self.b(I32AND);
+        self.st_flag(off!(of));
     }
     /// Flags now live in the cpu fields (no lazy producer).
     fn flags_direct(&mut self) {

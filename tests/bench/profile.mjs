@@ -1,6 +1,7 @@
 // Profile of cpubench on the engine (built with --features ophist), per section: where instructions run
 // (JIT code vs interpreter), how JIT blocks end, dispatcher lookups, compiles, top interpreted opcodes.
-// usage: PROFILE_JSON=prof.json node tests/bench-engine.mjs ophist.wasm cpubench=... -- sh /root/bench.sh cpu
+// usage: PROFILE_JSON=prof.json node tests/bench-engine.mjs ophist.wasm cpubench=... -- sh /root/bench.sh cpu io 16
+// (the io section adds the sha256sum of a 16 MB file: busybox x86 hashing)
 //        node tests/bench/profile.mjs prof.json > profile.md
 import fs from 'node:fs';
 const snaps = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
@@ -15,13 +16,21 @@ const NAMES = {
   0x12e: 'ucomisd', 0x12f: 'comisd', 0x131: 'rdtsc', 0x140: 'cmovcc', 0x157: 'xorps', 0x158: 'addsd', 0x159: 'mulsd', 0x15c: 'subsd',
   0x15e: 'divsd', 0x16e: 'movd', 0x16f: 'movdqa/u', 0x17e: 'movd/movq st', 0x17f: 'movdqa st', 0x174: 'pcmpeqb', 0x184: 'je near',
   0x185: 'jne near', 0x1af: 'imul r,r/m', 0x1b6: 'movzx 8', 0x1b7: 'movzx 16', 0x1bc: 'bsf/tzcnt', 0x1bd: 'bsr', 0x1be: 'movsx 8',
-  0x1d7: 'pmovmskb', 0x1ef: 'pxor', 0x1a2: 'cpuid',
+  0x1d7: 'pmovmskb', 0x1ef: 'pxor', 0x1a2: 'cpuid', 0x1a4: 'shld imm', 0x1a5: 'shld cl', 0x1ac: 'shrd imm', 0x1ad: 'shrd cl', 0x1c8: 'bswap',
 };
 const op = (k) => `${k >= 0x100 ? '0f ' + (k - 0x100).toString(16).padStart(2, '0') : k.toString(16).padStart(2, '0')}${NAMES[k] ? ' ' + NAMES[k] : ''}`;
 const base = snaps.findIndex((s) => s.line.startsWith('@@T begin:cpu'));
 const secs = [];
 let prev = snaps[Math.max(base, 0)];
 for (const s of snaps.slice(base + 1)) {
+  // io sections of bench.sh (run after cpu): from "@@T begin:io-sha256-N" to its end marker
+  if (/^@@T begin:io-sha256-/.test(s.line)) { prev = s; continue; }
+  const e = s.line.match(/^@@T end:(io-sha256-\d+)/);
+  if (e) {
+    secs.push({ name: e[1], ms: s.ms - prev.ms, d: s.c.ctr.map((v, i) => v - prev.c.ctr[i]), o: s.c.op.map((v, i) => v - prev.c.op[i]) });
+    prev = s;
+    continue;
+  }
   const m = s.line.match(/^(int|calls|sort|string|float)\s+([\d.]+) ms/);
   if (!m) continue;
   const d = s.c.ctr.map((v, i) => v - prev.c.ctr[i]), o = s.c.op.map((v, i) => v - prev.c.op[i]);
