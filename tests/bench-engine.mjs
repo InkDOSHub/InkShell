@@ -18,6 +18,9 @@ const t0 = performance.now();
 let peakRss = 0, done = false;
 // PROFILE_JSON=FILE (engine built with --features ophist): counters after each output line, for tests/bench/profile.mjs
 const PROF = process.env.PROFILE_JSON, prof = [];
+// INKSOC_WASI_PROFILE=1: phases of each WebAssembly program (read, compile, instantiate, WASI calls), to
+// WASI_PROFILE_JSON (default wasiprof.json), for tests/bench/wasiprof.mjs; off = nothing is loaded
+const WP = process.env.INKSOC_WASI_PROFILE === '1' ? await import('./bench/wasiprof-hook.mjs') : null;
 const snap = () => ({ ctr: Array.from({ length: 32 }, (_, i) => x.prof_ctr(i)), op: Array.from({ length: 512 }, (_, i) => x.ophist(i)) });
 const mb = (b) => (b / 1048576).toFixed(0);
 function emit(s) {
@@ -59,9 +62,14 @@ x.linux_winsize(30, 100);
 let st = 0;
 try {
   for (let idle = 0; !done && performance.now() - t0 < LIMIT;) {
+    const ts = performance.now();
     st = x.run(2000000);
+    const slice = performance.now() - ts;
     // WebAssembly (WASI) programs run here, in the engine's thread, as in tests/linux-test.mjs
-    if (x.wasi_next) for (let pid; (pid = x.wasi_next());) runWasi(x, pid);
+    if (x.wasi_next) for (let pid; (pid = x.wasi_next());) {
+      if (!WP) { runWasi(x, pid); continue; }
+      WP.begin(x, pid, slice); WP.end(runWasi(WP.wrap(x), pid));
+    }
     peakRss = Math.max(peakRss, process.memoryUsage().rss);
     if (st === 1 || st === 2) break;
     if (st === 3) { const ms = x.stat(17); if (ms >= 30 && !(x.linux_timer_ms?.() >= 0) && ++idle > 200) break; await new Promise((r) => setTimeout(r, Math.min(ms, 30) || 2)); } else idle = 0;
@@ -71,5 +79,6 @@ if (line) emit('\n');
 if (st === 2) console.log(`${(performance.now() - t0).toFixed(1)}\t@@ERR engine stopped: ${dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()))}`);
 if (!done && performance.now() - t0 >= LIMIT) console.log(`${(performance.now() - t0).toFixed(1)}\t@@ERR time limit ${LIMIT} ms`);
 if (PROF) fs.writeFileSync(PROF, JSON.stringify(prof));
+if (WP) fs.writeFileSync(process.env.WASI_PROFILE_JSON || 'wasiprof.json', JSON.stringify(WP.data(t0)));
 console.log(`@@MEM wasm=${mb(mem.buffer.byteLength)} rss=${mb(peakRss)}`);
 process.exit(done ? 0 : 1);
