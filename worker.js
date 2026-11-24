@@ -147,7 +147,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   };
   const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(u + ': ' + r.status); return r; });
   const [wasm, busybox, overlay, saved] = await Promise.all([
-    get('engine.wasm?v=30').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
+    get('engine.wasm?v=31').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
     get('overlay.tar?v=15').then((r) => r.arrayBuffer()), loadSaved()]);
   let rootfs = null;
   if (!saved) {
@@ -309,6 +309,24 @@ onmessage = async (ev) => {
     if (r && r.size > PIECE / 4) { postMessage({ type: 'file', path: d.path, data: await readAll(d.path), to: d.to }); return; } // in pieces, never whole
     const data = lx ? lx.get(d.path) : null; postMessage({ type: 'file', path: d.path, data, to: d.to }, data ? [data.buffer] : []); return;
   }
+  if (d.type === 'mwrite') { // the changed ranges of a big mounted file into an OPFS file the page handed over (sync access: no copy of the file)
+    let n = 0, err = null;
+    try {
+      const h = await d.fh.createSyncAccessHandle();
+      try {
+        for (const [a, len] of d.ranges) for (let off = a; off < a + len;) {
+          const r = await readRange(d.path, off, Math.min(PIECE, a + len - off));
+          if (!r || !r.data) throw new Error('Linux did not give the file');
+          if (!r.data.length) break;
+          h.write(r.data, { at: off }); off += r.data.length; n += r.data.length;
+        }
+        if ((await h.getSize()) !== d.size) await h.truncate(d.size);
+        await h.flush();
+      } finally { await h.close(); }
+    } catch (er) { err = String((er && er.message) || er); }
+    postMessage({ type: 'range', id: d.id, n, err });
+    return;
+  }
   if (d.type === 'range') { const data = await readRange(d.path, d.off, d.len); postMessage({ type: 'range', id: d.id, size: data ? data.size : -1, data: data ? data.data.buffer : null }, data ? [data.data.buffer] : []); return; }
   if (d.type === 'rm') { // the Files view: only your own files (home, /root, /tmp, mounted folders), never the system
     if (!lx) return;
@@ -440,7 +458,7 @@ function scan(root) {
   const m = new Map();
   for (const ln of lx.text(x.linux_mount_scan()).split('\n')) {
     const f = ln.split('\t');
-    if (f[0] === 'D') m.set(f[1], 'D'); else if (f[0] === 'F') m.set(f[1], { size: +f[2], changed: f[3] === '1' });
+    if (f[0] === 'D') m.set(f[1], 'D'); else if (f[0] === 'F') m.set(f[1], { size: +f[2], changed: f[3] === '1', parts: f[4] });
   }
   return m;
 }
@@ -459,7 +477,11 @@ function syncMounts() {
         const i = gone.findIndex((g) => prev.get(g) !== 'D' && prev.get(g).size === v.size);
         if (i >= 0) { ops.push({ op: 'move', from: gone[i], path: p }); gone.splice(i, 1); continue; }
       }
-      if (v.size > PIECE / 4) { ops.push({ op: 'wbig', path: p, size: v.size }); loaded(p, v.size); continue; } // the page pulls it in pieces
+      if (v.parts && v.parts !== '*') { // a big mounted file changed in places: only those byte ranges go back (and the size)
+        const ranges = v.parts === '-' ? [] : v.parts.split(',').map((r) => r.split('+').map(Number));
+        ops.push({ op: 'wpart', path: p, size: v.size, ranges }); loaded(p, v.size); continue;
+      }
+      if (v.size > PIECE / 4 || v.parts) { ops.push({ op: 'wbig', path: p, size: v.size }); loaded(p, v.size); continue; } // the page pulls it in pieces
       const data = lx.get(p);
       if (data) { ops.push({ op: 'write', path: p, data: data.buffer }); buf.push(data.buffer); loaded(p, data.length); }
     }
