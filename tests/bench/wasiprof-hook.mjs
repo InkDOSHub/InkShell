@@ -21,8 +21,16 @@ function Instance(m, imp = {}, ...r) {
   // the module came from wasi.js's cache (no new WebAssembly.Module): compile time 0
   if (p.compileMs == null) { p.setupEng = p.engMs; p.compileMs = 0; p.tCompile = now(); p.modCached = true; }
   for (const [k, f] of Object.entries(w)) {
+    const io = k === 'fd_read' || k === 'fd_write' || k === 'fd_pread' || k === 'fd_pwrite';
     wrapped[k] = (...a) => {
       const c = (calls[k] ??= { n: 0, ms: 0, eng: 0, sys: 0 });
+      // big files: bytes asked per read/write call (sum of the iovecs), and node's RSS now and then
+      if (io && p.inst?.exports?.memory) {
+        const d = new DataView(p.inst.exports.memory.buffer); let len = 0;
+        for (let i = 0; i < a[2]; i++) len += d.getUint32(a[1] + 8 * i + 4, true);
+        c.bytes = (c.bytes || 0) + len; c.max = Math.max(c.max || 0, len);
+      }
+      if ((++p.nCalls & 15) === 0) p.rssMax = Math.max(p.rssMax, process.memoryUsage.rss());
       const e0 = p.engMs, s0 = p.sysN, t = now(), prev = fn; fn = k;
       try { return f(...a); } finally { fn = prev; c.n++; c.ms += now() - t; c.eng += p.engMs - e0; c.sys += p.sysN - s0; }
     };
@@ -55,7 +63,7 @@ export function wrap(x) {
 export function begin(x, pid, pickMs) {
   let args = [];
   try { const k = x.wasi_info(pid); args = parseInfo(new Uint8Array(x.memory.buffer, x.out_ptr(), k).slice()).args; } catch {}
-  cur = { pid, args, pickMs, nStats: cwdStats.length, tStart: now(), readMs: null, bytes: 0, compileMs: null, instMs: null, engMs: 0, runs: 0, sysN: 0, setupSys: 0, setupEng: 0, sys: {}, calls: {} };
+  cur = { pid, args, pickMs, nStats: cwdStats.length, tStart: now(), readMs: null, bytes: 0, compileMs: null, instMs: null, engMs: 0, runs: 0, sysN: 0, nCalls: 0, rssMax: process.memoryUsage.rss(), setupSys: 0, setupEng: 0, sys: {}, calls: {} };
   fn = 'setup';
 }
 export function end(code) {
@@ -65,6 +73,7 @@ export function end(code) {
   const s = cwdStats[cwdStats.length - 1];
   if (s && cwdStats.length > p.nStats) { p.slotMs = s.ms; p.slotHit = s.hit; }
   if (p.inst?.exports?.memory) p.mem1 = p.inst.exports.memory.buffer.byteLength;
+  p.rss1 = process.memoryUsage.rss(); p.rssMax = Math.max(p.rssMax, p.rss1); p.maxRss = process.resourceUsage().maxRSS * 1024;
   delete p.inst;
   progs.push(p);
 }

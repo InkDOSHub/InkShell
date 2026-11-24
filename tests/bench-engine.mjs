@@ -2,7 +2,7 @@
 // usage: node tests/bench-engine.mjs ENGINE.wasm [NAME=FILE ...] -- sh /root/bench.sh cpu py
 // NAME=FILE puts FILE at /root/NAME; a NAME ending in .tar is unpacked at / (extra packages).
 // WebAssembly (WASI) programs the script starts run through ../wasi.js (runWasi).
-// Output: "MS<TAB>line<TAB>wasmMB" per line (format of tests/bench/stamp.mjs plus memory),
+// Output: "MS<TAB>line<TAB>wasmMB<TAB>swapMB" per line (format of tests/bench/stamp.mjs plus memory),
 // then "@@MEM wasm=MB rss=MB" with the peaks. Exit 0 when the script printed "@@T done".
 import fs from 'node:fs';
 import zlib from 'node:zlib';
@@ -28,7 +28,7 @@ function emit(s) {
   line += s;
   for (let k; (k = line.indexOf('\n')) >= 0; line = line.slice(k + 1)) {
     const l = line.slice(0, k).replace(/\r/g, '');
-    console.log(`${(performance.now() - t0).toFixed(1)}\t${l}\t${mb(mem.buffer.byteLength)}`);
+    console.log(`${(performance.now() - t0).toFixed(1)}\t${l}\t${mb(mem.buffer.byteLength)}\t${mb(sw.chunks.size * 65536)}`);
     if (l === '@@T done') done = true;
     if (PROF && x.prof_ctr) prof.push({ line: l, ms: performance.now() - t0, c: snap() });
   }
