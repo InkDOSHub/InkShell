@@ -29,6 +29,7 @@ pub struct Cpu {
     pub lz_b: u64,
     pub lz_r: u64,
     pub jit_limit: u64, // JIT loops stop when icount reaches this
+    pub jit_l1: u32,    // address of the dispatcher's block cache (set before every JIT call; chained exits read it)
     // x87 stack (as f64), top index, control and status words
     pub fpu: [crate::f80::F80; 8],
     pub ftop: u8,
@@ -61,6 +62,7 @@ impl Cpu {
             lz_b: 0,
             lz_r: 0,
             jit_limit: 0,
+            jit_l1: 0,
             fpu: [crate::f80::F80::ZERO; 8],
             ftop: 0,
             fcw: 0x37F,

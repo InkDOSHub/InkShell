@@ -13,7 +13,7 @@ const argv = process.argv.slice(2), sep = argv.indexOf('--');
 const wasmPath = argv[0], files = argv.slice(1, sep), cmd = argv.slice(sep + 1).join(' ');
 const POOL = +(process.env.POOL_MB || 512), LIMIT = +(process.env.LIMIT_MS || 1800000);
 const dec = new TextDecoder(), enc = new TextEncoder();
-let mem, x, out = '', line = '';
+let mem, x, out = '', line = '', jitErr = 0;
 const sw = swapStore(() => mem); // the page's OPFS swap file, in memory here
 const t0 = performance.now();
 let peakRss = 0, done = false;
@@ -43,13 +43,15 @@ const env = {
   host_jit: (p, n) => {
     try {
       const m = new WebAssembly.Module(new Uint8Array(mem.buffer, p, n).slice());
-      const i = new WebAssembly.Instance(m, { env: { memory: mem, rd: x.jit_rd, wr: x.jit_wr, step: x.jit_step, cond: x.jit_cond } });
+      const i = new WebAssembly.Instance(m, { env: { memory: mem, rd: x.jit_rd, wr: x.jit_wr, step: x.jit_step, cond: x.jit_cond, table: x.__indirect_function_table } });
       const t = x.__indirect_function_table, k = t.grow(1); t.set(k, i.exports.f); return k;
-    } catch (e) { return -1; }
+    } catch (e) { if (!jitErr) { jitErr = 1; console.error('host_jit: ' + e.message); } return -1; }
   },
 };
 x = (await WebAssembly.instantiate(fs.readFileSync(wasmPath), { env })).instance.exports;
 mem = x.memory;
+// wasm tail calls: JIT blocks chain to the next block (INKSOC_CHAIN=0 = off, A/B)
+if (x.set_jit_chain) x.set_jit_chain(process.env.INKSOC_CHAIN !== '0' && WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 4, 4, 1, 112, 0, 0, 10, 9, 1, 7, 0, 65, 0, 19, 0, 0, 11])) ? 1 : 0);
 const put = (b) => { const p = x.buffer(b.length); new Uint8Array(mem.buffer, p, b.length).set(b); };
 const add = (name, data) => { const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 1 + d.length); b.set(nm); b.set(d, nm.length + 1); put(b); x.add_file(); };
 x.init(POOL, 8192);
