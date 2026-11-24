@@ -11,7 +11,7 @@ Foco: terminal Linux sólido e rápido no WebKit. Ferramenta com WASM roda diret
 | 2 | Kernel roda .wasm WASI (arquivos, pipes, tty, /mnt) | 2 | 3,5 | feito (#17 + fatia 2: página c/ Worker + service worker, engine.wasm no CI; caminho relativo segue a pasta do shell desde item 3 fatia 3) | .wasm roda no shell c/ pipe e redirect |
 | 3 | Catálogo WASM + `apk add` consulta catálogo + loja ☰ (python3, coreutils, sqlite, ripgrep, jq, lua, zip/unzip) | 3 | 3,5 | feito (fatia 1 catálogo #21; fatia 2 python3 + bench #22; fatia 3 loja ☰ + caminho relativo). Sobra: catálogo só python3/ruby (coreutils, sqlite, ripgrep, jq, lua, zip/unzip sem build WASI pronto/licença conferida); `/` dentro de programa WASI mostra a pasta do shell e getcwd() diz `/`; loja sem barra de % do download | python3 abre em WASM; bench bem > x86 |
 | 4 | Disco Linux no OPFS em blocos; /mnt por File.slice; cache c/ descarte | 4 | 3,5 | feito (fatia 1 #24: arquivo > 1 MB em blocos no swap OPFS, tar salvo em pedaços, pico wasm 2768 → 672 MB; fatia 2: extents de 64 KB = 1 chamada ao host por 16 blocos (host_swap_readv/writev), cache 4 MB c/ escrita sequencial saindo na hora, cp/ln compartilham extents (copy-on-write), boot lê o tar salvo em pedaços de 4 MB direto p/ blocos, `put` sobre arquivo em blocos devolve os blocos. Bench 1 GB (x nativo): cópia 4,4x → 0,0x (9 ms), criar 3,5x → 0,1x, zip 6,8x; pico wasm 655 MB. Sobra: /mnt ainda lê o arquivo inteiro (File.slice em pedaços), mmap de arquivo grande copia) | copiar+zipar 1 GB no CI sem estourar memória |
-| 5 | ffmpeg, 7z, qpdf, imagemagick WASM (sem GPL) | 5 | 2 | aberto | cada um roda WASM + teste curto |
+| 5 | ffmpeg, 7z, qpdf, imagemagick WASM (sem GPL) | 5 | 2 | feito (#28: wasm-tools.yml compila c/ wasi-sdk-33 e publica release wasm-tools-2; catálogo 7zip (7zz 24.08 sem unRAR, LGPL+BSD), qpdf 11.9.1 (Apache), imagemagick 7.1.1 (PNG/JPEG), ffmpeg+ffprobe 5.1.9 LGPL só codecs internos. Sobra: ffmpeg ≥6 precisa threads (WASI p1 não tem); sem x264/fontes; 1 thread; exceções wasm exnref = Safari ≥18.4) | cada um roda WASM + teste curto |
 | 6 | inkvideo (WebCodecs H.264/HEVC) | 6 | 2 | aberto | 1080p no iPhone em tempo real |
 
 Item grande (3,5) pode ser fatiado pelo worker em sub-PRs; somar pontos por fatia.
@@ -46,7 +46,9 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-23 | 1 | 3 fatia 3: loja ☰ + caminho relativo | #23 | 1 |
 | 2026-11-23 | 1 | 4 fatia 1: arquivo grande em blocos (swap OPFS) + cache + tar em pedaços | #24 | 2 |
 | 2026-11-23 | 1 | 4 fatia 2: extents 64 KB (I/O em lote), restaurar tar em pedaços sem RAM, cp copy-on-write, vazamento do put | #25 | 1,5 |
+| 2026-11-23 | 1 | 5: ferramentas WASM (7zip, qpdf, imagemagick, ffmpeg/ffprobe) (extra Paulo) | #28 | 2 |
 | 2026-11-23 | 1 | x86 call/ret no JIT (extra Paulo) | #26 | 2 |
+| 2026-11-23 | 1 | x86 rep movs/stos (extra Paulo) | #27 | 1 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
