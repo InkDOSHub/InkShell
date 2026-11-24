@@ -30,22 +30,31 @@ install_one() {
   echo "($1) WebAssembly build, $lic, $((${size:-0} / 1048576)) MB"
   mkdir -p "$(dirname "$main")" "$DB" || return 1
   tmp="$main.apk-new"
-  rm -f "$tmp"
-  case "$url" in
-    file://*) cp "${url#file://}" "$tmp" & ;;
-    /*) cp "$url" "$tmp" & ;;
-    *) wget -q -O "$tmp" "$url" & ;;
-  esac
-  pid=$!
-  # progress while it downloads: "NAME: 12/25 MB 48%", one line updated with \r (on a terminal,
-  # or for the page's Store, which sets INKSOC_PROGRESS and shows a bar)
-  show=; { [ -t 2 ] || [ -n "$INKSOC_PROGRESS" ]; } && show=1
-  while kill -0 "$pid" 2>/dev/null; do
-    [ -n "$show" ] && progress "$1" "$(stat -c %s "$tmp" 2>/dev/null || echo 0)" "${size:-0}"
-    sleep 1
-  done
-  wait "$pid" || { [ -n "$show" ] && echo >&2; rm -f "$tmp"; echo "ERROR: $1: download failed: $url" >&2; return 1; }
-  [ -n "$show" ] && { progress "$1" "$(stat -c %s "$tmp" 2>/dev/null || echo 0)" "${size:-0}"; echo >&2; }
+  rm -f "$tmp" "$tmp.fail"
+  fetch() {
+    case "$url" in
+      file://*) cat "${url#file://}" ;;
+      /*) cat "$url" ;;
+      *) wget -q -O - "$url" ;;
+    esac || : > "$tmp.fail"
+  }
+  # progress while it downloads: "NAME: 12/25 MB 48%", one line updated with \r, on a terminal or
+  # for the page's Store (inksoc-store sets INKSOC_PROGRESS; the page shows a bar). The data goes
+  # through dd a piece at a time straight into the file (no sleeping poll).
+  if [ -t 2 ] || [ -n "$INKSOC_PROGRESS" ]; then
+    : > "$tmp"; n=-1
+    fetch | while :; do
+      dd bs=65536 count=32 2>/dev/null >> "$tmp" || { : > "$tmp.fail"; break; }
+      m=$(stat -c %s "$tmp" 2>/dev/null || echo 0)
+      progress "$1" "$m" "${size:-0}"
+      [ "$m" = "$n" ] && break
+      n=$m
+    done
+    echo >&2
+  else
+    fetch > "$tmp"
+  fi
+  if [ -e "$tmp.fail" ]; then rm -f "$tmp" "$tmp.fail"; echo "ERROR: $1: download failed: $url" >&2; return 1; fi
   got=$(sha256sum "$tmp" | cut -d' ' -f1)
   [ "$got" = "$sum" ] || { rm -f "$tmp"; echo "ERROR: $1: checksum mismatch ($got)" >&2; return 1; }
   chmod 755 "$tmp" && mv -f "$tmp" "$main" || return 1
