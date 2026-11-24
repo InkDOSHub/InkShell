@@ -108,9 +108,38 @@ export function cwdSlot(b) {
   return used.size === 1 ? [...used][0] : null;
 }
 
+/** A key for the module's content (length + two 32-bit hashes of all of it; a few ms for python's 26 MB). */
+export function moduleKey(b) {
+  let h1 = 0x811c9dc5, h2 = 0x9e3779b9, i = 0;
+  if (b.byteOffset % 4 === 0) {
+    const w = new Uint32Array(b.buffer, b.byteOffset, b.length >>> 2);
+    for (; i < w.length; i++) {
+      const v = w[i];
+      h1 = Math.imul(h1 ^ v, 0x01000193); h1 = h1 << 13 | h1 >>> 19;
+      h2 = Math.imul(h2 + v | 0, 0x85ebca6b); h2 ^= h2 >>> 15;
+    }
+    i *= 4;
+  }
+  for (; i < b.length; i++) { h1 = Math.imul(h1 ^ b[i], 0x01000193); h2 = Math.imul(h2 + b[i] | 0, 0x85ebca6b) ^ h2 >>> 15; }
+  return b.length + ':' + (h1 >>> 0).toString(16) + ':' + (h2 >>> 0).toString(16);
+}
+/** cwdSlot results by moduleKey: the search (~135 ms for python3) runs once per module in this thread.
+ *  On the page each program has a new Worker, so app.js keeps the results and hands them over (slots, onSlot). */
+const slotCache = new Map();
+/** Each lookup: { hit, ms } (ms = key + search), for tests and benches. */
+export const cwdStats = [];
+function slotOf(bytes, slots, onSlot) {
+  const t = performance.now(), key = moduleKey(bytes), hit = slots.has(key);
+  const s = hit ? slots.get(key) : cwdSlot(bytes);
+  if (!hit) { slots.set(key, s); if (onSlot) onSlot(key, s); }
+  cwdStats.push({ hit, ms: performance.now() - t });
+  if (cwdStats.length > 64) cwdStats.shift();
+  return s && { ptr: s.ptr, lit: s.lit };
+}
+
 /** Runs a WASI module whose calls go through `sys(nr, args, data, outLen) -> { r, out }`
  *  (a Linux call of the stub process; throws Exit when the process is gone). */
-export function runModule({ bytes, args, envs, base: BASE, size: SIZE, sys, inline = false }) {
+export function runModule({ bytes, args, envs, base: BASE, size: SIZE, sys, inline = false, slots = slotCache, onSlot }) {
   const prog = jsProgram(bytes);
   if (prog) { // its exit code (a Promise of it when it works asynchronously, as WebCodecs does)
     const end = (c) => { try { sys(231, [c]); } catch {} return c; };
@@ -129,7 +158,7 @@ export function runModule({ bytes, args, envs, base: BASE, size: SIZE, sys, inli
   try {
     const { r, out } = sys(79, [BASE, 4096], null, 4096);
     const cwd = r > 1 ? dec.decode(out.subarray(0, r - 1)) : '/';
-    slot = cwd !== '/' ? cwdSlot(bytes) : null;
+    slot = cwd !== '/' ? slotOf(bytes, slots, onSlot) : null;
     if (slot) { // real root at "/", the shell's folder becomes wasi-libc's cwd (see environ_get)
       envs = [...envs.filter((e) => !e.startsWith('PWD=')), 'PWD=' + cwd];
       slot.at = envs.slice(0, -1).reduce((n, e) => n + enc.encode(e).length + 1, 4);
