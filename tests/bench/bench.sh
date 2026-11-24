@@ -1,6 +1,6 @@
 #!/bin/sh
 # Terminal benchmark: the same script runs natively (Ubuntu runner) and in Alpine on the engine.
-# usage: sh bench.sh cpu | py | io MB   (several sections allowed)
+# usage: sh bench.sh cpu | py | pystart | io MB   (several sections allowed)
 # Prints "@@T begin:NAME" / "@@T end:NAME" markers; the host stamps the time of each line.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 H=$(cd "$(dirname "$0")" && pwd)
@@ -15,6 +15,11 @@ while [ $# -gt 0 ]; do
     py)
       m begin:py-start; python3 -c pass; m end:py-start
       m begin:py-bench; python3 "$H/pybench.py"; m end:py-bench ;;
+    pystart) # python3 start, twice each (1st = cold): plain, without site (-S), isolated (-I)
+      for v in c S I; do
+        case $v in c) o= ;; *) o=-$v ;; esac
+        for i in 1 2; do m begin:ps-$v-$i; python3 $o -c pass; m end:ps-$v-$i; done
+      done ;;
     io)
       mb=$2; shift
       # 1 MB block: half random, half zeros (compresses about 2:1), doubled up to the size
