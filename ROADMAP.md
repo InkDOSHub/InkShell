@@ -16,7 +16,7 @@ Foco: terminal Linux sólido e rápido no WebKit. Ferramenta com WASM roda diret
 | 7 | x86: rep movs/stos | x86 | 1 | em andamento (#27: string 11x → 4,3x nativo; falta CI verde) | CI verde + bench string melhor |
 | 8 | x86: BMI/POPCNT/LZCNT | x86 | 2 | aberto | instruções testadas no CI |
 | 9 | Bench x86 no CI (perfil: onde o tempo vai) | x86 | 1 | aberto | PR mostra perfil por bloco/instrução |
-| 10 | x86: call/ret rápido no JIT | x86 | 2 | travado (#26, 2 queimado: região c/ ret/jmp indireto e registradores residentes sem ganho, calls 28–31x antes e depois; hipótese: gargalo fora do call/ret, ex. dispatcher/flags. Retomar só c/ perfil do item 9) | calls ≤ ~5x nativo |
+| 10 | x86: call/ret rápido no JIT | x86 | 2 | travado (#26, 6 queimado: região c/ ret/jmp indireto e registradores residentes sem ganho, calls 28–31x antes e depois; hipótese: gargalo fora do call/ret, ex. dispatcher/flags. Retomar só c/ perfil do item 9) | calls ≤ ~5x nativo |
 | 11 | x86: SSE/x87 no JIT | x86 | 3,5 | aberto (precisa prova do item 9) | bench float melhor |
 
 Ordem após item 7: 6 → 8 → 9 → pacotes catálogo → 11 → 10 (regra anti-insistência no CLAUDE.md).
@@ -54,7 +54,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-23 | 1 | 4 fatia 1: arquivo grande em blocos (swap OPFS) + cache + tar em pedaços | #24 | 2 |
 | 2026-11-23 | 1 | 4 fatia 2: extents 64 KB (I/O em lote), restaurar tar em pedaços sem RAM, cp copy-on-write, vazamento do put | #25 | 1,5 |
 | 2026-11-23 | 1 | 5: ferramentas WASM (7zip, qpdf, imagemagick, ffmpeg/ffprobe) (extra Paulo) | #28 | 2 |
-| 2026-11-23 | 1 | 10: x86 call/ret sem ganho (travado) | #26 | 2 (queimado) |
+| 2026-11-23 | 1 | 10: x86 call/ret sem ganho (travado; insistência ~6 pts reais) | #26 | 6 (queimado) |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
