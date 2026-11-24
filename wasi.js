@@ -10,7 +10,8 @@
 // and is used by the code, is found by cwdSlot), "/" is preopened as the real root and the pointer is set
 // to the shell's folder (the "PWD=..." string that environ_get writes in the program's own memory): relative
 // paths follow the shell's folder, absolute paths the real root, os.getcwd() is the shell's folder.
-// Otherwise (no chdir in the module, e.g. jq, rg: wasi-libc then sends "x.txt" and "/x.txt" alike to the "/"
+// The catalog tools (tools/wasm-tools/build.sh) are linked with chdir forced in, so they all take this path.
+// Otherwise (a third-party module without chdir: wasi-libc then sends "x.txt" and "/x.txt" alike to the "/"
 // preopen as "x.txt") each path on the "/" preopen goes to the shell's folder or to the real root (pick):
 // the argument it comes from ("/etc" or "etc") says which, else the side that has its first name.
 // Limits: getcwd() says "/"; a name in both places that no argument names goes to the folder. No sockets.
