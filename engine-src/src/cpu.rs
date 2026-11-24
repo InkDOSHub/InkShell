@@ -16,6 +16,7 @@ pub struct Cpu {
     pub df: bool,
     pub icount: u64,
     pub xmm: [u128; 16],
+    pub xs: u128, // memory source of a SIMD op the JIT runs through sse::jit_op3
     pub gs_base: u64,
     pub fs_base: u64,
     pub seg: u64, // segment base of the current instruction (fs:/gs: prefix)
@@ -49,6 +50,7 @@ impl Cpu {
             df: false,
             icount: 0,
             xmm: [0; 16],
+            xs: 0,
             gs_base: 0,
             fs_base: 0,
             seg: 0,
@@ -1447,6 +1449,7 @@ fn two_byte(e: &mut Engine, d: &mut Dec, buf: &[u8; 16], rip: u64, rex: u8, osz:
         return;
     }
     match op {
+        0x38 | 0x3A => crate::sse::op3_step(e, d, buf, rip, rex, p66, rep, op),
         0x1F => {
             let m = modrm(d, e, rex);
             let _ = m;
@@ -1699,8 +1702,8 @@ fn two_byte(e: &mut Engine, d: &mut Dec, buf: &[u8; 16], rip: u64, rex: u8, osz:
             let (a, b, c, dd): (u32, u32, u32, u32) = match leaf {
                 0 => (7, 0x206B_6E49, 0x2020_2020, 0x2043_6F53), // "Ink " "SoC " "    " (ebx, ecx, edx below)
                 1 => (0x0006_06A0, 0, 1 << 23, (1 << 0) | (1 << 4) | (1 << 8) | (1 << 15) | (1 << 24) | (1 << 25) | (1 << 26)),
-                // leaf 7 subleaf 0: EBX bit 3 = BMI1, bit 8 = BMI2
-                7 if e.cpu.regs[1] as u32 == 0 => (0, (1 << 3) | (1 << 8), 0, 0),
+                // leaf 7 subleaf 0: EBX bit 3 = BMI1, bit 8 = BMI2, bit 29 = SHA (sse::op3)
+                7 if e.cpu.regs[1] as u32 == 0 => (0, (1 << 3) | (1 << 8) | (1 << 29), 0, 0),
                 0x8000_0000 => (0x8000_0001, 0, 0, 0),
                 0x8000_0001 => (0, 0, 1 << 5, (1 << 11) | (1 << 20) | (1 << 29)),
                 _ => (0, 0, 0, 0),

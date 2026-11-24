@@ -221,6 +221,11 @@ pub extern "C" fn jit_step(next: u64) -> u32 {
 #[no_mangle]
 pub extern "C" fn jit_cond(cc: u32) -> u32 {
     let e = crate::eng();
+    // codes with bit 31: a SIMD op run in Rust (sse::op3_pack), so block modules keep 4 imports
+    if cc >> 31 != 0 {
+        crate::sse::jit_op3(e, cc);
+        return 0;
+    }
     e.materialize();
     e.cond(cc as u8) as u32
 }
@@ -431,6 +436,7 @@ fn flag_use(i: &Ins) -> (bool, bool) {
         0x0FA4 | 0x0FAC => (i.imm & 31 == 0, true),
         0x0FAF | 0x69 | 0x6B | 0x0F2E | 0x0F2F | 0x0FB8 => (false, true),
         0x0F10..=0x0F17 | 0x0F28..=0x0F2D | 0x0F50..=0x0F7F | 0x0FC2 | 0x0FC6 | 0x0FD0..=0x0FFF => (false, false),
+        0x0F3800 | 0x0F3A0E | 0x0F3A0F | 0x0F38C8..=0x0F38CD | 0x0F3ACC => (false, false),
         0x50..=0x5F
         | 0x63
         | 0x68
@@ -1495,6 +1501,9 @@ fn native(g: &mut G, i: &Ins, live: bool, n: u32) -> bool {
         return false;
     }
     if let Some(ok) = sse(g, i) {
+        return ok;
+    }
+    if let Some(ok) = op3(g, i) {
         return ok;
     }
     if i.op == 0x0FB8 && i.rep == 0xF3 {
@@ -3226,6 +3235,76 @@ fn bitscan(g: &mut G, i: &Ins, live: bool) -> bool {
         g.flags_direct();
     }
     true
+}
+
+/// 0F 38 / 0F 3A ops of sse::op3: PSHUFB, PALIGNR, PBLENDW as wasm SIMD; the SHA ops
+/// through a call to sse::jit_op3 (the block goes on).
+fn op3(g: &mut G, i: &Ins) -> Option<bool> {
+    if !matches!(i.op & 0xFFFF00, 0x0F3800 | 0x0F3A00) {
+        return None;
+    }
+    let code = i.op & 0xFFFF;
+    let imm = i.imm as u8;
+    if i.rep != 0 || !crate::sse::op3_ok(code, i.p66) || (code == 0x3A0F && imm >= 16) {
+        return Some(false);
+    }
+    let m = i.m.unwrap();
+    let mem = m.md != 3;
+    let (r, x) = (m.reg, m.rm);
+    if mem {
+        g.ea(&m, i.next);
+        g.set(L_A);
+    }
+    let src = |g: &mut G| if mem { g.load128(L_A) } else { g.x_ld(x) };
+    match code {
+        // PSHUFB = swizzle with indexes & 0x8F (bit 7 set: out of range, 0)
+        0x3800 => {
+            g.st_base();
+            g.x_ld(r);
+            src(g);
+            g.vconst([0x8F; 16]);
+            g.simd(0x4E);
+            g.simd(0x0E);
+            g.x_st(r);
+        }
+        // PALIGNR (imm < 16) = shuffle of src:dst from byte imm; PBLENDW = shuffle of dst/src words
+        0x3A0F | 0x3A0E => {
+            let l: [u8; 16] = core::array::from_fn(|j| {
+                if code == 0x3A0F {
+                    j as u8 + imm
+                } else if imm >> (j / 2) & 1 != 0 {
+                    16 + j as u8
+                } else {
+                    j as u8
+                }
+            });
+            g.st_base();
+            if code == 0x3A0F {
+                src(g);
+                g.x_ld(r);
+            } else {
+                g.x_ld(r);
+                src(g);
+            }
+            g.simd(0x0D);
+            g.bs(&l);
+            g.x_st(r);
+        }
+        _ => {
+            if mem {
+                let xs = g.cpu + off!(xs);
+                g.st_base();
+                g.load128(L_A);
+                g.simd(0x0B);
+                g.u(0);
+                g.u(xs as u64);
+            }
+            g.i32c(crate::sse::op3_pack(code, mem, imm, r, x) as i32);
+            g.call(F_COND);
+            g.b(DROP);
+        }
+    }
+    Some(true)
 }
 
 /// MOVS/STOS (64-bit addresses). Without REP: one element natively, the step from DF.
