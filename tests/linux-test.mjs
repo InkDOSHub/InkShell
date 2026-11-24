@@ -275,7 +275,7 @@ if (hasWasi) {
     await step('echo \'{"a":[1,2,3],"b":"hi"}\' | jq -cM \'{n: (.a | add), b, k: (keys | length)}\'; echo \'[{"x":1},{"x":5}]\' | jq -r \'map(.x * 2) | @csv\'; echo \'{\' | jq . > /dev/null 2>&1; echo jq-rc=$?\n',
       /^\{"n":6,"b":"hi","k":2\}\s+^2,10\s+^jq-rc=[1-9]/m, 'jq: filter JSON from a pipe, @csv; bad JSON exits non-zero');
     // no chdir in jq: "/tmp/x.json" is the real /tmp, "tmp/y.json" the shell's folder (which has its own tmp)
-    await step("printf '{\"k\":7}' > /tmp/x.json && mkdir -p /tmp/jqd/tmp && printf '{\"k\":1}' > /tmp/jqd/tmp/y.json && cd /tmp/jqd && jq -c .k /tmp/x.json tmp/y.json; cd /tmp && jq -c .k x.json; cd /etc && jq -c .k /tmp/x.json; echo jq-cwd-done; cd\n",
+    await step("printf '{\"k\":7}' > /tmp/x.json && mkdir -p /tmp/jqd/tmp && printf '{\"k\":1}' > /tmp/jqd/tmp/y.json && cd /tmp/jqd && jq -cM .k /tmp/x.json tmp/y.json; cd /tmp && jq -cM .k x.json; cd /etc && jq -cM .k /tmp/x.json; echo jq-cwd-done; cd\n",
       /^7\s+^1\s+^7\s+^7\s+^jq-cwd-done/m, 'jq: absolute path is the real root, relative path the shell folder (even a name that is also a top-level folder)');
   }
   if (hasTool('ripgrep')) { // ripgrep: count, line number, list files of a folder, no match exits 1, stdin with "-"
