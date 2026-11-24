@@ -3137,6 +3137,17 @@ pub extern "C" fn wasi_module(pid: u32) -> u32 {
     match l.fs.get(&path) { Some(Node::File(d)) => { let d = d.all(&mut l.bc, &mut e.mmu); crate::set_out(d) } _ => 0 }
 }
 
+/// The version of the module file of WebAssembly process `pid` (lxdata Data::gen: new at each change
+/// of the file; 0 = none, for a small file kept in memory): the page keeps the compiled module by it.
+#[no_mangle]
+pub extern "C" fn wasi_module_gen(pid: u32) -> f64 {
+    let _g = crate::lock::lock();
+    let Some(l) = crate::eng().s.lx.as_mut() else { return 0.0 };
+    let Some(w) = l.wasi.get(&pid) else { return 0.0 };
+    let path = String::from_utf8_lossy(&w.info[..w.info.iter().position(|&c| c == 0).unwrap_or(w.info.len())]).into_owned();
+    match l.fs.get(&path) { Some(Node::File(d)) => d.gen() as f64, _ => 0.0 }
+}
+
 /// Address of the stub's data buffer (call arguments point into it) and its size.
 #[no_mangle]
 pub extern "C" fn wasi_base() -> f64 { WBUF as f64 }

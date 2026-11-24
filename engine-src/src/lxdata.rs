@@ -23,8 +23,13 @@ pub enum Data {
     Mem(Vec<u8>),
     /// `ext[j] = (first slot, written blocks)` holds bytes [j*EXT, (j+1)*EXT); a block whose bit
     /// is clear reads as zeros, and so do bytes past `len`.
-    Blk { len: u64, ext: Vec<(u32, u16)> },
+    /// `gen`: a number no other content of a file in blocks had (new at each change): the page keeps
+    /// a program's compiled WebAssembly module by it (wasi_module_gen).
+    Blk { len: u64, ext: Vec<(u32, u16)>, gen: u64 },
 }
+
+static GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+fn next_gen() -> u64 { GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) }
 
 impl From<Vec<u8>> for Data {
     fn from(v: Vec<u8>) -> Self { Data::Mem(v) }
@@ -113,10 +118,13 @@ impl Cache {
 
 impl Data {
     /// An empty file that keeps its bytes in blocks from the start (a big file being unpacked).
-    pub fn new_blk() -> Data { Data::Blk { len: 0, ext: Vec::new() } }
+    pub fn new_blk() -> Data { Data::Blk { len: 0, ext: Vec::new(), gen: next_gen() } }
     pub fn len(&self) -> u64 { match self { Data::Mem(v) => v.len() as u64, Data::Blk { len, .. } => *len } }
     pub fn is_empty(&self) -> bool { self.len() == 0 }
     pub fn is_blk(&self) -> bool { matches!(self, Data::Blk { .. }) }
+    /// The version of a file in blocks (0 for one in memory, which has none).
+    pub fn gen(&self) -> u64 { match self { Data::Blk { gen, .. } => *gen, Data::Mem(_) => 0 } }
+    fn touch(&mut self) { if let Data::Blk { gen, .. } = self { *gen = next_gen(); } }
     /// The bytes of a file kept in memory (empty for one in blocks): for small system files.
     pub fn mem(&self) -> &[u8] { match self { Data::Mem(v) => v, Data::Blk { .. } => &[] } }
 
@@ -163,6 +171,7 @@ impl Data {
         }
         self.spill(m);
         if end > self.len() { self.resize(c, m, end); }
+        self.touch();
         let Data::Blk { ext, .. } = self else { unreachable!() };
         let mut o = 0;
         while o < d.len() {
@@ -188,7 +197,8 @@ impl Data {
     pub fn resize(&mut self, c: &mut Cache, m: &mut Mmu, n: u64) {
         if let Data::Mem(v) = self { if n <= BIG { v.resize(n as usize, 0); return; } }
         self.spill(m);
-        let Data::Blk { len, ext } = self else { unreachable!() };
+        self.touch();
+        let Data::Blk { len, ext, .. } = self else { unreachable!() };
         let want = n.div_ceil(EXT as u64) as usize;
         while ext.len() > want { let (s, _) = ext.pop().unwrap(); if s != NONE { c.unref(m, s); } }
         if n < *len && n % EXT as u64 != 0 {
@@ -218,7 +228,7 @@ impl Data {
             if ch.len() == EXT { m.slot_writev(s, ch); } else { b.fill(0); b[..ch.len()].copy_from_slice(ch); m.slot_writev(s, &b); }
             ext.push((s, bits(0, ch.len().div_ceil(BLK))));
         }
-        *self = Data::Blk { len: v.len() as u64, ext };
+        *self = Data::Blk { len: v.len() as u64, ext, gen: next_gen() };
     }
 
     /// Empties the file (its blocks go back to the swap).
@@ -231,9 +241,9 @@ impl Data {
     pub fn dup(&self, c: &mut Cache, _m: &mut Mmu) -> Data {
         match self {
             Data::Mem(v) => Data::Mem(v.clone()),
-            Data::Blk { len, ext } => {
+            Data::Blk { len, ext, .. } => {
                 for &(s, _) in ext.iter() { if s != NONE { c.share(s); } }
-                Data::Blk { len: *len, ext: ext.clone() }
+                Data::Blk { len: *len, ext: ext.clone(), gen: next_gen() }
             }
         }
     }
@@ -241,7 +251,7 @@ impl Data {
     /// The extents holding bytes [off, off+n) when they can be shared: a file in blocks, `off` at
     /// the start of an extent, and `n` whole extents or reaching the end of the file.
     pub fn extents(&self, off: u64, n: u64) -> Option<Vec<(u32, u16)>> {
-        let Data::Blk { len, ext } = self else { return None };
+        let Data::Blk { len, ext, .. } = self else { return None };
         if n == 0 || off % EXT as u64 != 0 || off + n > *len || (n % EXT as u64 != 0 && off + n != *len) { return None; }
         let j = (off / EXT as u64) as usize;
         Some(ext[j..j + n.div_ceil(EXT as u64) as usize].to_vec())
@@ -252,6 +262,7 @@ impl Data {
         if at % EXT as u64 != 0 || (n % EXT as u64 != 0 && at + n < self.len()) { return false; }
         self.spill(m);
         if at + n > self.len() { self.resize(c, m, at + n); }
+        self.touch();
         let Data::Blk { ext, .. } = self else { unreachable!() };
         let j = (at / EXT as u64) as usize;
         for (i, &e) in src.iter().enumerate() {

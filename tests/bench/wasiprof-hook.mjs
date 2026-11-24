@@ -18,6 +18,8 @@ function Instance(m, imp = {}, ...r) {
   const w = imp.wasi_snapshot_preview1 || imp.wasi_unstable;
   if (!cur || !w || cur.instMs != null) return new I(m, imp, ...r);
   const p = cur, calls = p.calls, wrapped = {};
+  // the module came from wasi.js's cache (no new WebAssembly.Module): compile time 0
+  if (p.compileMs == null) { p.setupEng = p.engMs; p.compileMs = 0; p.tCompile = now(); p.modCached = true; }
   for (const [k, f] of Object.entries(w)) {
     wrapped[k] = (...a) => {
       const c = (calls[k] ??= { n: 0, ms: 0, eng: 0, sys: 0 });
@@ -37,8 +39,10 @@ WebAssembly.Module = Module; WebAssembly.Instance = Instance;
 
 /** The engine exports as runWasi should see them while a program runs (a copy: the exports object
  *  is frozen, so a Proxy may not hand out other functions). */
+const wraps = new WeakMap(); // one wrapper per engine: wasi.js keys its caches by the engine object
 export function wrap(x) {
-  const o = { ...x };
+  if (wraps.has(x)) return wraps.get(x);
+  const o = { ...x }; wraps.set(x, o);
   o.run = (n) => { const a = now(); try { return x.run(n); } finally { if (cur) { cur.engMs += now() - a; cur.runs++; } } };
   o.wasi_module = (pid) => { const a = now(); const n = x.wasi_module(pid); if (cur) { cur.bytes = n; cur.readMs = now() - a; } return n; };
   o.wasi_call = (pid, nr, ...a) => {

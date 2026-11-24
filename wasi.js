@@ -26,7 +26,7 @@ export class Exit { constructor(code) { this.code = code; } }
 export function parseInfo(bytes) {
   const parts = new TextDecoder().decode(bytes).split('\0');
   const sep = parts.indexOf('', 1);
-  return { args: parts.slice(1, sep), envs: parts.slice(sep + 1).filter((s) => s) };
+  return { path: parts[0], args: parts.slice(1, sep), envs: parts.slice(sep + 1).filter((s) => s) };
 }
 
 /** Runs WebAssembly process `pid` (from x.wasi_next()) to its end inside the engine's own thread;
@@ -34,8 +34,9 @@ export function parseInfo(bytes) {
 export function runWasi(x, pid, opts = {}) {
   const emem = () => new Uint8Array(x.memory.buffer);
   const k = x.wasi_info(pid);
-  const { args, envs } = parseInfo(emem().slice(x.out_ptr(), x.out_ptr() + k));
+  const { path, args, envs } = parseInfo(emem().slice(x.out_ptr(), x.out_ptr() + k));
   const bytes = (() => { const n = x.wasi_module(pid); return emem().slice(x.out_ptr(), x.out_ptr() + n); })();
+  const key = genKey(x, pid, path, bytes.length);
   // one Linux call of the stub: data goes to BASE first, `outLen` bytes come back
   function sys(nr, a = [], data, outLen = 0) {
     const d = data || new Uint8Array(0);
@@ -52,7 +53,7 @@ export function runWasi(x, pid, opts = {}) {
     const out = n > 0 ? emem().slice(x.out_ptr(), x.out_ptr() + n) : null;
     return { r: x.wasi_ret(), out };
   }
-  return runModule({ bytes, args, envs, base: x.wasi_base(), size: x.wasi_buf_size(), sys, inline: true });
+  return runModule({ bytes, key, args, envs, base: x.wasi_base(), size: x.wasi_buf_size(), sys, inline: true });
 }
 
 /** JS programs: a module that is only a custom section "inkshell.js" whose content names the program
@@ -123,13 +124,31 @@ export function moduleKey(b) {
   for (; i < b.length; i++) { h1 = Math.imul(h1 ^ b[i], 0x01000193); h2 = Math.imul(h2 + b[i] | 0, 0x85ebca6b) ^ h2 >>> 15; }
   return b.length + ':' + (h1 >>> 0).toString(16) + ':' + (h2 >>> 0).toString(16);
 }
+/** A cheap key for the module file of process `pid`: the kernel's version of the file (wasi_module_gen,
+ *  new at each change of it) with this engine's id, path and length; null when the file has none (a
+ *  small file kept in memory, or an engine without the export): then moduleKey (a hash) is used. */
+const engIds = new WeakMap();
+export function genKey(x, pid, path, len, id) {
+  const g = typeof x.wasi_module_gen === 'function' ? x.wasi_module_gen(pid) : 0;
+  if (!g) return null;
+  if (id == null) { if (!engIds.has(x)) engIds.set(x, Math.random().toString(36).slice(2)); id = engIds.get(x); }
+  return id + ':' + g + ':' + len + ':' + path;
+}
+/** Compiled modules by key (genKey): a program run again is not compiled again (V8/JSC also keep the
+ *  functions compiled lazily by the earlier runs). A few only: each holds the module's machine code. */
+const modCache = new Map();
+const MODS = 4;
+export function cacheModule(cache, key, mod) {
+  cache.delete(key); cache.set(key, mod);
+  while (cache.size > MODS) cache.delete(cache.keys().next().value);
+}
 /** cwdSlot results by moduleKey: the search (~135 ms for python3) runs once per module in this thread.
  *  On the page each program has a new Worker, so app.js keeps the results and hands them over (slots, onSlot). */
 const slotCache = new Map();
 /** Each lookup: { hit, ms } (ms = key + search), for tests and benches. */
 export const cwdStats = [];
-function slotOf(bytes, slots, onSlot) {
-  const t = performance.now(), key = moduleKey(bytes), hit = slots.has(key);
+function slotOf(bytes, slots, onSlot, k) {
+  const t = performance.now(), key = k || moduleKey(bytes), hit = slots.has(key);
   const s = hit ? slots.get(key) : cwdSlot(bytes);
   if (!hit) { slots.set(key, s); if (onSlot) onSlot(key, s); }
   cwdStats.push({ hit, ms: performance.now() - t });
@@ -139,7 +158,7 @@ function slotOf(bytes, slots, onSlot) {
 
 /** Runs a WASI module whose calls go through `sys(nr, args, data, outLen) -> { r, out }`
  *  (a Linux call of the stub process; throws Exit when the process is gone). */
-export function runModule({ bytes, args, envs, base: BASE, size: SIZE, sys, inline = false, slots = slotCache, onSlot }) {
+export function runModule({ bytes, key = null, module = null, args, envs, base: BASE, size: SIZE, sys, inline = false, slots = slotCache, onSlot, mods = modCache, onModule }) {
   const prog = jsProgram(bytes);
   if (prog) { // its exit code (a Promise of it when it works asynchronously, as WebCodecs does)
     const end = (c) => { try { sys(231, [c]); } catch {} return c; };
@@ -158,7 +177,7 @@ export function runModule({ bytes, args, envs, base: BASE, size: SIZE, sys, inli
   try {
     const { r, out } = sys(79, [BASE, 4096], null, 4096);
     const cwd = r > 1 ? dec.decode(out.subarray(0, r - 1)) : '/';
-    slot = cwd !== '/' ? slotOf(bytes, slots, onSlot) : null;
+    slot = cwd !== '/' ? slotOf(bytes, slots, onSlot, key) : null;
     if (slot) { // real root at "/", the shell's folder becomes wasi-libc's cwd (see environ_get)
       envs = [...envs.filter((e) => !e.startsWith('PWD=')), 'PWD=' + cwd];
       slot.at = envs.slice(0, -1).reduce((n, e) => n + enc.encode(e).length + 1, 4);
@@ -358,7 +377,9 @@ export function runModule({ bytes, args, envs, base: BASE, size: SIZE, sys, inli
   };
   let code = 0;
   try {
-    const mod = new WebAssembly.Module(bytes);
+    let mod = module || (key && mods.get(key));
+    if (!mod) { mod = new WebAssembly.Module(bytes); if (key) { cacheModule(mods, key, mod); if (onModule) onModule(key, mod); } }
+    else if (key) cacheModule(mods, key, mod);
     const imports = { wasi_snapshot_preview1: w, wasi_unstable: w };
     for (const i of WebAssembly.Module.imports(mod)) if (!imports[i.module]) imports[i.module] = {};
     inst = new WebAssembly.Instance(mod, imports);
