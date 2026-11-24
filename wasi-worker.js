@@ -1,9 +1,10 @@
 /* One WebAssembly (WASI) program of the terminal, in its own Worker (started by app.js when the engine
    lists it). Each WASI call is a synchronous request through the service worker (sw.js) to the engine's
-   worker, which makes it a Linux call of the program's process: the engine keeps running meanwhile. */
-import { runModule, parseInfo, pack, unpack, Exit } from './wasi.js?v=3';
+   worker, which makes it a Linux call of the program's process: the engine keeps running meanwhile.
+   A JS program (wasi.js jsProgram: inkvideo, which uses this Worker's WebCodecs) may end asynchronously. */
+import { runModule, parseInfo, pack, unpack, Exit } from './wasi.js?v=4';
 
-onmessage = (ev) => {
+onmessage = async (ev) => {
   const { pid, sid, info, bytes, base, size } = ev.data;
   const { args, envs } = parseInfo(info);
   const url = new URL('__wasi?s=' + encodeURIComponent(sid), self.location).href;
@@ -21,6 +22,6 @@ onmessage = (ev) => {
     if (r.h.gone) throw new Exit(-1);
     return { r: r.h.r, out: r.out };
   };
-  const code = runModule({ bytes, args, envs, base, size, sys });
+  const code = await runModule({ bytes, args, envs, base, size, sys });
   postMessage({ type: 'done', pid, code });
 };

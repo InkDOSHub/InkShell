@@ -1,0 +1,23 @@
+#!/bin/sh
+# inkvideo: decode / transcode video with the page's WebCodecs (H.264/HEVC by the device's hardware).
+# The work is done by /usr/local/libexec/inkvideo-webcodecs (runs as JS in the page: inkvideo.js).
+# Exit 69 = no WebCodecs here (node, an old browser): then ffmpeg (software, slower) where it can.
+/usr/local/libexec/inkvideo-webcodecs "$@"
+rc=$?
+[ "$rc" -eq 69 ] || exit "$rc"
+ff=$(command -v ffmpeg)
+case "$1" in
+info)
+  echo "WebCodecs: no"
+  if [ -n "$ff" ]; then echo "fallback: ffmpeg (software decode; no H.264/HEVC encoder)"; else echo "fallback: none (sudo apk add ffmpeg)"; fi
+  exit 69 ;;
+decode)
+  [ -n "$ff" ] || { echo "inkvideo: no fallback: sudo apk add ffmpeg (software decode)" >&2; exit 69; }
+  [ -n "$2" ] || { echo "usage: inkvideo decode IN [OUT.y4m]" >&2; exit 2; }
+  echo "inkvideo: using ffmpeg (software, slower)" >&2
+  if [ -n "$3" ]; then exec "$ff" -nostdin -hide_banner -loglevel error -y -i "$2" -pix_fmt yuv420p -f yuv4mpegpipe "$3"; fi
+  exec "$ff" -nostdin -hide_banner -loglevel error -stats -i "$2" -f null - ;;
+*)
+  echo "inkvideo: '$1' needs WebCodecs (open the terminal in Safari 16.4+ or Chrome 94+); ffmpeg here has no H.264/HEVC encoder" >&2
+  exit 69 ;;
+esac

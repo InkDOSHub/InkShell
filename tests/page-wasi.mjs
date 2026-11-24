@@ -50,6 +50,19 @@ try {
   check(await until(/back-5/, 30000), 'Ctrl+C ends a waiting WebAssembly program');
   await p.waitForTimeout(1000);
   check(await p.evaluate(() => wasiWorkers.size) === 0, 'its Worker is gone');
+  // inkvideo: the page's WebCodecs in the program's Worker (Chromium here: software codecs, maybe no H.264)
+  await send('inkvideo info; echo iv1-rc=$?\r');
+  check(await until(/WebCodecs: yes[\s\S]*H\.264 1080p: decode (hw|sw|no), encode (hw|sw|no)[\s\S]*AV1 1080p[\s\S]*iv1-rc=0/, 60000), 'inkvideo info: WebCodecs and codecs');
+  await send('inkvideo selftest /tmp/st.bin; echo iv2-rc=$?\r');
+  check(await until(/selftest \S+: encoded \d+, decoded 30\/30[\s\S]*iv2-rc=0/, 60000), 'inkvideo selftest: encode + decode 30 frames');
+  const stc = ((await text()).match(/selftest (\S+): encoded/) || [])[1] || '';
+  console.log('inkvideo selftest codec: ' + stc);
+  if (/^(avc1|hvc1)/.test(stc)) {
+    await send('inkvideo decode /tmp/st.bin /tmp/st.y4m; echo iv3-rc=$?; head -c 9 /tmp/st.y4m; echo; stat -c iv3-%s /tmp/st.y4m\r');
+    check(await until(/decoded 30 frames 320x240[\s\S]*iv3-rc=0\s+YUV4MPEG2\s+iv3-34\d{5}/, 60000), 'inkvideo decode: raw stream -> Y4M (30 frames)');
+    await send(`inkvideo transcode /tmp/st.bin /tmp/t2.${stc.startsWith('avc1') ? 'h264' : '265'} --codec ${stc.startsWith('avc1') ? 'h264' : 'hevc'}; echo iv4-rc=$?\r`);
+    check(await until(/transcoded 30 frames 320x240[\s\S]*iv4-rc=0/, 60000), 'inkvideo transcode: decode -> encode');
+  }
   // ☰ Store: lists the catalog; Install runs apk add in Linux through the worker, not in the shell.
   // hello-wasm comes from a local catalog entry (file:// in the home folder): no network needed.
   const hsum = crypto.createHash('sha256').update(wasmBytes).digest('hex');
