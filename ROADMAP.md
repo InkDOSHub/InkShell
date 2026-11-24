@@ -2,6 +2,7 @@
 
 CONTROLE: seguir (sessão oficial do gerente 24/11; uma sessão por vez)
 SALDO: semana 1 (até ter 24/11 17:00): 31% gasto ≈ 23 pts de 30 → sobram ~7 pts.
+Paulo 24/11: sem teto até ter 24/11 16:59; teto 30 a partir de ter 17:09.
 
 Fonte: "Roadmap do terminal Linux (a partir de sex 27/11)", Paulo, 2026-11-22.
 Foco: terminal Linux sólido e rápido no WebKit. Ferramenta com WASM roda direto; x86 (InkSoC) só reserva. Arquivo nunca inteiro na RAM.
@@ -17,7 +18,7 @@ Foco: terminal Linux sólido e rápido no WebKit. Ferramenta com WASM roda diret
 | 5 | ffmpeg, 7z, qpdf, imagemagick WASM (sem GPL) | 5 | 2 | feito (#28: wasm-tools.yml compila c/ wasi-sdk-33 e publica release wasm-tools-2; catálogo 7zip (7zz 24.08 sem unRAR, LGPL+BSD), qpdf 11.9.1 (Apache), imagemagick 7.1.1 (PNG/JPEG), ffmpeg+ffprobe 5.1.9 LGPL só codecs internos. Sobra: ffmpeg ≥6 precisa threads (WASI p1 não tem); sem x264/fontes; 1 thread; exceções wasm exnref = Safari ≥18.4) | cada um roda WASM + teste curto |
 | 6 | inkvideo (WebCodecs H.264/HEVC) | 6 | 2 | feito (#31: `inkvideo info/decode/transcode/selftest` roda como programa JS no Worker WASI (módulo-marcador `inkshell.js` em /usr/local/libexec), WebCodecs da página c/ hardware preferido; MP4/MOV (avcC/hvcC) e Annex B lidos em pedaços; sem WebCodecs sai 69 e decode cai p/ ffmpeg. Sobra: medir 1080p no iPhone; saída de transcode é .h264/.265 cru (sem mux MP4); sem escala/resize) | 1080p no iPhone em tempo real |
 | 7 | x86: rep movs/stos | x86 | 1 | feito (#30, refeito de #27 sem o #26: string 11x → 4,3x nativo; + munmap agora descommita (acesso depois = SIGSEGV, antes virava página zerada) e MAP_FIXED recommita) | CI verde + bench string melhor |
-| 8 | x86: BMI/POPCNT/LZCNT | x86 | 2 | aberto | instruções testadas no CI |
+| 8 | x86: BMI/POPCNT/LZCNT | x86 | 2 | feito (#32: VEX BMI1/BMI2 + CPUID leaf 7, teste x86bmi) | instruções testadas no CI |
 | 9 | Bench x86 no CI (perfil: onde o tempo vai) | x86 | 1 | aberto | PR mostra perfil por bloco/instrução |
 | 10 | x86: call/ret rápido no JIT | x86 | 2 | travado (#26, 6 queimado: região c/ ret/jmp indireto e registradores residentes sem ganho, calls 28–31x antes e depois; hipótese: gargalo fora do call/ret, ex. dispatcher/flags. Retomar só c/ perfil do item 9) | calls ≤ ~5x nativo |
 | 11 | x86: SSE/x87 no JIT | x86 | 3,5 | aberto (precisa prova do item 9) | bench float melhor |
@@ -60,6 +61,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-23 | 1 | 10: x86 call/ret sem ganho (travado; insistência ~6 pts reais) | #26 | 6 (queimado) |
 | 2026-11-23 | 1 | 7: x86 rep movs/stos em lote (refeito sobre main) | #30 | 1 |
 | 2026-11-24 | 1 | 6: inkvideo WebCodecs + fallback | #31 | 2 |
+| 2026-11-24 | 1 | 8: x86 BMI1/BMI2/POPCNT/LZCNT/TZCNT + teste | #32 | 2 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.

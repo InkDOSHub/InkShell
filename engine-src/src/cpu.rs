@@ -1299,6 +1299,8 @@ fn step_raw(e: &mut Engine) {
             e.cpu.rip = rip + d.p as u64;
         }
         0x0F => two_byte(e, &mut d, &buf, rip, rex, osz, rep, p66),
+        // VEX (3-byte form): BMI1/BMI2; in 32-bit code C4 with mod != 3 would be LES
+        0xC4 if !e.cpu.mode32 || d.b[d.p.min(15)] >= 0xC0 => vex(e, &mut d, &buf, rip),
         // 32-bit only: inc/dec r32, pusha/popa, push/pop of segment registers
         0x40..=0x4F => {
             let r = op & 7;
@@ -1691,8 +1693,10 @@ fn two_byte(e: &mut Engine, d: &mut Dec, buf: &[u8; 16], rip: u64, rex: u8, osz:
         0xA2 => {
             let leaf = e.cpu.regs[0] as u32;
             let (a, b, c, dd): (u32, u32, u32, u32) = match leaf {
-                0 => (1, 0x206B_6E49, 0x2020_2020, 0x2043_6F53), // "Ink " "SoC " "    " (ebx, ecx, edx below)
+                0 => (7, 0x206B_6E49, 0x2020_2020, 0x2043_6F53), // "Ink " "SoC " "    " (ebx, ecx, edx below)
                 1 => (0x0006_06A0, 0, 1 << 23, (1 << 0) | (1 << 4) | (1 << 8) | (1 << 15) | (1 << 24) | (1 << 25) | (1 << 26)),
+                // leaf 7 subleaf 0: EBX bit 3 = BMI1, bit 8 = BMI2
+                7 if e.cpu.regs[1] as u32 == 0 => (0, (1 << 3) | (1 << 8), 0, 0),
                 0x8000_0000 => (0x8000_0001, 0, 0, 0),
                 0x8000_0001 => (0, 0, 1 << 5, (1 << 11) | (1 << 20) | (1 << 29)),
                 _ => (0, 0, 0, 0),
@@ -1799,4 +1803,116 @@ pub mod diff {
             _ => 0,
         }
     }
+}
+
+/// Parallel bit deposit: the low bits of s go, in order, to the set bits of m.
+pub(crate) fn pdep(s: u64, mut m: u64) -> u64 {
+    let (mut r, mut k) = (0u64, 0);
+    while m != 0 {
+        let b = m & m.wrapping_neg();
+        if (s >> k) & 1 != 0 {
+            r |= b;
+        }
+        k += 1;
+        m &= m - 1;
+    }
+    r
+}
+
+/// Parallel bit extract: the bits of s at the set bits of m, packed into the low bits.
+pub(crate) fn pext(s: u64, mut m: u64) -> u64 {
+    let (mut r, mut k) = (0u64, 0);
+    while m != 0 {
+        let b = m & m.wrapping_neg();
+        if s & b != 0 {
+            r |= 1 << k;
+        }
+        k += 1;
+        m &= m - 1;
+    }
+    r
+}
+
+/// VEX-encoded general-purpose instructions (C4 form, maps 0F38 / 0F3A, L = 0):
+/// BMI1 (ANDN, BEXTR, BLSI, BLSMSK, BLSR) and BMI2 (BZHI, PDEP, PEXT, MULX, RORX, SARX, SHLX, SHRX).
+fn vex(e: &mut Engine, d: &mut Dec, buf: &[u8; 16], rip: u64) {
+    let b1 = d.u8();
+    let b2 = d.u8();
+    let m32 = e.cpu.mode32;
+    let map = b1 & 0x1F;
+    let w = b2 & 0x80 != 0 && !m32;
+    let vv = if m32 { (!b2 >> 3) & 7 } else { (!b2 >> 3) & 15 } as usize;
+    let pp = b2 & 3;
+    let rex = if m32 { 0 } else { 0x40 | ((w as u8) << 3) | ((!b1 >> 5) & 7) };
+    let op = d.u8();
+    if b2 & 4 != 0 || !matches!((map, op), (2, 0xF2 | 0xF3 | 0xF5 | 0xF6 | 0xF7) | (3, 0xF0)) {
+        e.unsupported(buf);
+        return;
+    }
+    let size = if w { 64 } else { 32 };
+    let msk = mask(size);
+    let sb = sign(size);
+    let m = modrm(d, e, rex);
+    let imm = if map == 3 { d.u8() as u32 } else { 0 };
+    let next = rip + d.p as u64;
+    let src = g!(e, e.get(rm_loc(e, &m, next, size, rex), size)) & msk;
+    let v = e.cpu.regs[vv] & msk;
+    let reg = m.reg as usize;
+    // (destination, result, flags: None = untouched, Some(cf))
+    let (dst, r, cf) = match (map, op, pp) {
+        (2, 0xF2, 0) => (reg, !v & src, Some(false)), // andn
+        (2, 0xF3, 0) => match m.reg & 7 {
+            1 => (vv, src & src.wrapping_sub(1), Some(src == 0)),  // blsr
+            2 => (vv, src ^ src.wrapping_sub(1), Some(src == 0)),  // blsmsk
+            3 => (vv, src & src.wrapping_neg(), Some(src != 0)),   // blsi
+            _ => {
+                e.unsupported(buf);
+                return;
+            }
+        },
+        (2, 0xF5, 0) => {
+            // bzhi
+            let n = (v & 0xFF) as u32;
+            (reg, if n < size { src & ((1u64 << n) - 1) } else { src }, Some(n >= size))
+        }
+        (2, 0xF5, 3) => (reg, pdep(v, src), None),
+        (2, 0xF5, 2) => (reg, pext(v, src), None),
+        (2, 0xF6, 3) => {
+            // mulx: hi -> reg, lo -> vvvv (hi wins when they are the same register)
+            let p = (e.cpu.regs[2] & msk) as u128 * src as u128;
+            e.cpu.regs[vv] = (p as u64) & msk;
+            (reg, (p >> size) as u64, None)
+        }
+        (2, 0xF7, 0) => {
+            // bextr
+            let start = (v & 0xFF) as u32;
+            let len = ((v >> 8) & 0xFF) as u32;
+            let t = if start >= size { 0 } else { src >> start };
+            (reg, if len < 64 { t & ((1u64 << len) - 1) } else { t }, Some(false))
+        }
+        (2, 0xF7, 1) => (reg, src << (v as u32 & (size - 1)), None), // shlx
+        (2, 0xF7, 2) => (reg, (sx(src, size) >> (v as u32 & (size - 1))) as u64, None), // sarx
+        (2, 0xF7, 3) => (reg, src >> (v as u32 & (size - 1)), None), // shrx
+        (3, 0xF0, 3) => {
+            // rorx
+            let n = imm & (size - 1);
+            (reg, if size == 64 { src.rotate_right(n) } else { (src as u32).rotate_right(n) as u64 }, None)
+        }
+        _ => {
+            e.unsupported(buf);
+            return;
+        }
+    };
+    let r = r & msk;
+    e.cpu.regs[dst] = r;
+    if let Some(cf) = cf {
+        e.cpu.cf = cf;
+        e.cpu.of = false;
+        e.cpu.zf = r == 0;
+        e.cpu.sf = r & sb != 0;
+        if (map, op, m.reg & 7) == (2, 0xF3, 2) {
+            e.cpu.zf = false; // blsmsk
+        }
+    }
+    e.cpu.rip = next;
 }

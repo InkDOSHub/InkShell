@@ -283,7 +283,20 @@ fn decode(e: &mut Engine, rip: u64) -> Option<Ins> {
     let immz = if osz == 16 { 2 } else { 4 };
     let mut ins = Ins { rip, next: 0, op: op as u32, rex, osz, rep, seg, a67, lock, p66, m: None, imm: 0 };
     let mut imm_n = 0; // bytes of immediate
-    if op == 0x0F {
+    if op == 0xC4 && (!m32 || d.b[d.p.min(15)] >= 0xC0) {
+        // VEX (BMI1/BMI2): decoded only for its length; op 0xC4mmXX matches nothing native,
+        // so it runs in the interpreter
+        let b1 = d.u8();
+        let b2 = d.u8();
+        let map = b1 & 0x1F;
+        let vrex = if m32 { 0 } else { 0x40 | (b2 & 0x80) >> 4 | ((!b1 >> 5) & 7) };
+        let op3 = d.u8();
+        ins.op = 0xC40000 | (map as u32) << 8 | op3 as u32;
+        ins.m = Some(modrm(&mut d, e, vrex));
+        if map == 3 {
+            imm_n = 1;
+        }
+    } else if op == 0x0F {
         let op2 = d.u8();
         if op2 == 0x38 || op2 == 0x3A {
             let op3 = d.u8();
