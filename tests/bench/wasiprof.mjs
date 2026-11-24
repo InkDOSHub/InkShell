@@ -27,17 +27,19 @@ for (const [name, [b, e]] of Object.entries(E)) {
 }
 if (!rows.length) { console.log('_Perfil WASI: sem marcadores ps-* no log do motor._'); process.exit(0); }
 const LABEL = { c: '`-c pass`', S: '`-S -c pass` (sem site)', I: '`-I -c pass` (isolado)' };
-let md = '| execução | total | nativo | fork+exec (fatia x.run) | leitura .wasm (wasi_module) | detecção cwd | resto do setup (getcwd, preopens, cópia) | compilação | instanciação | chamadas WASI (n / ms) | motor dentro das chamadas | Python puro | depois do fim (shell) |\n|---|' + '---:|'.repeat(12) + '\n';
+let md = '| execução | total | nativo | antes do programa (fork+execve) | leitura .wasm (wasi_module) | detecção cwd | resto do setup (getcwd, preopens, cópia) | compilação | instanciação | chamadas WASI (n / ms) | motor dentro das chamadas | Python puro | exit (depois do marcador fim) |\n|---|' + '---:|'.repeat(12) + '\n';
 for (const { name, total, p } of rows) {
+  const [b, e] = E[name];
   const [, v, i] = name.split('-');
   const nat = N[name] ? N[name][1] - N[name][0] : null;
   if (!p) { md += `| ${LABEL[v] || v} #${i} | ${f1(total)} | ${f1(nat)} | — | — | — | — | — | — | — | — | — | — |\n`; continue; }
   const wasiN = sum(p.calls, 'n'), wasiMs = sum(p.calls, 'ms'), wasiEng = sum(p.calls, 'eng');
   const setup = p.tCompile - p.tStart, slot = p.slotMs ?? 0;
-  const run = p.tEnd - p.tRun, py = run - wasiMs, tail = E[name][1] - p.tEnd;
-  md += `| ${LABEL[v] || v} #${i} | ${f1(total)} | ${f1(nat)} | ${f1(p.pickMs)} | ${f1(p.readMs)} | ${p.slotMs == null ? '—' : `${f1(p.slotMs)}${p.slotHit ? ' (cache)' : ''}`} | ${f1(setup - p.readMs - slot)} | ${f1(p.compileMs)} | ${f1(p.instMs)} | ${wasiN} / ${f1(wasiMs)} | ${f1(wasiEng)} | ${f1(py)} | ${f1(tail)} |\n`;
+  // the stub's exit runs the shell on, which prints the end marker before runModule returns
+  const pre = p.tStart - b, tail = Math.max(0, p.tEnd - e), py = Math.min(e, p.tEnd) - p.tRun - wasiMs;
+  md += `| ${LABEL[v] || v} #${i} | ${f1(total)} | ${f1(nat)} | ${f1(pre)} | ${f1(p.readMs)} | ${p.slotMs == null ? '—' : `${f1(p.slotMs)}${p.slotHit ? ' (cache)' : ''}`} | ${f1(setup - p.readMs - slot)} | ${f1(p.compileMs)} | ${f1(p.instMs)} | ${wasiN} / ${f1(wasiMs)} | ${f1(wasiEng)} | ${f1(py)} | ${f1(tail)} |\n`;
 }
-md += '\n_ms. "fork+exec" = a fatia `x.run(2000000)` em que o shell fez fork+execve do python3 (o execve lê o .wasm inteiro p/ ver o cabeçalho); "leitura .wasm" = `wasi_module` (o kernel lê de novo o arquivo do disco Linux, blocos/swap); "Python puro" = tempo dentro de `_start` fora das chamadas WASI; "depois do fim" = do fim do programa ao marcador seguinte (shell colhe o filho). Não há cache do módulo compilado: cada execução compila de novo._\n';
+md += '\n_ms. Colunas de "antes" a "Python puro" somam o total. "antes" = do marcador ao programa chegar em runWasi (fork+execve do shell; o execve lê o .wasm inteiro p/ ver o cabeçalho); "leitura .wasm" = `wasi_module` (o kernel lê de novo o arquivo do disco Linux, blocos/swap); "detecção cwd" com cache = só o hash do módulo; "Python puro" = dentro de `_start` fora das chamadas WASI (inclui a compilação preguiçosa das funções pelo V8); "exit" = o resto do exit do stub depois do marcador (fora do total). Não há cache do módulo compilado: cada execução compila de novo._\n';
 // WASI calls by function, for the first two runs of each variant
 const pick = rows.filter((r) => r.p && /-[12]$/.test(r.name));
 const fns = [...new Set(pick.flatMap((r) => Object.keys(r.p.calls)))]
