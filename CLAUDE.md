@@ -21,6 +21,9 @@ Terminal Alpine Linux no navegador (iPad XeOS principal, iPhone Safari). Motor =
 - Registrar linha no quadro de pontos no mesmo PR.
 - Fase estourou peso → último item da semana vai p/ seguinte.
 
+## Chave do gerente
+Antes de CADA item: `git fetch -q && git show origin/main:ROADMAP.md | grep ^CONTROLE:`. `PARAR` = parar já, sem novo commit. `seguir` = ok.
+
 ## Anti-insistência (consumo consciente)
 Gastar só no que tira gargalo e deixa ganho duradouro.
 - **Prova antes**: item de desempenho só começa com medida (bench/perfil) mostrando que ELE é o gargalo. Sem prova → item vira "medir X" (1 pt) primeiro.
