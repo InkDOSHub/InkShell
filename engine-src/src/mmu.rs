@@ -477,6 +477,22 @@ impl Mmu {
         removed
     }
 
+    /// Linux munmap: [s, e) is no longer committed and its pages go away, so a later access
+    /// faults (SIGSEGV) instead of finding a fresh zero page.
+    pub fn unmap_span(&mut self, s: u64, e: u64) {
+        self.uncommit_span(s, e);
+        self.drop_pages(s, e);
+    }
+    /// Linux mmap MAP_FIXED: [s, e) committed again (it may have been unmapped before).
+    /// Like add_region, not held to the memory target.
+    pub fn recommit_span(&mut self, s: u64, e: u64) {
+        if s >= e { return; }
+        let added = (e - s) - covered(&self.sh.commits, s, e);
+        self.sh.commits.push((s, e));
+        normalize(&mut self.sh.commits);
+        self.sh.committed = self.sh.committed.saturating_add(added);
+    }
+
     /// VirtualAlloc MEM_COMMIT over an address range. The whole page span must lie
     /// inside one region (reserved or committed), and the commit must fit the memory
     /// target. When either check fails nothing changes. Ok: bytes newly committed;
