@@ -2,7 +2,7 @@
 # Terminal benchmark: the same script runs natively (Ubuntu runner) and in Alpine on the engine.
 # usage: sh bench.sh cpu | py | pystart | io MB | wasmio MB   (several sections allowed)
 # wasmio: the same big file through sha256sum, zip, unzip, 7zz a/x (on the engine the catalog's
-# WebAssembly builds in /usr/local/bin); BENCH_RSS=1 (native) adds "@@RSS name KB" per step.
+# WebAssembly builds in /usr/local/bin; busybox sha256sum, x86, as reference); BENCH_RSS=1 (native) adds "@@RSS name KB" per step.
 # Prints "@@T begin:NAME" / "@@T end:NAME" markers; the host stamps the time of each line.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 H=$(cd "$(dirname "$0")" && pwd)
@@ -53,6 +53,8 @@ while [ $# -gt 0 ]; do
       rm -f "$D/big" "$D/big.zip" "$D/big.7z"
       m begin:w-make-$mb; mk "$mb"; m end:w-make-$mb
       r w-sha256-$mb sha256sum "$D/big"
+      # reference: the x86 busybox applet on the engine (natively the same sha256sum again)
+      if [ -n "$BENCH_STAMP" ]; then r w-bbsha256-$mb sha256sum "$D/big"; else r w-bbsha256-$mb busybox sha256sum "$D/big"; fi
       r w-zip-$mb zip -q -1 -j "$D/big.zip" "$D/big"
       r w-7za-$mb "$z" a -bd -mx1 -mmt1 "$D/big.7z" "$D/big"
       ls -l "$D/big.zip" "$D/big.7z"; rm -f "$D/big"
