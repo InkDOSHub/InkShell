@@ -979,6 +979,39 @@ pub fn syscall(e: &mut Engine) {
             k
         }
         17 => { let fd = a0 as i32; let k = do_pread(e, fd, a1, a2, a3); k }
+        18 => do_pwrite(e, a0 as i32, a1, a2, a3),
+        295 | 296 | 327 | 328 => { // preadv / pwritev / preadv2 / pwritev2
+            let rd = nr == 295 || nr == 327;
+            // RWF_HIPRI / RWF_DSYNC / RWF_SYNC change nothing here; others are not supported
+            let flags = if nr >= 327 { r[9] } else { 0 };
+            if flags & !7 != 0 { -EOPNOTSUPP }
+            else if nr >= 327 && a3 as i64 == -1 { // the current offset, as readv / writev
+                let mut tot = 0i64;
+                for k in 0..a2.min(1024) {
+                    let (b, n) = (e.r64(a1 + 16 * k), e.r64(a1 + 16 * k + 8));
+                    if n == 0 { continue; }
+                    let got = if rd { do_read(e, a0 as i32, b, n) } else { do_write(e, a0 as i32, b, n) };
+                    if got < 0 { if tot == 0 { tot = got; } break; }
+                    tot += got;
+                    if (got as u64) < n { break; }
+                }
+                tot
+            } else if (a3 as i64) < 0 || a2 > 1024 { -EINVAL } else {
+                // a zero-length call checks the descriptor (EBADF / ESPIPE / EISDIR) first
+                let mut tot = if rd { do_pread(e, a0 as i32, 0, 0, a3) } else { do_pwrite(e, a0 as i32, 0, 0, a3) };
+                for k in 0..a2 {
+                    if tot < 0 { break; }
+                    let (b, n) = (e.r64(a1 + 16 * k), e.r64(a1 + 16 * k + 8));
+                    if n == 0 { continue; }
+                    let at = a3 + tot as u64;
+                    let got = if rd { do_pread(e, a0 as i32, b, n, at) } else { do_pwrite(e, a0 as i32, b, n, at) };
+                    if got < 0 { if tot == 0 { tot = got; } break; }
+                    tot += got;
+                    if (got as u64) < n { break; }
+                }
+                tot
+            }
+        }
         19 | 20 => { // readv / writev
             let mut tot = 0i64;
             for k in 0..a2.min(1024) {
@@ -1324,10 +1357,25 @@ impl Lx {
 
 fn do_pread(e: &mut Engine, fd: i32, buf: u64, n: u64, off: u64) -> i64 {
     let (l, mm) = lxm(e);
-    let path = match l.fds.get(&fd) { Some(Fd::File { path, .. }) => path.clone(), _ => return -ESPIPE };
+    let path = match l.fds.get(&fd) { Some(Fd::File { path, .. }) => path.clone(), Some(Fd::Dir { .. }) => return -EISDIR, None => return -EBADF, _ => return -ESPIPE };
+    if (off as i64) < 0 { return -EINVAL; }
+    if n == 0 { return 0; }
     let chunk = match l.fs.get(&path) { Some(Node::File(d)) => d.read(&mut l.bc, mm, off, n.min(1 << 24) as usize), _ => return -EBADF };
     if e.mmu.write_bytes(buf, &chunk).is_err() { return -14; }
     chunk.len() as i64
+}
+
+/// pwrite64: write_data at `off`, the file offset left as it was (O_APPEND still appends, as on Linux).
+fn do_pwrite(e: &mut Engine, fd: i32, buf: u64, n: u64, off: u64) -> i64 {
+    let pos = match lx(e).fds.get(&fd) { Some(Fd::File { pos, .. }) => *pos, Some(Fd::Dir { .. }) => return -EISDIR, None => return -EBADF, _ => return -ESPIPE };
+    if (off as i64) < 0 { return -EINVAL; }
+    if n == 0 { return 0; }
+    let mut d = vec![0u8; n.min(1 << 24) as usize];
+    if e.mmu.read_bytes(buf, &mut d).is_err() { return -14; }
+    if let Some(Fd::File { pos, .. }) = lx(e).fds.get_mut(&fd) { *pos = off; }
+    let k = write_data(e, fd, &d);
+    if let Some(Fd::File { pos: p, .. }) = lx(e).fds.get_mut(&fd) { *p = pos; }
+    k
 }
 
 fn fstat(e: &mut Engine, fd: i32, a: u64) -> i64 {
@@ -2205,6 +2253,11 @@ fn mnt_gate(e: &mut Engine, nr: u64) -> bool {
     match nr {
         0 => if let Some((p, pos)) = fd_path(e, a0) { need.push((p, pos, a2.min(1 << 24))); },
         17 => if let Some((p, _)) = fd_path(e, a0) { need.push((p, a3, a2.min(1 << 24))); },
+        295 | 327 => if let Some((p, pos)) = fd_path(e, a0) {
+            let mut n = 0u64;
+            for k in 0..a2.min(1024) { n = n.saturating_add(e.r64(a1 + 16 * k + 8)); }
+            need.push((p, if nr == 327 && a3 as i64 == -1 { pos } else { a3 }, n.min(1 << 26)));
+        },
         19 => if let Some((p, pos)) = fd_path(e, a0) {
             let mut n = 0u64;
             for k in 0..a2.min(1024) { n = n.saturating_add(e.r64(a1 + 16 * k + 8)); }
@@ -2215,10 +2268,10 @@ fn mnt_gate(e: &mut Engine, nr: u64) -> bool {
             if let Some((p, _)) = fd_path(e, a0) { need.push((p.clone(), 0, ALL)); whole = Some(p); }
         }
         9 => if r[8] as i32 >= 0 && a3 & 0x20 == 0 { if let Some((p, _)) = fd_path(e, r[8]) { need.push((p, if a3 & 1 != 0 { 0 } else { r[9] }, if a3 & 1 != 0 { ALL } else { a1 })); } },
-        1 | 18 | 20 => if let Some((p, pos)) = fd_path(e, a0) {
+        1 | 18 | 20 | 296 | 328 => if let Some((p, pos)) = fd_path(e, a0) {
             let app = matches!(lx(e).fds.get(&(a0 as i32)), Some(Fd::File { append: true, .. }));
-            let n = if nr == 20 { let mut n = 0u64; for k in 0..a2.min(1024) { n = n.saturating_add(e.r64(a1 + 16 * k + 8)); } n } else { a2 };
-            let at = if app { flen(lx(e), &p) } else if nr == 18 { a3 } else { pos };
+            let n = if nr >= 20 { let mut n = 0u64; for k in 0..a2.min(1024) { n = n.saturating_add(e.r64(a1 + 16 * k + 8)); } n } else { a2 };
+            let at = if app { flen(lx(e), &p) } else if nr == 18 || nr == 296 || (nr == 328 && a3 as i64 != -1) { a3 } else { pos };
             wr = Some((p, at, n));
         },
         77 => if let Some((p, _)) = fd_path(e, a0) { tr = Some((p, a1)); },

@@ -38,10 +38,14 @@ add('zoverlay.tar', fs.readFileSync('overlay.tar'));
 add('stage1', fs.readFileSync(new URL('./stage1', import.meta.url))); // tests/src/stage1.c, built static
 add('x86string', fs.readFileSync(new URL('./x86string', import.meta.url))); // tests/src/x86string.c, built static in CI (Alpine)
 add('x86bmi', fs.readFileSync(new URL('./x86bmi', import.meta.url))); // tests/src/x86bmi.c, built static in CI (Alpine)
+add('x86pwrite', fs.readFileSync(new URL('./x86pwrite', import.meta.url))); // tests/src/x86pwrite.c, built static in CI (Alpine)
 // WebAssembly programs (kernel with wasi_next; the published engine.wasm may be older)
 const wasiHello = new URL('./wasihello.wasm', import.meta.url); // tests/src/wasihello.c, built in CI (wasi-sdk)
 const hasWasi = !!x.wasi_next;
 if (hasWasi) add('hello.wasm', fs.readFileSync(wasiHello));
+const wasiPw = new URL('./wasipwrite.wasm', import.meta.url); // tests/src/wasipwrite.c, built in CI (wasi-sdk; test job only)
+const hasWasiPw = hasWasi && fs.existsSync(wasiPw);
+if (hasWasiPw) add('pw.wasm', fs.readFileSync(wasiPw));
 // CPython for WASI from the catalog (test.yml downloads it to tests/python.wasm, sha256 checked)
 const pyWasm = new URL('./python.wasm', import.meta.url);
 const hasPy = hasWasi && fs.existsSync(pyWasm);
@@ -193,11 +197,13 @@ await step('stat -c %s /mnt/t/sub/b.txt; cat /mnt/t/a.txt; echo new > /mnt/t/n.t
   const ok = /F\t\/mnt\/t\/n\.txt\t4\t1/.test(sc) && /F\t\/mnt\/t\/c\.txt\t1\t0/.test(sc) && !/a\.txt/.test(sc);
   results.push(ok); console.log((ok ? 'PASS' : 'FAIL') + ' device folder: changes listed for the page' + (ok ? '' : '\n' + sc));
 }
+await step('/root/x86pwrite && /root/x86pwrite /mnt/t/pw.bin\n', /x86pwrite ok 26\s[\s\S]*x86pwrite ok 26/, 'pwrite64, preadv/pwritev(2): offset kept, 3 MB file, 2 iovecs, pipe ESPIPE (also in a device folder)');
 await step('/root/stage1 epoll\n', /epoll 0 1 22 1 11 5 select 0 1/, 'epoll, eventfd, select');
 await step('/root/stage1 timers\n', /timers 14 1 fd 10 14/, 'alarm, setitimer, timerfd, timer_create; SIGALRM ends a process');
 await step('/root/stage1 pty\n', /pty size tty line \^C sig 2/, 'pseudo-terminal: size, tty name, line mode, Ctrl+C');
 if (hasWasi) {
   await step('echo piped | /root/hello.wasm A > /tmp/w.out; echo rc=$?; cat /tmp/w.out /tmp/wasi-made.txt\n', /rc=3[\s\S]*wasi argc=2 arg1=A in=piped[\s\S]*made-by-wasm/, 'WebAssembly program: args, pipe in, redirect out, file, exit code');
+  if (hasWasiPw) await step('/root/pw.wasm\n', /wasipwrite ok 012345AB89/, 'WebAssembly program: pwrite / pread (fd_pwrite, fd_pread)');
   await step('/root/hello.wasm B < /dev/null | tr a-z A-Z\n', /WASI ARGC=2 ARG1=B IN=\(EOF\)/, 'WebAssembly program in a pipeline');
   // WebAssembly catalog: a local entry (file:// mirror) for the test program; apk add installs it, other names go to Alpine's apk (--no-network: the test runs offline)
   const hb = fs.readFileSync(wasiHello), hsum = crypto.createHash('sha256').update(hb).digest('hex');
