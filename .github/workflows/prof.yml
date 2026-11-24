@@ -1,0 +1,36 @@
+name: JIT profile (temporary, x86 call/ret work)
+on:
+  push:
+    branches: ['claude/x86-callret']
+    paths: ['engine-src/**', '.github/workflows/prof.yml', 'tests/bench-engine.mjs']
+jobs:
+  prof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: fib program (Alpine gcc -O2, as cpubench)
+        run: |
+          mkdir -p out
+          cat > out/fib.c <<'C'
+          #include <stdio.h>
+          #include <time.h>
+          static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
+          static int fib(int n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); }
+          int main(void) { for (int k = 0; k < 3; k++) { double t = now(); int r = fib(32); printf("fib %d %.1f ms\n", r, now() - t); } printf("@@T done\n"); return 0; }
+          C
+          docker run --rm -v "$PWD":/w -w /w alpine:3.21 sh -c 'apk add -q gcc musl-dev binutils && gcc -O2 -static -o out/fib out/fib.c && objdump -d --no-show-raw-insn out/fib | awk "/<fib>:/,/^\$/" | head -400'
+          time out/fib
+      - name: Engine with counters
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cd engine-src && cargo build --release --target wasm32-unknown-unknown --features prof
+          cp target/wasm32-unknown-unknown/release/inksoc.wasm ../out/prof.wasm
+          cargo build --release --target wasm32-unknown-unknown
+          cp target/wasm32-unknown-unknown/release/inksoc.wasm ../out/plain.wasm
+      - name: Run
+        run: |
+          node tests/bench-engine.mjs out/plain.wasm fib=out/fib -- /root/fib
+          PROF=1 node tests/bench-engine.mjs out/prof.wasm fib=out/fib -- /root/fib

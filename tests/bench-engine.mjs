@@ -66,5 +66,7 @@ try {
 if (line) emit('\n');
 if (st === 2) console.log(`${(performance.now() - t0).toFixed(1)}\t@@ERR engine stopped: ${dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()))}`);
 if (!done && performance.now() - t0 >= LIMIT) console.log(`${(performance.now() - t0).toFixed(1)}\t@@ERR time limit ${LIMIT} ms`);
+// engine built with --features prof: PROF=1 prints its counters (jit dispatches, fallbacks by opcode)
+if (process.env.PROF && x.prof_dump) { x.prof_dump(); console.log('@@PROF jit blocks ' + x.stat(13) + ' failed ' + x.stat(16) + ' ms ' + x.stat(14).toFixed(0) + '\n' + dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()))); }
 console.log(`@@MEM wasm=${mb(mem.buffer.byteLength)} rss=${mb(peakRss)}`);
 process.exit(done ? 0 : 1);
