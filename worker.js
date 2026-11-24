@@ -113,7 +113,7 @@ function info(bytes) {
 async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   if (network in NETS) net = network;
   wasiSw = !!sw; wasiOpen(Math.random().toString(36).slice(2));
-  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=6'); } catch (e) { wasiInline = null; } }
+  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=7'); } catch (e) { wasiInline = null; } }
   const swap = await openSwap(), ram = new Map();
   const page = (p) => new Uint8Array(mem.buffer, p, 4096);
   const env = {
@@ -147,7 +147,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   };
   const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(u + ': ' + r.status); return r; });
   const [wasm, busybox, overlay, saved] = await Promise.all([
-    get('engine.wasm?v=29').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
+    get('engine.wasm?v=30').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
     get('overlay.tar?v=13').then((r) => r.arrayBuffer()), loadSaved()]);
   let rootfs = null;
   if (!saved) {
@@ -279,8 +279,11 @@ function wasiPump() {
     const k = x.wasi_info(pid), info = new Uint8Array(mem.buffer, x.out_ptr(), k).slice();
     if (wasiSw) {
       const m = x.wasi_module(pid), bytes = new Uint8Array(mem.buffer, x.out_ptr(), m).slice();
+      // the file's version in the kernel (new at each change): the page keeps the compiled module by it
+      const g = x.wasi_module_gen ? x.wasi_module_gen(pid) : 0;
+      const z = info.indexOf(0), key = g ? `${wasiSid}:${g}:${m}:${new TextDecoder().decode(info.subarray(0, z < 0 ? info.length : z))}` : null;
       wasiLive.add(pid);
-      postMessage({ type: 'wasi-start', pid, sid: wasiSid, info, bytes, base: x.wasi_base(), size: x.wasi_buf_size() }, [bytes.buffer]);
+      postMessage({ type: 'wasi-start', pid, sid: wasiSid, info, bytes, key, base: x.wasi_base(), size: x.wasi_buf_size() }, [bytes.buffer]);
     } else if (wasiInline) wasiInline.runWasi(x, pid);
     else { out('\r\n\x1b[2m[WebAssembly programs need a newer browser]\x1b[0m\r\n'); put(new Uint8Array(0)); x.wasi_call(pid, 231, 126, 0, 0, 0, 0, 0, 0); }
   }
