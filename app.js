@@ -53,7 +53,7 @@ $('calib').onclick = async () => {
   $('calib').disabled = true;
   await stop(true);
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=39');
+  const c = new Worker('worker.js?v=40');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -78,7 +78,7 @@ showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
   stop(false).then(() => {
-    const r = new Worker('worker.js?v=39');
+    const r = new Worker('worker.js?v=40');
     r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
     r.postMessage({ type: 'reset' });
   });
@@ -131,7 +131,7 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=39');
+  w = new Worker('worker.js?v=40');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;
@@ -338,10 +338,18 @@ $('dl-x').onclick = () => { $('dl').hidden = true; fit(); term.focus(); };
    Install / Remove run "apk add/del NAME" in Linux through the worker (a root helper there), not in
    your shell; this page shows the progress and the result. */
 const stReq = () => { if (w) w.postMessage({ type: 'store' }); };
+// apk writes "NAME: 12/25 MB 48%" while it downloads, one line updated with \r: the last percent
+const stPct = (log, name) => {
+  let pct = null; const re = /(?:^|[\r\n])([A-Za-z0-9._+-]+): \d+\/\d+ [KM]B (\d+)%/g;
+  for (let r; (r = re.exec(log || ''));) if (r[1] === name) pct = +r[2];
+  return pct;
+};
 function stShow(m) {
   if ($('st').hidden) return;
   const list = $('st-list'); list.textContent = '';
   if (!m.items) { list.textContent = 'Linux is starting…'; setTimeout(stReq, 1000); return; }
+  const j = m.job, k = m.done;
+  const pName = j && j.op === 'add' ? j.name : k && k.op === 'add' ? k.name : '', pct = pName ? stPct(m.log, pName) : null;
   for (const it of m.items) {
     const row = document.createElement('div'); row.className = 'pkg'; row.dataset.name = it.name;
     const d = document.createElement('div'); d.className = 'd';
@@ -349,6 +357,10 @@ function stShow(m) {
     const s = document.createElement('div'); s.className = 'nota';
     s.textContent = [it.desc, human(it.size), it.license, it.installed ? 'installed' : ''].filter(Boolean).join(' · ');
     d.append(b, s);
+    if (pct !== null && it.name === pName) {
+      row.dataset.pct = pct;
+      if (j) { const bar = document.createElement('progress'); bar.max = 100; bar.value = pct; d.append(bar); }
+    }
     const busy = m.busy.includes(it.name);
     const btn = document.createElement('button'); btn.type = 'button';
     btn.textContent = busy ? 'Working…' : it.installed ? 'Remove' : 'Install';
@@ -357,11 +369,10 @@ function stShow(m) {
     btn.onclick = () => { btn.disabled = true; btn.textContent = 'Working…'; if (w) w.postMessage({ type: 'store-do', op: it.installed ? 'del' : 'add', name: it.name }); };
     row.append(d, btn); list.append(row);
   }
-  const j = m.job, k = m.done;
-  $('st-msg').textContent = j ? (j.op === 'add' ? 'Installing ' + j.name + '… (downloading it can take a minute)' : 'Removing ' + j.name + '…')
+  $('st-msg').textContent = j ? (j.op === 'add' ? 'Installing ' + j.name + '… ' + (pct !== null ? pct + '%' : '(downloading it can take a minute)') : 'Removing ' + j.name + '…')
     : m.busy.length ? (m.ready ? '' : 'Waiting for Linux to be ready… (if it stays, restart Linux)')
     : k ? (k.rc ? (k.op === 'add' ? 'Could not install ' : 'Could not remove ') + k.name + '.' : k.op === 'add' ? k.name + ' installed: type ' + k.name + ' in the terminal.' : k.name + ' removed.') : '';
-  $('st-log').textContent = m.log || '';
+  $('st-log').textContent = (m.log || '').split('\n').map((l) => l.slice(l.lastIndexOf('\r') + 1)).join('\n');
 }
 $('store').onclick = () => {
   if (!w) $('start').click();

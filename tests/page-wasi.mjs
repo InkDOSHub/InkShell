@@ -79,6 +79,7 @@ try {
   const waitBtn = (n, want) => p.waitForFunction(([s, want]) => { const b = document.querySelector(s + ' button'); return b && b.textContent === want; }, [row(n), want], { timeout: 90000 }).then(() => true, () => false);
   check(await waitBtn('hello-wasm', 'Remove'), 'store: Install installs hello-wasm', await p.evaluate(() => $('st-msg').textContent + '\n' + $('st-log').textContent));
   check(/hello-wasm installed/.test(await p.evaluate(() => $('st-msg').textContent + $('st-log').textContent)), 'store: shows the result');
+  check(await p.evaluate((s) => { const r = document.querySelector(s); return r && r.dataset.pct === '100' && /hello-wasm: \d+\/\d+ KB 100%/.test($('st-log').textContent); }, row('hello-wasm')), 'store: download progress reaches 100%', await p.evaluate(() => $('st-log').textContent));
   check((await text()) === shellBefore, 'store: nothing typed into the shell');
   await p.click('#st-x');
   await send('hello-wasm S < /dev/null; echo rc=$?\r');
