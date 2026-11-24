@@ -148,7 +148,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(u + ': ' + r.status); return r; });
   const [wasm, busybox, overlay, saved] = await Promise.all([
     get('engine.wasm?v=28').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
-    get('overlay.tar?v=10').then((r) => r.arrayBuffer()), loadSaved()]);
+    get('overlay.tar?v=11').then((r) => r.arrayBuffer()), loadSaved()]);
   let rootfs = null;
   if (!saved) {
     out('\x1b[2mDownloading Alpine Linux 3.21 (3.5 MB)…\x1b[0m\r\n');
