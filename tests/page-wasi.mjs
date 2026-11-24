@@ -90,6 +90,64 @@ try {
   await p.click('#st-x');
   await send('test -e /usr/local/bin/hello-wasm || echo gone-ok\r');
   check(await until(/gone-ok/, 30000), 'store: program gone from PATH');
+  // /mnt with a 64 MB file, through the page's own mount code: an OPFS folder handle goes through
+  // mountDir (as showDirectoryPicker's would: read + write), a folder input through mountFiles
+  // (read-only File objects, Safari on iPhone). Files over 1 MB are read in pieces (File.slice).
+  const MB = 1048576, BIGN = 64 * MB;
+  const fill = (u8, base) => { const u = new Uint32Array(u8.buffer, u8.byteOffset, u8.length >> 2); for (let i = 0; i < u.length; i++) { let v = (base + i) >>> 0; v = Math.imul(v ^ (v >>> 16), 0x45d9f3b) >>> 0; v = Math.imul(v ^ (v >>> 16), 0x45d9f3b) >>> 0; u[i] = (v ^ (v >>> 16)) >>> 0; } };
+  const big = Buffer.alloc(BIGN);
+  for (let c = 0; c < 64; c++) fill(big.subarray(c * MB, (c + 1) * MB), c * MB / 4);
+  const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
+  const hAll = sha(big), hMid = sha(big.subarray(8000 * 4096, 8002 * 4096));
+  // the folder input (read-only copy): a real directory with the file, given to #mountdir
+  const tmp = fs.mkdtempSync('/tmp/inp-'), idir = tmp + '/inpdir';
+  fs.mkdirSync(idir); fs.writeFileSync(idir + '/big.bin', big);
+  await p.setInputFiles('#mountdir', idir);
+  check(await until(/\/mnt\/inpdir: 1 files/, 30000), 'mount (folder input): 64 MB file listed');
+  await send('echo IS=$(stat -c %s /mnt/inpdir/big.bin) IM=$(dd if=/mnt/inpdir/big.bin bs=4096 skip=8000 count=2 2>/dev/null | sha256sum | cut -c1-16)\r');
+  check(await until(new RegExp('IS=' + BIGN + ' IM=' + hMid.slice(0, 16)), 120000), 'mount (folder input): dd skip in the middle reads the right bytes');
+  await send('echo IA=$(sha256sum /mnt/inpdir/big.bin | cut -c1-16)\r');
+  check(await until(new RegExp('IA=' + hAll.slice(0, 16)), 300000), 'mount (folder input): sha256sum of the 64 MB file');
+  // an OPFS folder (read-write handle like showDirectoryPicker's) through mountDir
+  await p.evaluate(async (src) => {
+    const fill = eval(src), MB = 1048576;
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('bigdir', { create: true });
+    const wr = await (await dir.getFileHandle('big.bin', { create: true })).createWritable();
+    const b = new Uint8Array(MB);
+    for (let c = 0; c < 64; c++) { fill(b, c * MB / 4); await wr.write(b); }
+    await wr.close();
+    // count the piece writes the page makes later (write back in pieces, not the file at once)
+    const W = FileSystemWritableFileStream.prototype, ow = W.write;
+    window.pieceWrites = 0; W.write = function (d) { if (d && d.type === 'write' && typeof d.position === 'number') window.pieceWrites++; return ow.call(this, d); };
+    addMount(await mountDir(dir));
+  }, fill.toString());
+  check(await until(/\/mnt\/bigdir: 1 files, changes go back/, 30000), 'mount (folder handle): 64 MB file listed, read-write');
+  await send('echo BM=$(dd if=/mnt/bigdir/big.bin bs=4096 skip=8000 count=2 2>/dev/null | sha256sum | cut -c1-16)\r');
+  check(await until(new RegExp('BM=' + hMid.slice(0, 16)), 120000), 'mount (folder handle): dd skip in the middle reads the right bytes');
+  // download (☰ Files) through the worker of a big mounted file not read whole yet: in pieces
+  const dl = await p.evaluate(() => new Promise((res) => {
+    const old = dlGot; const t = setTimeout(() => res('timeout'), 240000);
+    dlGot = async (m) => { if (m.path !== '/mnt/bigdir/big.bin') return old(m); clearTimeout(t); dlGot = old; if (!m.data) return res('no data');
+      const h = await crypto.subtle.digest('SHA-256', await new Blob([m.data]).arrayBuffer()); res(m.data.size + ' ' + [...new Uint8Array(h)].map((x) => x.toString(16).padStart(2, '0')).join('')); };
+    w.postMessage({ type: 'get', path: '/mnt/bigdir/big.bin', to: 'dl' });
+  }));
+  check(dl === BIGN + ' ' + hAll, 'download of a big mounted file not read whole: all of it, in pieces', dl);
+  // write back to the device folder in pieces: change 4 KB in the middle, the page writes the file
+  await send('dd if=/dev/zero of=/mnt/bigdir/big.bin bs=4096 seek=100 count=1 conv=notrunc 2>/dev/null; echo wr-$((0+$?))x\r');
+  check(await until(/wr-0x/, 120000), 'mount (folder handle): 4 KB written in the middle');
+  big.fill(0, 100 * 4096, 101 * 4096);
+  const hNew = sha(big);
+  let back = '';
+  for (let t0 = Date.now(); Date.now() - t0 < 120000; await p.waitForTimeout(2000)) {
+    back = await p.evaluate(async () => {
+      const f = await (await (await (await navigator.storage.getDirectory()).getDirectoryHandle('bigdir')).getFileHandle('big.bin')).getFile();
+      const h = await crypto.subtle.digest('SHA-256', await f.arrayBuffer());
+      return f.size + ' ' + [...new Uint8Array(h)].map((x) => x.toString(16).padStart(2, '0')).join('') + ' ' + window.pieceWrites;
+    });
+    if (back.startsWith(BIGN + ' ' + hNew)) break;
+  }
+  check(back.startsWith(BIGN + ' ' + hNew + ' '), 'mount (folder handle): the change reaches the device folder', back);
+  check(+back.split(' ')[2] >= 16, 'mount (folder handle): written back in 4 MB pieces', back);
 } catch (e) { check(false, 'page test', e.stack); }
 await browser.close(); srv.kill();
 const pass = results.filter(Boolean).length;

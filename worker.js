@@ -147,7 +147,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   };
   const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(u + ': ' + r.status); return r; });
   const [wasm, busybox, overlay, saved] = await Promise.all([
-    get('engine.wasm?v=28').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
+    get('engine.wasm?v=29').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
     get('overlay.tar?v=11').then((r) => r.arrayBuffer()), loadSaved()]);
   let rootfs = null;
   if (!saved) {
@@ -184,6 +184,17 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
       b.set(nm); v.setBigUint64(nm.length + 1, BigInt(off), true); v.setBigUint64(nm.length + 9, BigInt(len), true); b.set(d, nm.length + 17); put(b); x.linux_mount_data();
     },
     get(path) { put(enc.encode(path)); const n = x.linux_get_file(); return n < 0 ? null : new Uint8Array(mem.buffer, x.out_ptr(), n).slice(); },
+    // a piece of a file: { size, data }, 'wait' (a mounted file still misses it: asked from the page) or null
+    range(path, off, len) {
+      if (!x.linux_get_range) return null;
+      const nm = enc.encode(path), b = new Uint8Array(nm.length + 17), v = new DataView(b.buffer);
+      b.set(nm); v.setBigUint64(nm.length + 1, BigInt(off), true); v.setBigUint64(nm.length + 9, BigInt(len), true); put(b);
+      const n = x.linux_get_range();
+      if (n === -2) return 'wait';
+      if (n < 8) return null;
+      const o = new Uint8Array(mem.buffer, x.out_ptr(), n);
+      return { size: Number(new DataView(o.buffer, o.byteOffset, 8).getBigUint64(0, true)), data: o.slice(8) };
+    },
     text(n) { return n ? dec.decode(new Uint8Array(mem.buffer, x.out_ptr(), n)) : ''; },
   };
   storeArm();
@@ -290,7 +301,12 @@ onmessage = async (ev) => {
   if (d.type === 'put') { if (lx) { lx.put(d.name, d.data); loaded(d.name, d.data.byteLength); } else pendingPuts.push({ name: d.name, data: d.data }); return; }
   if (d.type === 'mdata') { if (lx && x.linux_mount_data) { lx.mdata(d.name, d.off, d.len, d.data); loaded(d.name, (held.get(d.name) || 0) + d.len); } return; }
   if (d.type === 'mount') { if (lx) mount(d); else pendingMounts.push(d); return; }
-  if (d.type === 'get') { const data = lx ? lx.get(d.path) : null; postMessage({ type: 'file', path: d.path, data, to: d.to }, data ? [data.buffer] : []); return; }
+  if (d.type === 'get') {
+    const r = lx ? lx.range(d.path, 0, 0) : null;
+    if (r && r.size > PIECE / 4) { postMessage({ type: 'file', path: d.path, data: await readAll(d.path), to: d.to }); return; } // in pieces, never whole
+    const data = lx ? lx.get(d.path) : null; postMessage({ type: 'file', path: d.path, data, to: d.to }, data ? [data.buffer] : []); return;
+  }
+  if (d.type === 'range') { const data = await readRange(d.path, d.off, d.len); postMessage({ type: 'range', id: d.id, size: data ? data.size : -1, data: data ? data.data.buffer : null }, data ? [data.data.buffer] : []); return; }
   if (d.type === 'rm') { // the Files view: only your own files (home, /root, /tmp, mounted folders), never the system
     if (!lx) return;
     const parent = d.path.replace(/\/[^/]*$/, '') || '/';
@@ -390,6 +406,27 @@ const mounts = new Map(); // root -> Map(path -> 'D' | size)
 const pendingMounts = [];
 let pendingLs = null; // the Download page asked for a list before Linux was up
 const MOUNT_RAM = 192 * 1048576;
+const PIECE = 4 * 1048576; // big files go to the page and back in pieces of this size
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+// a piece of a file of Linux; for a big mounted file waits (up to 2 min) while the page reads what it misses
+async function readRange(path, off, len) {
+  for (let t0 = Date.now(); lx && Date.now() - t0 < 120000; await pause(40)) {
+    const r = lx.range(path, off, len);
+    if (r !== 'wait') return r;
+  }
+  return null;
+}
+async function readAll(path) { // a big file as a Blob, read piece by piece (the browser keeps big Blobs on disk)
+  const parts = [];
+  for (let off = 0, size = Infinity; off < size;) {
+    const r = await readRange(path, off, PIECE);
+    if (!r) return null;
+    size = r.size;
+    if (!r.data.length) break;
+    parts.push(new Blob([r.data])); off += r.data.length;
+  }
+  return new Blob(parts);
+}
 let held = new Map(); // mounted files read into memory: path -> size (oldest first)
 function mount(d) {
   put(enc.encode(d.root + '\n' + d.list)); x.linux_mount();
@@ -419,6 +456,7 @@ function syncMounts() {
         const i = gone.findIndex((g) => prev.get(g) !== 'D' && prev.get(g).size === v.size);
         if (i >= 0) { ops.push({ op: 'move', from: gone[i], path: p }); gone.splice(i, 1); continue; }
       }
+      if (v.size > PIECE / 4) { ops.push({ op: 'wbig', path: p, size: v.size }); loaded(p, v.size); continue; } // the page pulls it in pieces
       const data = lx.get(p);
       if (data) { ops.push({ op: 'write', path: p, data: data.buffer }); buf.push(data.buffer); loaded(p, data.length); }
     }

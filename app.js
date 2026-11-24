@@ -53,7 +53,7 @@ $('calib').onclick = async () => {
   $('calib').disabled = true;
   await stop(true);
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=36');
+  const c = new Worker('worker.js?v=37');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -78,7 +78,7 @@ showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
   stop(false).then(() => {
-    const r = new Worker('worker.js?v=36');
+    const r = new Worker('worker.js?v=37');
     r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
     r.postMessage({ type: 'reset' });
   });
@@ -113,7 +113,7 @@ if (navigator.serviceWorker) {
 }
 function wasiEnd(pid) { const b = wasiWorkers.get(pid); if (b) { b.terminate(); wasiWorkers.delete(pid); } }
 function wasiStart(m) {
-  const b = new Worker('wasi-worker.js?v=36', { type: 'module' });
+  const b = new Worker('wasi-worker.js?v=37', { type: 'module' });
   wasiWorkers.set(m.pid, b);
   b.onmessage = (ev) => { if (ev.data.type === 'done') wasiEnd(m.pid); };
   b.onerror = () => wasiEnd(m.pid);
@@ -126,7 +126,7 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=36');
+  w = new Worker('worker.js?v=37');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;
@@ -135,7 +135,8 @@ function start() {
     else if (m.type === 'ls') dlShow(m);
     else if (m.type === 'store') stShow(m);
     else if (m.type === 'mfetch') mountFetch(m.paths);
-    else if (m.type === 'msync') mountSync(m.root, m.ops);
+    else if (m.type === 'msync') { syncQ = syncQ.then(() => mountSync(m.root, m.ops)); } // one after another: a big file is written in many steps
+    else if (m.type === 'range') { const r = ranges.get(m.id); if (r) { ranges.delete(m.id); r(m); } }
     else if (m.type === 'saved') term.write('\r\n\x1b[2m[files saved]\x1b[0m\r\n');
     else if (m.type === 'info') { pref.set('alpine-user', m.user || ''); }
     else if (m.type === 'wasi-start') wasiStart(m);
@@ -454,7 +455,10 @@ async function dirFor(m, path, create) { // the device folder holding path
   for (const s of path.slice(m.root.length + 1).split('/').slice(0, -1)) d = await d.getDirectoryHandle(s, { create });
   return d;
 }
-let roWarned = false;
+let roWarned = false, syncQ = Promise.resolve();
+const ranges = new Map(); let rangeId = 0; // pieces of Linux files asked from the worker
+const wRange = (path, off, len) => new Promise((res) => { if (!w) return res(null); const id = ++rangeId; ranges.set(id, res); w.postMessage({ type: 'range', id, path, off, len }); });
+const PIECE = 4 * 1048576;
 async function mountSync(root, ops) {
   const m = mounted.get(root);
   if (!m) return;
@@ -466,6 +470,20 @@ async function mountSync(root, ops) {
       else if (o.op === 'write') {
         const fh = await (await dirFor(m, o.path, true)).getFileHandle(base, { create: true });
         const wr = await fh.createWritable(); await wr.write(o.data); await wr.close();
+        m.files.set(o.path, fh);
+      } else if (o.op === 'wbig') { // a big file: written in 4 MB pieces as the worker hands them, never whole in memory
+        const fh = await (await dirFor(m, o.path, true)).getFileHandle(base, { create: true });
+        const wr = await fh.createWritable({ keepExistingData: false });
+        try {
+          for (let off = 0, size = o.size; off < size;) {
+            const r = await wRange(o.path, off, PIECE);
+            if (!r || !r.data) throw new Error('Linux did not give the file');
+            size = r.size;
+            if (!r.data.byteLength) break;
+            await wr.write({ type: 'write', position: off, data: r.data }); off += r.data.byteLength;
+          }
+          await wr.close();
+        } catch (er) { try { await wr.abort(); } catch (e2) {} throw er; }
         m.files.set(o.path, fh);
       } else if (o.op === 'move') {
         const src = m.files.get(o.from);

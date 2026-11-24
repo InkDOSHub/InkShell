@@ -2210,26 +2210,32 @@ fn mnt_gate(e: &mut Engine, nr: u64) -> bool {
         265 => { let s = path_at(e, a0, a1); let q = lx(e).resolve(&s, true); need.push((q, 0, ALL)); }
         _ => {}
     }
-    let l = lx(e);
-    let ext = crate::lxdata::EXT as u64;
     for (p, off, n) in need {
-        let Some(h) = l.holes.get(&p) else { continue };
-        let len = match l.fs.get(&p) { Some(Node::File(d)) => d.len(), _ => continue };
-        if n == 0 || off >= len { continue; }
-        let (j0, j1) = (off / ext, (off.saturating_add(n)).min(len).div_ceil(ext));
-        let miss = |j: u64| h.get((j / 64) as usize).map_or(false, |w| w & (1u64 << (j % 64)) != 0);
-        let Some(first) = (j0..j1).find(|&j| miss(j)) else { continue };
-        let total = len.div_ceil(ext);
-        let mut last = first + 1;
-        while last < total && last - first < 64 && miss(last) { last += 1; }
-        let (a, z) = (first * ext, (last * ext).min(len));
-        let req = format!("{}\t{}\t{}", p, a, z - a);
-        if !l.fetch.contains(&req) { l.fetch.push(req); }
+        let Some(first) = want(lx(e), &p, off, n) else { continue };
         e.cpu.rip -= 2;
         e.block_linux(Cond::Range(p, first as u32), None);
         return true;
     }
     false
+}
+
+/// The first extent of [off, off+n) of mounted file `p` not fetched yet, after asking the page
+/// for it (up to 4 MB from there, read-ahead); None when the range is all in.
+fn want(l: &mut Lx, p: &str, off: u64, n: u64) -> Option<u64> {
+    let ext = crate::lxdata::EXT as u64;
+    let h = l.holes.get(p)?;
+    let len = match l.fs.get(p) { Some(Node::File(d)) => d.len(), _ => return None };
+    if n == 0 || off >= len { return None; }
+    let (j0, j1) = (off / ext, (off.saturating_add(n)).min(len).div_ceil(ext));
+    let miss = |j: u64| h.get((j / 64) as usize).map_or(false, |w| w & (1u64 << (j % 64)) != 0);
+    let first = (j0..j1).find(|&j| miss(j))?;
+    let total = len.div_ceil(ext);
+    let mut last = first + 1;
+    while last < total && last - first < 64 && miss(last) { last += 1; }
+    let (a, z) = (first * ext, (last * ext).min(len));
+    let req = format!("{}\t{}\t{}", p, a, z - a);
+    if !l.fetch.contains(&req) { l.fetch.push(req); }
+    Some(first)
 }
 
 /// A big mounted file: blocks of its full size, none fetched yet (read piece by piece, mnt_gate).
@@ -2303,6 +2309,28 @@ pub extern "C" fn linux_get_file() -> i32 {
     let p = l.resolve(&String::from_utf8_lossy(&b), true);
     if l.holes.contains_key(&p) { return -1; } // a mounted file not fetched whole: the page has it
     match l.fs.get(&p) { Some(Node::File(d)) => crate::set_out(d.all(&mut l.bc, &mut e.mmu)) as i32, _ => -1 }
+}
+
+/// A piece of a file of the tree, for the page to download or write back to a mounted folder
+/// without holding it whole. Buffer: "path\0", offset, length (u64 little-endian each). Out: the
+/// file size (u64 little-endian) then up to `length` bytes from `offset`; its length. -1 when it
+/// is not a file; -2 when a mounted file still misses some of that range: the page is asked for
+/// it (linux_mount_fetch) and the caller tries again once it is in.
+#[no_mangle]
+pub extern "C" fn linux_get_range() -> i32 {
+    let e = crate::eng();
+    let b = unsafe { crate::take_buf() };
+    let Some(l) = e.s.lx.as_mut() else { return -1 };
+    let nl = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+    if b.len() < nl + 17 { return -1; }
+    let p = l.resolve(&String::from_utf8_lossy(&b[..nl]), true);
+    let off = u64::from_le_bytes(b[nl + 1..nl + 9].try_into().unwrap());
+    let n = u64::from_le_bytes(b[nl + 9..nl + 17].try_into().unwrap()).min(1 << 26);
+    if want(l, &p, off, n).is_some() { return -2; }
+    let Some(Node::File(d)) = l.fs.get(&p) else { return -1 };
+    let mut o = d.len().to_le_bytes().to_vec();
+    o.extend_from_slice(&d.read(&mut l.bc, &mut e.mmu, off, n as usize));
+    crate::set_out(o) as i32
 }
 
 // ---------------------------------------------------------------- network
