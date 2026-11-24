@@ -160,8 +160,14 @@ b_zip() { # Info-ZIP zip 3.0 (Debian's copy of the upstream tarball), no bzip2; 
     -o "$OUT/zip.wasm" -L"$P/lib" -lcompat $EMUL $STACK)
 }
 
-b_unzip() { # Info-ZIP unzip 6.0 (Debian's copy of the upstream tarball), no bzip2; times are UTC (no time zones); its ztimbuf has the layout of struct utimbuf
+b_unzip() { # Info-ZIP unzip 6.0 (Debian's copy of the upstream tarball) with Debian's security fixes, no bzip2; times are UTC (no time zones); its ztimbuf has the layout of struct utimbuf
   compat; dl "http://deb.debian.org/debian/pool/main/u/unzip/unzip_$UNZIP.orig.tar.gz" unzip
+  # patches/unzip: Debian 6.0-28 fixes (CVE-2014-8139/8140/8141, CVE-2014-9636, CVE-2014-9913, CVE-2015-7696/7697,
+  # CVE-2016-9844, CVE-2018-1000035, CVE-2019-13232 zip bomb with overlapped entries, CVE-2022-0529/0530); Info-ZIP license
+  if [ ! -f "$WORK/unzip/.patched" ]; then
+    for f in $(grep -v '^#' "$here/patches/unzip/series"); do echo "patch $f"; patch -p1 -s -d "$WORK/unzip" < "$here/patches/unzip/$f"; done
+    touch "$WORK/unzip/.patched"; tar -czf "$OUT/src-unzip-$UNZIP-debian-patches.tar.gz" -C "$here/patches" unzip
+  fi
   sed -i 's/^    m_time += timezone; /    m_time += 0; /' "$WORK/unzip/fileio.c"
   (cd "$WORK/unzip" && $CC -O2 $EMU -I"$P/compat" -include compat.h $IZ -I. -DDIRENT -DNO_LCHMOD -DDATE_FORMAT=DF_YMD -Wno-error=incompatible-pointer-types \
     unzip.c crc32.c crypt.c envargs.c explode.c extract.c fileio.c globals.c inflate.c list.c match.c process.c ttyio.c \
