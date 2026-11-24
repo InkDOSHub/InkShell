@@ -97,13 +97,17 @@ put(enc.encode('busybox\0sh /etc/inksoc/start'));
 if (x.start() !== 0) { console.log('FAIL start:', dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()))); process.exit(1); }
 x.linux_winsize(30, 100);
 const send = (t) => { const b = enc.encode(t); put(b); x.linux_stdin(b.length); };
+const WASI_MAX = 300000; // ms, one WebAssembly program in settle()
 // run until the program waits for the terminal again (or ends)
 async function settle(maxMs = 120000) {
   const t0 = Date.now();
   for (let idle = 0; Date.now() - t0 < maxMs;) {
     const st = x.run(2000000);
     serveMount();
-    if (hasWasi) for (let pid; (pid = x.wasi_next());) runWasi(x, pid, { serve: serveMount }); // serveMount: a WASI read of a big /mnt file
+    if (hasWasi) for (let pid; (pid = x.wasi_next());) { // serveMount: a WASI read of a big /mnt file waits on its pieces
+      const end = Date.now() + WASI_MAX; // watchdog: fail fast instead of eating the job's 30 min
+      runWasi(x, pid, { serve: () => { serveMount(); if (Date.now() > end) { console.log(`FAIL WebAssembly program ran over ${WASI_MAX / 1000} s (hung?)\n---- output ----\n${out.slice(-600)}`); process.exit(1); } } });
+    }
     if (st === 1 || st === 2) return st;
     // waiting: a timer due soon (sleep, a timeout) is not idle; only waiting for the terminal is
     if (st === 3) { const ms = x.stat(17); if (ms >= 30 && !(x.linux_timer_ms?.() >= 0) && ++idle > 20) return 3; await new Promise((r) => setTimeout(r, Math.min(ms, 30) || 2)); } else idle = 0;
