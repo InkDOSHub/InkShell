@@ -75,6 +75,15 @@ jobs:
           /usr/bin/time -v -o out/wasm-py.time timeout 1800 node tests/bench-engine.mjs out/engine.wasm bench.sh=out/bench.sh pybench.py=out/pybench.py zpywasm.tar=out/zpywasm.tar -- sh /root/bench.sh py 2>&1 | tee out/wasm-py.log
           grep -q '@@T done' out/wasm-py.log || echo "- motor \`py\` (WebAssembly): não terminou (ver wasm-py.log)" | tee -a out/engine-fails.txt
           echo "::endgroup::"
+      - name: Profile (engine built with --features ophist; measurement only, not published)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          cd engine-src && cargo build --release --target wasm32-unknown-unknown --features ophist
+          cp target/wasm32-unknown-unknown/release/inksoc.wasm ../out/engine-ophist.wasm && cd ..
+          PROFILE_JSON=out/profile.json timeout 1800 node tests/bench-engine.mjs out/engine-ophist.wasm cpubench=out/cpubench bench.sh=out/bench.sh -- sh /root/bench.sh cpu > out/profile-cpu.log 2>&1 || true
+          { echo "## Perfil x86 do cpubench (JIT vs interpretador)"; echo; node tests/bench/profile.mjs out/profile.json; } > out/profile.md
+          cat out/profile.md | tee -a $GITHUB_STEP_SUMMARY
       - name: Report
         if: always()
         run: |
@@ -102,7 +111,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           cd out
-          { echo '<!-- bench-compare -->'; cat compare.md; echo; echo '<details><summary>Motor vs nativo</summary>'; echo; cat report.md; echo; echo '</details>'; } > body.md
+          { echo '<!-- bench-compare -->'; cat compare.md; echo; echo '<details><summary>Motor vs nativo</summary>'; echo; cat report.md; echo; echo '</details>'; echo; echo '<details><summary>Perfil x86 (cpubench)</summary>'; echo; cat profile.md 2>/dev/null; echo; echo '</details>'; } > body.md
           cid=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate -q '.[] | select(.body | startswith("<!-- bench-compare -->")) | .id' | tail -1)
           if [ -n "$cid" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$cid" -F body=@body.md >/dev/null
           else gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@body.md >/dev/null; fi

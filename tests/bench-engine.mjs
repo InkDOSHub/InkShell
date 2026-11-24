@@ -16,6 +16,9 @@ let mem, x, out = '', line = '';
 const sw = swapStore(() => mem); // the page's OPFS swap file, in memory here
 const t0 = performance.now();
 let peakRss = 0, done = false;
+// PROFILE_JSON=FILE (engine built with --features ophist): counters after each output line, for tests/bench/profile.mjs
+const PROF = process.env.PROFILE_JSON, prof = [];
+const snap = () => ({ ctr: Array.from({ length: 32 }, (_, i) => x.prof_ctr(i)), op: Array.from({ length: 512 }, (_, i) => x.ophist(i)) });
 const mb = (b) => (b / 1048576).toFixed(0);
 function emit(s) {
   line += s;
@@ -23,6 +26,7 @@ function emit(s) {
     const l = line.slice(0, k).replace(/\r/g, '');
     console.log(`${(performance.now() - t0).toFixed(1)}\t${l}\t${mb(mem.buffer.byteLength)}`);
     if (l === '@@T done') done = true;
+    if (PROF && x.prof_ctr) prof.push({ line: l, ms: performance.now() - t0, c: snap() });
   }
 }
 const env = {
@@ -66,5 +70,6 @@ try {
 if (line) emit('\n');
 if (st === 2) console.log(`${(performance.now() - t0).toFixed(1)}\t@@ERR engine stopped: ${dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()))}`);
 if (!done && performance.now() - t0 >= LIMIT) console.log(`${(performance.now() - t0).toFixed(1)}\t@@ERR time limit ${LIMIT} ms`);
+if (PROF) fs.writeFileSync(PROF, JSON.stringify(prof));
 console.log(`@@MEM wasm=${mb(mem.buffer.byteLength)} rss=${mb(peakRss)}`);
 process.exit(done ? 0 : 1);

@@ -79,7 +79,9 @@ impl Jit {
     }
     #[cold]
     fn lookup_slow(e: &mut Engine, rip: u64, k: usize) -> Option<u32> {
+        pc(4, 1);
         if let Some(&f) = e.jit.map.get(&rip) {
+            pc(5, 1);
             e.jit.l1[k] = (rip, f);
             return if f == NONE { None } else { Some(f) };
         }
@@ -89,6 +91,7 @@ impl Jit {
             return None;
         }
         e.jit.hits.remove(&rip);
+        pc(6, 1);
         let t0 = crate::now_ms();
         let f = match compile(e, rip) {
             Some(code) => {
@@ -105,6 +108,10 @@ impl Jit {
             None => NONE,
         };
         e.jit.ms += crate::now_ms() - t0;
+        pc(10, ((crate::now_ms() - t0) * 1000.0) as u64);
+        if f == NONE {
+            pc(7, 1);
+        }
         #[cfg(feature = "ophist")]
         if f == NONE {
             crate::console(&format!("OPRIP nojit {:x} m32={}\n", rip, e.cpu.mode32));
@@ -205,7 +212,9 @@ pub extern "C" fn jit_step(next: u64) -> u32 {
     if e.s.error.is_some() {
         e.cpu.jit_limit = 0;
     }
-    (e.s.error.is_some() || e.s.exited || e.cpu.rip != next) as u32
+    let stop = e.s.error.is_some() || e.s.exited || e.cpu.rip != next;
+    pc(8, stop as u64);
+    stop as u32
 }
 
 #[no_mangle]
@@ -642,9 +651,9 @@ impl G {
     /// prof build: counts one event k in prof::DYN
     #[allow(unused_variables)]
     fn cnt(&mut self, k: u32) {
-        #[cfg(feature = "prof")]
+        #[cfg(any(feature = "prof", feature = "ophist"))]
         {
-            let a = unsafe { core::ptr::addr_of!(prof::DYN) as u32 } + 8 * k;
+            let a = unsafe { core::ptr::addr_of!(DYN) as u32 } + 8 * k;
             self.i32c(0);
             self.i32c(0);
             self.mem(I64LOAD, 3, a);
@@ -1284,6 +1293,7 @@ impl G {
     }
     /// Leaves the block for `rip` (constant) after n instructions.
     fn exit(&mut self, rip: u64, n: u32) {
+        self.cnt(2);
         self.flush();
         self.exit_flags();
         self.set_rip_const(rip);
@@ -1292,6 +1302,7 @@ impl G {
     }
     /// Leaves the block for the address in local t.
     fn exit_dyn(&mut self, t: u32, n: u32) {
+        self.cnt(8);
         self.flush();
         self.exit_flags();
         let a = self.cpu + off!(rip);
@@ -1337,6 +1348,7 @@ impl G {
             self.cpu_ld64(off!(jit_limit));
             self.b(I64GEU);
             self.if_hint(VOID, false);
+            self.cnt(9);
             if !need {
                 self.exit_flags();
             }
@@ -1360,6 +1372,7 @@ impl G {
         self.cpu_ld64(off!(jit_limit));
         self.b(I64GEU);
         self.if_hint(VOID, false);
+        self.cnt(9);
         self.set_rip_const(target);
         self.b(RET);
         self.b(END);
@@ -3375,12 +3388,44 @@ fn section(m: &mut Vec<u8>, id: u8, data: &[u8]) {
     m.extend_from_slice(data);
 }
 
+/// dynamic counters bumped by JIT code (prof and ophist builds): 0 fwd jumps, 1 back jumps,
+/// 2 exits to a constant rip, 3 loads, 4 stores, 5 cond calls, 6 fallbacks, 7 flag stores at jumps,
+/// 8 exits to a computed rip (ret, indirect jmp/call), 9 exits at a back jump (budget spent)
+#[cfg(any(feature = "prof", feature = "ophist"))]
+pub static mut DYN: [u64; 16] = [0; 16];
+
+/// ophist build: host-side counters (see prof_ctr); a no-op otherwise.
+#[cfg(feature = "ophist")]
+pub static mut PC: [u64; 16] = [0; 16];
+#[inline(always)]
+#[allow(unused_variables)]
+pub fn pc(i: usize, n: u64) {
+    #[cfg(feature = "ophist")]
+    unsafe {
+        PC[i & 15] += n;
+    }
+}
+/// ophist build: 0 JIT block runs, 1 instructions run in JIT code, 2 interpreter traces,
+/// 3 instructions run by traces, 4 l1 misses (lookup_slow), 5 of them found in the map,
+/// 6 compiles, 7 compiles that gave no block, 8 fallbacks that ended the block, 9 native calls,
+/// 10 compile time (us); 16+k = DYN[k].
+#[cfg(feature = "ophist")]
+#[no_mangle]
+pub extern "C" fn prof_ctr(i: u32) -> f64 {
+    unsafe {
+        if i >= 16 {
+            DYN[(i as usize - 16) & 15] as f64
+        } else {
+            PC[i as usize & 15] as f64
+        }
+    }
+}
+
 #[cfg(feature = "prof")]
 pub mod prof {
+    use super::DYN;
     use std::collections::HashMap;
     static mut P: Option<HashMap<u32, u64>> = None;
-    /// dynamic counters bumped by JIT code: 0 fwd jumps, 1 back jumps, 2 exits, 3 loads, 4 stores, 5 cond calls, 6 fallbacks, 7 flag stores at jumps
-    pub static mut DYN: [u64; 8] = [0; 8];
     pub fn add(k: u32, n: u64) {
         unsafe {
             *P.get_or_insert_with(HashMap::new).entry(k).or_insert(0) += n;
