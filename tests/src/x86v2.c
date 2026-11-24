@@ -461,7 +461,7 @@ static int64_t rlen(void) {
 // PEXTR / PINSR / EXTRACTPS: register (upper bits of the 64-bit register checked) and memory
 #define PX_R(I, n) __asm__(I " %2, %1, %k0" : "+r"(g) : "x"(a.v), "i"(n))
 #define PX_RQ(I, n) __asm__(I " %2, %1, %0" : "+r"(g) : "x"(a.v), "i"(n))
-#define PX_M(I, n) __asm__(I " %2, %1, %0" : "+m"(*mem) : "x"(a.v), "i"(n))
+#define PX_M(I, n) __asm__(I " %2, %1, %0" : "+m"(*mem) : "x"(a.v), "i"(n) : "memory")
 #define PI_R(I, n) __asm__(I " %2, %k1, %0" : "+x"(a.v) : "r"(g), "i"(n))
 #define PI_RQ(I, n) __asm__(I " %2, %1, %0" : "+x"(a.v) : "r"(g), "i"(n))
 #define PI_M(I, n) __asm__(I " %2, %1, %0" : "+x"(a.v) : "m"(*mem), "i"(n))
