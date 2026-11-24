@@ -163,6 +163,8 @@ pub struct Lx {
     pipe_nb: BTreeSet<(u32, bool)>, // pipe ends opened O_NONBLOCK
     // MAP_SHARED file mappings (pid, address, length, file, offset): written back at munmap/msync
     shared: Vec<(u32, u64, u64, String, u64)>,
+    // fcntl byte-range locks (file, owner pid, write lock, start, end exclusive; u64::MAX = to EOF)
+    locks: Vec<(String, u32, bool, u64, u64)>,
     timers: BTreeMap<u32, Tmr>, // alarm/setitimer, timer_create and timerfd timers (by id)
     alarms: BTreeMap<u32, u32>, // each process's ITIMER_REAL timer (pid -> timer id)
     next_tm: u32,
@@ -960,7 +962,10 @@ pub fn syscall(e: &mut Engine) {
         2 => { let p = e.read_cstr(a0, 4096); open(e, &p, a1, a2) }
         257 => { let p = path_at(e, a0, a1); open(e, &p, a2, a3) }
         85 => { let p = e.read_cstr(a0, 4096); open(e, &p, 0x241, a1) } // creat
-        3 => { let l = lx(e); l.cloexec.remove(&(a0 as i32)); if l.fds.remove(&(a0 as i32)).is_some() { 0 } else { -EBADF } }
+        3 => { // close (a file's POSIX locks held by this process go with any of its descriptors)
+            let l = lx(e); l.cloexec.remove(&(a0 as i32));
+            match l.fds.remove(&(a0 as i32)) { Some(Fd::File { path, .. }) => { let pid = l.pid; l.locks.retain(|k| k.1 != pid || k.0 != path); 0 } Some(_) => 0, None => -EBADF }
+        }
         4 | 6 => { let p = e.read_cstr(a0, 4096); stat_path(e, &p, a1, nr == 4) }
         262 => { // newfstatat
             let p = path_at(e, a0, a1);
@@ -1244,6 +1249,7 @@ pub fn syscall(e: &mut Engine) {
                 (0 | 1030, Some(f)) => { let n = l.new_fd_from(a2 as i32, f); if a1 == 1030 { l.cloexec.insert(n); } n as i64 }
                 (1, _) => l.cloexec.contains(&fd) as i64,
                 (2, _) => { if a2 & 1 != 0 { l.cloexec.insert(fd); } else { l.cloexec.remove(&fd); } 0 }
+                (5 | 6 | 7 | 36 | 37 | 38, Some(f)) => flock(e, a1, f, a2), // F_GETLK / F_SETLK(W) / F_OFD_*
                 (3, Some(Fd::Pipe { w, .. })) => w as i64,
                 (3, _) => 2,
                 _ => 0,
@@ -1624,6 +1630,43 @@ fn mmap(e: &mut Engine, addr: u64, len: u64, _prot: u64, flags: u64, fd: i32, of
     a as i64
 }
 
+/// fcntl record locks on a file (struct flock at `a`): F_GETLK answers the first lock of another
+/// process in the way (or F_UNLCK), F_SETLK takes/drops [start, end) for this process and fails
+/// with EAGAIN when another process holds a conflicting lock (SETLKW cannot wait here: EDEADLK).
+/// OFD locks share the table, owned by the process.
+fn flock(e: &mut Engine, cmd: u64, f: Fd, a: u64) -> i64 {
+    let Fd::File { path, pos, .. } = f else { return -EINVAL };
+    let (ty, wh, st, ln) = (e.r16(a) as i16, e.r16(a + 2), e.r64(a + 8) as i64, e.r64(a + 16) as i64);
+    let l = lx(e);
+    let base = match wh { 0 => 0, 1 => pos as i64, 2 => match l.fs.get(&path) { Some(Node::File(d)) => d.len() as i64, _ => 0 }, _ => return -EINVAL };
+    let (mut s, mut t) = (base + st, if ln == 0 { i64::MAX } else { base + st + ln });
+    if ln < 0 { t = s; s += ln; }
+    if s < 0 || !(0..=2).contains(&ty) { return -EINVAL; }
+    let (s, t) = (s as u64, if t == i64::MAX { u64::MAX } else { t as u64 });
+    let pid = l.pid;
+    let hit = l.locks.iter().find(|k| k.0 == path && k.1 != pid && k.3 < t && s < k.4 && (k.2 || ty == 1)).cloned();
+    if cmd == 5 || cmd == 36 { // GETLK
+        match hit {
+            Some((_, op, w, ks, kt)) if ty != 2 => {
+                e.w16(a, w as u16); e.w16(a + 2, 0); e.w64(a + 8, ks);
+                e.w64(a + 16, if kt == u64::MAX { 0 } else { kt - ks }); e.w32(a + 24, if cmd == 36 { u32::MAX } else { op });
+            }
+            _ => e.w16(a, 2),
+        }
+        return 0;
+    }
+    if ty != 2 && hit.is_some() { return if cmd == 7 || cmd == 38 { -35 } else { -EAGAIN }; }
+    // this process's locks: cut [s, t) out, then add the new one
+    let old = std::mem::take(&mut l.locks);
+    for k in old {
+        if k.0 != path || k.1 != pid || k.4 <= s || t <= k.3 { l.locks.push(k); continue; }
+        if k.3 < s { l.locks.push((k.0.clone(), pid, k.2, k.3, s)); }
+        if t < k.4 { l.locks.push((k.0.clone(), pid, k.2, t, k.4)); }
+    }
+    if ty != 2 { l.locks.push((path, pid, ty == 1, s, t)); }
+    0
+}
+
 /// Copies what the process wrote into its MAP_SHARED file mappings in [a, a+n) back to the files
 /// (only up to each file's length, as on Linux); `unmap` also forgets those ranges.
 fn sync_shared(e: &mut Engine, a: u64, n: u64, unmap: bool) {
@@ -1821,7 +1864,7 @@ fn gone(e: &mut Engine, pid: u32) {
     let ts = e.linux_threads(pid);
     let l = lx(e);
     for t in ts { l.tids.remove(&t); l.masks.remove(&t); l.susp.remove(&t); }
-    l.acts.remove(&pid); l.pend.remove(&pid);
+    l.acts.remove(&pid); l.pend.remove(&pid); l.locks.retain(|k| k.1 != pid);
     l.timers.retain(|_, t| t.pid != pid); l.alarms.remove(&pid);
     let pp = l.procs.get(&pid).map_or(0, |p| p.ppid);
     if pp != 0 && act(l, pp, 17)[0] > 1 { *l.pend.entry(pp).or_default() |= bit(17); }
