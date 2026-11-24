@@ -37,7 +37,10 @@ export function main({ args, sys, base: BASE, size: SIZE, inline }) {
       while (got < n) { const want = Math.min(SIZE, n - got); const { r, out } = sys(17, [fd, BASE, want, off + got], null, want); if (r <= 0) break; b.set(out.subarray(0, r), got); got += r; }
       return got === n ? b : b.subarray(0, got);
     },
-    pwrite: (fd, data, off) => sys(18, [fd, BASE, data.length, off], data).r === data.length,
+    pwrite: (fd, data, off) => { // by lseek + write (the kernel here has no pwrite64), then back where it was
+      const cur = sys(8, [fd, 0, 1]).r; if (cur < 0 || sys(8, [fd, off, 0]).r !== off) return false;
+      const ok = write(fd, data); return sys(8, [fd, cur, 0]).r === cur && ok;
+    },
     write, close: (fd) => sys(3, [fd]),
   };
   const cmd = args[1] || '';
