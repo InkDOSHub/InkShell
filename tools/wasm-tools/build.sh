@@ -1,11 +1,11 @@
 #!/bin/sh
 # Builds WebAssembly (WASI preview1) command-line tools for the catalog (apk add) from upstream sources.
-# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg
+# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum
 # env: WASI_SDK (wasi-sdk-33 or later: C++ exceptions), WORK (sources, build dirs), OUT (the .wasm files)
 # CI: .github/workflows/wasm-tools.yml builds them and publishes a GitHub release; the catalog points at it.
 # No GPL: ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
 # 7-Zip without the unRAR code (LGPL-2.1+ and BSD-3-Clause), qpdf (Apache-2.0), ImageMagick (its own Apache-style license),
-# SQLite (public domain), jq (MIT), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense).
+# SQLite (public domain), jq (MIT), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense), hashsum (InkShell's own code, MIT).
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 : "${WASI_SDK:=/opt/wasi-sdk}" "${WORK:=$PWD/wasm-tools-work}" "${OUT:=$PWD/wasm-tools-out}"
@@ -186,6 +186,10 @@ b_rg() { # ripgrep (Rust, wasm32-wasip1): one thread (WASI has none), no PCRE2
   cp "$WORK/ripgrep/target/wasm32-wasip1/release/rg.wasm" "$OUT/rg.wasm"
 }
 
+b_hashsum() { # md5sum, sha1sum, sha224/256/384/512sum, b2sum: one small C program of this repo (hashsum/hashsum.c, MIT), picked by its name
+  $CC -O3 -Wall "$here/hashsum/hashsum.c" -o "$OUT/hashsum.wasm" $CWDL
+}
+
 # b_ prefix: functions named zip, unzip... would hide those commands
-for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
+for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
 ls -l "$OUT"
