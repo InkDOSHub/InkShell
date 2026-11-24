@@ -886,7 +886,7 @@ pub fn syscall(e: &mut Engine) {
         9 => mmap(e, a0, a1, a2, a3, r[8] as i32, r[9]),
         26 => { sync_shared(e, a0, align(a1), false); 0 } // msync
         10 | 28 => 0, // mprotect, madvise
-        11 => { sync_shared(e, a0, align(a1), true); e.mmu.drop_pages(a0, a0 + align(a1)); 0 }
+        11 => { sync_shared(e, a0, align(a1), true); e.mmu.unmap_span(a0 & !(PAGE - 1), align(a0 + a1)); 0 }
         25 => -ENOMEM, // mremap: callers fall back to mmap + copy
         12 => { // brk
             let l = lx(e);
@@ -1441,6 +1441,7 @@ fn mmap(e: &mut Engine, addr: u64, len: u64, _prot: u64, flags: u64, fd: i32, of
         e.mmu.drop_pages(addr, addr + len);
         let mut p = addr & !(PAGE - 1);
         while p < addr + len { if e.mmu.region_of(p).is_none() { e.mmu.add_region(p, PAGE); } p += PAGE; }
+        e.mmu.recommit_span(addr & !(PAGE - 1), align(addr + len));
         addr
     } else {
         if e.mmu.sh.committed + len > e.mmu.sh.target_bytes { return -ENOMEM; }

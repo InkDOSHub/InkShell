@@ -18,6 +18,10 @@ jobs:
         run: |
           curl -fsSL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz | tar -xz -C $RUNNER_TEMP
           $RUNNER_TEMP/wasi-sdk-24.0-x86_64-linux/bin/clang -O2 -o tests/wasihello.wasm tests/src/wasihello.c
+      - name: x86 test programs (Alpine gcc, static)
+        run: |
+          docker run --rm -v "$PWD":/w -w /w alpine:3.21 sh -c '
+            apk add -q gcc musl-dev && gcc -O2 -fno-tree-loop-distribute-patterns -static -o tests/x86string tests/src/x86string.c'
       - name: python3 from the WebAssembly catalog (URL and sha256 from the catalog)
         run: |
           e=$(awk -F '\t' '$1 == "python3"' overlay/etc/inksoc/wasm-catalog)

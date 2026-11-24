@@ -571,6 +571,103 @@ pub extern "C" fn ophist(i: u32) -> f64 {
     unsafe { OPHIST[(i as usize) & 511] as f64 }
 }
 
+/// An address-size prefix (0x67) among the prefixes of the instruction in `b`.
+fn has_a67(b: &[u8; 16]) -> bool {
+    for &x in b.iter() {
+        match x {
+            0x67 => return true,
+            0x66 | 0xF2 | 0xF3 | 0x64 | 0x65 | 0xF0 | 0x2E | 0x3E | 0x26 | 0x36 => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// REP MOVS / REP STOS (64-bit addresses) in runs: each run is the elements that fit in the
+/// current page of the destination (and source), copied or filled at once with the result
+/// the element-by-element loop gives (direction flag, overlap). An element that crosses a page,
+/// or a page that is not in memory, goes through one plain access (faults at that element, with
+/// rcx/rsi/rdi telling how far it got, as on a CPU). true = carry on with the plain loop
+/// (rcx is 0 now); false = stop here (a fault, or a pause after a long run: rip stays on the
+/// instruction, which goes on next time, as an interrupted REP does).
+fn rep_bulk(e: &mut Engine, op: u8, size: u32) -> bool {
+    let sz = (size / 8) as u64;
+    let back = e.cpu.df;
+    let movs = op < 0xAA;
+    let mut done = 0u64;
+    while e.cpu.regs[1] != 0 {
+        if done >= 16 << 20 {
+            return false;
+        }
+        let (rcx, si, di) = (e.cpu.regs[1], e.cpu.regs[6], e.cpu.regs[7]);
+        // elements of this run that lie whole in the current page of an address
+        let fit = |a: u64| -> u64 {
+            let o = a & 0xFFF;
+            if o + sz > 4096 {
+                0
+            } else if back {
+                o / sz + 1
+            } else {
+                (4096 - o) / sz
+            }
+        };
+        let mut k = rcx.min(fit(di));
+        if movs {
+            k = k.min(fit(si));
+        }
+        let low = |a: u64| if back { a.wrapping_sub((k - 1) * sz) } else { a };
+        let offs = if k == 0 {
+            None
+        } else if movs {
+            e.mmu.bulk_pair(low(si), low(di))
+        } else {
+            e.mmu.bulk_dst(low(di)).map(|d| (0, d))
+        };
+        let Some((so, dof)) = offs else {
+            // one element the plain way
+            if movs {
+                let v = match e.mmu.read_sized(si, size) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        e.fault(si);
+                        return false;
+                    }
+                };
+                if e.mmu.write_sized(di, size, v).is_err() {
+                    e.fault(di);
+                    return false;
+                }
+            } else if e.mmu.write_sized(di, size, e.cpu.regs[0]).is_err() {
+                e.fault(di);
+                return false;
+            }
+            k = 1;
+            let step = if back { sz.wrapping_neg() } else { sz };
+            if movs {
+                e.cpu.regs[6] = si.wrapping_add(step);
+            }
+            e.cpu.regs[7] = di.wrapping_add(step);
+            e.cpu.regs[1] = rcx - 1;
+            done += sz;
+            continue;
+        };
+        if movs {
+            e.mmu.bulk_move(dof, so, k as usize, sz as usize, back);
+        } else {
+            e.mmu.bulk_fill(dof, k as usize, sz as usize, e.cpu.regs[0]);
+        }
+        let n = k * sz;
+        let adv = if back { n.wrapping_neg() } else { n };
+        if movs {
+            e.cpu.regs[6] = si.wrapping_add(adv);
+        }
+        e.cpu.regs[7] = di.wrapping_add(adv);
+        e.cpu.regs[1] = rcx - k;
+        done += n;
+    }
+    true
+}
+
 fn step_raw(e: &mut Engine) {
     let mut buf = [0u8; 16];
     let rip = e.cpu.rip;
@@ -822,6 +919,12 @@ fn step_raw(e: &mut Engine) {
             let size = if op & 1 == 0 { 8 } else { osz };
             let step = (size / 8) as u64;
             let step = if e.cpu.df { step.wrapping_neg() } else { step };
+            // REP in 64-bit code: whole runs of elements at a time, one page of each side per run
+            if rep != 0 && !e.cpu.mode32 && e.cpu.seg == 0 && !has_a67(&buf) {
+                if !rep_bulk(e, op, size) {
+                    return; // a fault, or a pause after a long run (rip stays: the instruction goes on)
+                }
+            }
             loop {
                 if rep != 0 && e.cpu.regs[1] == 0 {
                     break;

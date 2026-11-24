@@ -25,6 +25,11 @@ Terminal Alpine Linux no navegador (iPad XeOS principal, iPhone Safari). Motor =
 ## Chave do gerente
 Antes de CADA item: `git fetch -q && git show origin/main:ROADMAP.md | grep ^CONTROLE:`. `PARAR` = parar já, sem novo commit. `seguir` = ok.
 
+## Prioridade (custo-benefício)
+- Razão = ganho estimado (%) ÷ pontos. Anotar ganho est. na fila antes; ganho medido depois.
+- Diferença relativa entre as 2 melhores razões < 30% → escolher o que mais libera gargalo futuro. ≥ 30% → melhor razão. Empate → mais barato.
+- Meta: terminal Linux decente p/ o InkDOS Hub no WebKit (XeOS/iPad, tela externa), offline, arquivos fatiados (pastas 12 GB, arquivos 10 GB sem RAM). WASM primeiro; x86-64 (InkSoC) reserva.
+
 ## Anti-insistência (consumo consciente)
 Gastar só no que tira gargalo e deixa ganho duradouro.
 - **Prova antes**: item de desempenho só começa com medida (bench/perfil) mostrando que ELE é o gargalo. Sem prova → item vira "medir X" (1 pt) primeiro.
