@@ -1,6 +1,7 @@
 # InkShell roadmap
 
 CONTROLE: seguir
+SALDO: semana 1 (até ter 24/11 17:00): 31% gasto ≈ 23 pts de 30 → sobram ~7 pts.
 
 Fonte: "Roadmap do terminal Linux (a partir de sex 27/11)", Paulo, 2026-11-22.
 Foco: terminal Linux sólido e rápido no WebKit. Ferramenta com WASM roda direto; x86 (InkSoC) só reserva. Arquivo nunca inteiro na RAM.
