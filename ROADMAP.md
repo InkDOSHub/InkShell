@@ -131,6 +131,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-24 | 1 | licença MIT do motor + Tahoma (LGPL) fora do build do terminal | #58 | 1 |
 | 2026-11-24 | 1 | 37: loja velocidade/ETA | #59 | 1 |
 | 2026-11-24 | 1 | 38: roteiro de teste iPad XeOS | #60 | 1 |
+| 2026-11-24 | 1 | regra de testes (CLAUDE.md + workflows) | #61 | 1 |
 | 2026-11-24 | 1 | 33: hashes WASM (travado, queimado) | #54 | 2 |
 | 2026-11-24 | 1 | 36: retomada hashes WASM + WASI /mnt grande | #54 | 2 |
 | 2026-11-24 | 1 | Hub: Cache-Control immutable p/ ?v= (inkdoshub.github.io #108) | #108 | 1 |

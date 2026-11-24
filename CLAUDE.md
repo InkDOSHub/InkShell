@@ -44,3 +44,9 @@ Bump query string: `engine.wasm?v=`, `worker.js?v=`, `app.js?v=`, `overlay.tar?v
 
 ## Grafo
 `graph.yml` (Actions) regera `docs/graph/SUMMARY.md` com graphify (AST, sem LLM). Rodar via workflow_dispatch se SUMMARY estiver velho (>20 commits).
+
+## Testes proporcionais (obrigatório)
+- Teste proporcional ao item: só doc/UI → só teste Linux leve, sem bench. Bench só em item de desempenho.
+- Arquivo grande (1 GB/10 GB) só no item que mede isso. Nunca em todo PR.
+- Passo que pode travar (mount, hash, rede) = `timeout 300`. Todo job tem `timeout-minutes` curto.
+- Worker cancela run sem saída há 5 min (`gh api -X POST repos/InkDOSHub/InkShell/actions/runs/<id>/cancel`). Conta como rodada de CI.

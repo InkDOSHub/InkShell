@@ -9,6 +9,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'ROADMAP.md', 'LICENSE*']
   workflow_dispatch:
     inputs:
       big_mb: { description: 'Big file size (MB)', default: '1024' }
