@@ -8,6 +8,11 @@ sort /etc/passwd | head -1; find /etc -newer /etc/passwd -name '*.conf' | head -
 bash -c 'echo bash $BASH_VERSION; x=$(seq 3 | tr "\n" +); echo ${x}0; read -t 0.1 y < /dev/null; mapfile l < /etc/passwd; echo ${#l[@]} lines'; a bash
 seq 20000 > s.txt; gzip -k s.txt && gzip -t s.txt.gz && xz -k s.txt && xz -t s.txt.xz && tar -cJf s.tar.xz s.txt && tar -tJf s.tar.xz && tar -czf s.tgz s.txt && tar -xzf s.tgz -C /root && echo pack-ok; a tar-gzip-xz
 sqlite3 /tmp/d.db 'create table t(a,b); insert into t values(1,'"'"'x'"'"'),(2,'"'"'y'"'"'); select count(*), sum(a) from t; select * from t;'; a sqlite3
+# WAL mode (-shm mapped MAP_SHARED + fcntl range locks; waited forever before item 28): 1000 rows in a
+# transaction, checkpoint, then a second process reads them back from the WAL database
+timeout 60 sqlite3 /tmp/w.db "pragma journal_mode=wal; create table t(a, b); begin; with recursive c(x) as (select 1 union all select x + 1 from c where x < 1000) insert into t select x, 'r' || x from c; commit; pragma wal_checkpoint; select 'wal1 ' || count(*) || '-' || sum(a) from t;"; echo "wal-rc $?"
+w=$(timeout 60 sqlite3 /tmp/w.db "pragma journal_mode; insert into t values(1001, 'z'); select count(*) || '-' || sum(a) from t; pragma wal_checkpoint(truncate);" | tr '\n' ' '); echo "wal2 $w"
+case "$w" in "wal 1001-501501 0|0|0 ") echo sqlite-wal-ok;; esac; a sqlite3-wal
 python3 - <<'PY'
 import os, sys, json, sqlite3, subprocess, shutil, tempfile, hashlib, socket, threading, time, select, mmap, signal
 print("py", sys.version.split()[0])
@@ -30,6 +35,4 @@ python3 -c 'import os, concurrent.futures as c; print("pool", sum(c.ThreadPoolEx
 cd /tmp/r && git blame a | tail -1 && git grep -c 1 && echo y >> a && git stash -q && git stash pop -q && git checkout -qb b2 && git log --stat -1 | tail -1 && echo git2-ok; cd /tmp; a git-2
 wget -q -T 2 -O - http://127.0.0.1:9/ 2>&1 | tail -1; a wget
 echo "@@ENOSYS-TOTAL $(cat /proc/inksoc/enosys | tr '\t\n' ': ')"
-# last: sqlite3 WAL mode (shared -shm mapping + byte-range locks) waited forever here (item 27)
-sqlite3 /tmp/w.db 'pragma journal_mode=wal; create table t(a); insert into t values(1); select count(*) from t;'; a sqlite3-wal
 echo "@@T done"

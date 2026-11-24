@@ -84,8 +84,11 @@ jobs:
               --repositories-file /etc/apk/repositories python3 git sqlite xz bash coreutils findutils grep tar gzip &&
             tar -C /x -cf out/zaudit.tar usr/bin usr/lib usr/libexec usr/share/git-core lib bin etc/ssl 2>/dev/null; ls -la out/zaudit.tar'
           timeout 1500 node tests/bench-engine.mjs out/engine.wasm audit.sh=tests/bench/audit.sh zaudit.tar=out/zaudit.tar -- sh /root/audit.sh > out/audit.log 2>&1 || true
-          { echo "## Auditoria de syscalls (ENOSYS por programa x86)"; echo; echo '```'; cut -f2 out/audit.log | grep -E '^@@(A|ENOSYS|ERR)|ok$|-done$|^py |^bash ' ; echo '```'; } > out/audit.md
+          { echo "## Auditoria de syscalls (ENOSYS por programa x86)"; echo; echo '```'; cut -f2 out/audit.log | grep -E '^@@(A|ENOSYS|ERR)|ok$|-done$|^py |^bash |^wal' ; echo '```'; } > out/audit.md
           cat out/audit.md | tee -a $GITHUB_STEP_SUMMARY
+      - name: sqlite3 x86 in WAL mode (item 28)
+        if: ${{ !cancelled() }}
+        run: cut -f2 out/audit.log | grep -E '^wal|sqlite-wal|rror' ; grep -q sqlite-wal-ok out/audit.log
       - name: WASI profile of the python3 start (INKSOC_WASI_PROFILE=1; measurement only)
         if: ${{ !cancelled() }}
         continue-on-error: true
