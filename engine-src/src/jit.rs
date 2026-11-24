@@ -3070,8 +3070,8 @@ fn popcnt(g: &mut G, i: &Ins, live: bool) -> bool {
     true
 }
 
-const MAX_BLOCKS: usize = 16; // blocks per region
-const MAX_REGION_INS: usize = 320;
+const MAX_BLOCKS: usize = 48; // blocks per region
+const MAX_REGION_INS: usize = 480; // (blocks share no code: one stops where another starts)
 const MAX_RETS: usize = 6; // return sites a ret compares with before it leaves the region
 
 struct Block {
@@ -3081,11 +3081,16 @@ struct Block {
 }
 
 /// Decodes the straight-line run at `rip` (conditional jumps continue it).
-fn decode_block(e: &mut Engine, rip: u64) -> Option<Block> {
+fn decode_block(e: &mut Engine, rip: u64, heads: &[u64]) -> Option<Block> {
     let mut list: Vec<Ins> = Vec::new();
     let mut pc = rip;
     let mut end_rip = None; // where the block stops when it does not end in a jump
     while list.len() < MAX_INS {
+        // another block of the region starts here: jump to it (its code is not copied)
+        if pc != rip && heads.contains(&pc) {
+            end_rip = Some(pc);
+            break;
+        }
         let Some(i) = decode(e, pc) else {
             end_rip = Some(pc);
             break;
@@ -3155,7 +3160,7 @@ fn targets(b: &Block) -> Vec<u64> {
 /// Translates the region at `rip` (the hot block plus the blocks its jumps reach);
 /// None = nothing to compile there.
 fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
-    let first = decode_block(e, rip)?;
+    let first = decode_block(e, rip, &[])?;
     let mut total = first.list.len();
     let mut heads = vec![rip];
     let mut blocks = vec![first];
@@ -3168,10 +3173,18 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
             if heads.contains(&t) {
                 continue;
             }
-            if let Some(b) = decode_block(e, t) {
+            if let Some(b) = decode_block(e, t, &heads) {
                 total += b.list.len();
                 heads.push(t);
                 blocks.push(b);
+                // a block that runs through t now stops there and jumps to t's block
+                for x in blocks.iter_mut() {
+                    if let Some(k) = x.list.iter().skip(1).position(|i| i.rip == t) {
+                        total -= x.list.len() - (k + 1);
+                        x.list.truncate(k + 1);
+                        x.end_rip = Some(t);
+                    }
+                }
             }
         }
         k += 1;
