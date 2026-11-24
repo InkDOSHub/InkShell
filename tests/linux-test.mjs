@@ -62,6 +62,23 @@ if (hasTool('qpdf')) { // a one-page PDF with a correct cross-reference table
   pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n` + offs.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('') + `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   add('t.pdf', enc.encode(pdf));
 }
+if (hasTool('unzip')) { // CVE-2019-13232: a zip whose two central directory entries share one local entry (overlap, a zip bomb's trick)
+  const crc = (b) => { let c = ~0; for (const v of b) { c ^= v; for (let k = 0; k < 8; k++) c = c >>> 1 ^ (0xedb88320 & -(c & 1)); } return ~c >>> 0; };
+  const data = enc.encode('bomb\n'), name = enc.encode('a.txt'), z = [];
+  const u16 = (v) => z.push(v & 255, v >>> 8 & 255), u32 = (v) => { u16(v & 0xffff); u16(v >>> 16); }, str = (b) => z.push(...b);
+  u32(0x04034b50); u16(10); u16(0); u16(0); u16(0); u16(0x21); u32(crc(data)); u32(data.length); u32(data.length); u16(name.length); u16(0); str(name); str(data);
+  const cd = z.length;
+  for (let i = 0; i < 2; i++) { u32(0x02014b50); u16(0x031e); u16(10); u16(0); u16(0); u16(0); u16(0x21); u32(crc(data)); u32(data.length); u32(data.length); u16(name.length); u16(0); u16(0); u16(0); u16(0); u32(0o100644 * 65536); u32(0); str(name); }
+  const cdLen = z.length - cd;
+  u32(0x06054b50); u16(0); u16(0); u16(2); u16(2); u32(cdLen); u32(cd); u16(0);
+  add('bomb.zip', new Uint8Array(z));
+}
+// Module cache (wasi.js, key = the kernel's file version + size + path): two programs of the same size (> 1 MB),
+// the 2nd written over the 1st in place; the smaller one gets a custom section ("p") as padding
+const padWasm = (b, len) => { const o = new Uint8Array(len), c = len - b.length - 6; o.set(b); let i = b.length; o[i++] = 0; for (let k = 0, v = c; k < 5; k++, v >>>= 7) o[i++] = v & 0x7f | (k < 4 ? 0x80 : 0); o[i++] = 1; o[i++] = 0x70; return o; };
+const cacheA = tools.find((t) => t.name === 'sqlite'), cacheB = tools.find((t) => t.name === 'jq');
+const cacheLen = cacheA && cacheB ? Math.max(cacheA.bytes.length, cacheB.bytes.length, 1100000) + 64 : 0;
+if (cacheLen) { add('cache-a.wasm', padWasm(cacheA.bytes, cacheLen)); add('cache-b.wasm', padWasm(cacheB.bytes, cacheLen)); }
 put(enc.encode('busybox\0sh /etc/inksoc/start'));
 if (x.start() !== 0) { console.log('FAIL start:', dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()))); process.exit(1); }
 x.linux_winsize(30, 100);
@@ -247,6 +264,13 @@ if (hasWasi) {
     await step('mkdir -p /tmp/sq && cd /tmp/sq && sqlite3 t.db "create table t(a, b); insert into t values (1, \'x\'), (2, \'y\');" && sqlite3 t.db "select sum(a) || \'-\' || group_concat(b) from t;" && echo "select 6 * 7;" | sqlite3 && [ -s t.db ] && echo db-ok; cd\n',
       /^3-x,y\s+^42\s+^db-ok/m, 'sqlite3: create, insert, query a .db file; SQL from a pipe');
   }
+  if (cacheLen) { // the compiled Module is kept by file version: a program written over another one (same size, same path) runs the new one
+    cwdStats.splice(0);
+    await step(`mkdir -p /tmp/cm && cd /tmp/cm && cp /root/cache-a.wasm prog && chmod +x prog && ./prog --version | cut -c1-6; ./prog --version | cut -c1-6; cat /root/cache-b.wasm > prog && stat -c %s prog && ./prog --version; cd\n`,
+      new RegExp(`^3\\.\\d+\\.\\d+\\s+^3\\.\\d+\\.\\d+\\s+^${cacheLen}\\s+^jq-1\\.`, 'm'), 'Module cache: sqlite3 twice, jq written over it (same size, same path) runs jq');
+    const cs = cwdStats.slice(), ok = cs.length === 3 && !cs[0].hit && cs[1].hit && !cs[2].hit;
+    results.push(ok); console.log((ok ? 'PASS' : 'FAIL') + ` Module cache: key hit on the 2nd run, new key after the file changed (${cs.map((e) => e.hit ? 'hit' : 'miss').join(' ')})`);
+  }
   if (hasTool('jq')) { // jq: filter JSON from a pipe, @csv, bad JSON fails
     await step('echo \'{"a":[1,2,3],"b":"hi"}\' | jq -cM \'{n: (.a | add), b, k: (keys | length)}\'; echo \'[{"x":1},{"x":5}]\' | jq -r \'map(.x * 2) | @csv\'; echo \'{\' | jq . > /dev/null 2>&1; echo jq-rc=$?\n',
       /^\{"n":6,"b":"hi","k":2\}\s+^2,10\s+^jq-rc=[1-9]/m, 'jq: filter JSON from a pipe, @csv; bad JSON exits non-zero');
@@ -262,6 +286,8 @@ if (hasWasi) {
   if (hasTool('zip') && hasTool('unzip')) { // Info-ZIP: zip a folder, list, extract, compare, test
     await step('mkdir -p /tmp/iz/in/sub && cd /tmp/iz && echo one > in/a.txt && seq 1 3000 > in/sub/n.txt && zip -qr t.zip in && unzip -l t.zip | grep -c "\\.txt$" && mkdir x && cd x && unzip -q ../t.zip && diff -r ../in in && echo zip-same; cd /tmp/iz && unzip -tq t.zip; cd\n',
       /^2\s+zip-same\s+No errors detected/m, 'zip/unzip: zip a folder, list, extract same files, test archive');
+    await step('mkdir -p /tmp/zb && cd /tmp/zb && unzip -o /root/bomb.zip; echo uz-rc=$?; cd\n',
+      /overlapped components \(possible zip bomb\)[\s\S]*uz-rc=12/, 'unzip: rejects a zip with overlapped entries (CVE-2019-13232 patch)');
   }
   // inkvideo: WebCodecs of the page (node has none): exit 69 and a clear message; decode falls back to ffmpeg
   await step('inkvideo info; echo iv-rc=$?; inkvideo transcode a.mov b.h264; echo iv-rc=$?; inkvideo bogus 2>&1 | head -1; inkvideo; echo iv-rc=$?\n',
