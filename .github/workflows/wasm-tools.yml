@@ -12,8 +12,8 @@ on:
 permissions:
   contents: write
 env:
-  TAG: wasm-tools-3
-  PREV: wasm-tools-2
+  TAG: wasm-tools-4
+  PREV: wasm-tools-3
 concurrency:
   group: wasm-tools-${{ github.ref }}
 jobs:
@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tool: [sqlite3, jq, lua, zip, unzip, rg]
+        tool: [unzip]
     steps:
       - uses: actions/checkout@v4
       - name: Already published?
@@ -59,4 +59,4 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then echo "$TAG already published"; gh release view "$TAG"; exit 0; fi
           gh release download "$PREV" -D out --skip-existing && rm -f out/SHA256SUMS
           cd out && ls -l && sha256sum * > SHA256SUMS
-          gh release create "$TAG" --target "$GITHUB_SHA" --title "WebAssembly tools ($TAG)" --notes "WASI (wasm32-wasip1) builds for the InkShell catalog (apk add), made by .github/workflows/wasm-tools.yml from tools/wasm-tools/build.sh at $GITHUB_SHA. No GPL code: ffmpeg is LGPL-2.1+ (no --enable-gpl, no external libraries), 7-Zip LGPL-2.1+/BSD-3-Clause without unRAR, qpdf Apache-2.0, ImageMagick under the ImageMagick license (with libpng, libjpeg-turbo, zlib), SQLite public domain, jq MIT, Lua MIT, Info-ZIP zip/unzip under the Info-ZIP license, ripgrep MIT/Unlicense. ffmpeg, ffprobe, 7zz, qpdf, magick are copied from $PREV. The src-*.tar.gz files are the exact sources used." *
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "WebAssembly tools ($TAG)" --notes "WASI (wasm32-wasip1) builds for the InkShell catalog (apk add), made by .github/workflows/wasm-tools.yml from tools/wasm-tools/build.sh at $GITHUB_SHA. No GPL code: ffmpeg is LGPL-2.1+ (no --enable-gpl, no external libraries), 7-Zip LGPL-2.1+/BSD-3-Clause without unRAR, qpdf Apache-2.0, ImageMagick under the ImageMagick license (with libpng, libjpeg-turbo, zlib), SQLite public domain, jq MIT, Lua MIT, Info-ZIP zip/unzip under the Info-ZIP license (unzip with the Debian 6.0-28 security patches, src-unzip-6.0-debian-patches.tar.gz), ripgrep MIT/Unlicense. Only unzip is built here; the other tools are copied from $PREV. The src-*.tar.gz files are the exact sources used." *
