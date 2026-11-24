@@ -120,7 +120,7 @@ pub struct Lx {
     // those: Some(extents changed since the last scan), None = write it whole (see mnt_gate)
     pub dirt: BTreeMap<String, Option<BTreeSet<u64>>>,
     pub fetch: Vec<String>,
-    pub unknown: BTreeSet<u64>,
+    pub unknown: BTreeMap<u64, u64>, // system calls answered ENOSYS: number -> times (/proc/inksoc/enosys, linux_enosys)
     want: Option<Cond>,
     // network: sockets go out through the page (wisp tunnel on our server)
     pub socks: BTreeMap<u32, Sock>,
@@ -593,11 +593,12 @@ fn proc_file(e: &mut Engine, p: &str) {
         "/proc/loadavg" => "0.00 0.00 0.00 1/1 1\n".to_string(),
         "/proc/version" => "Linux version 6.6.0-inksoc (InkSoC engine in WebAssembly) #1 SMP\n".to_string(),
         "/proc/stat" => format!("cpu  {u} 0 0 0 0 0 0 0 0 0\ncpu0 {u} 0 0 0 0 0 0 0 0 0\nbtime 0\nprocesses 1\nprocs_running 1\n", u = (up * 100.0) as u64),
+        "/proc/inksoc/enosys" => lx(e).unknown.iter().map(|(n, k)| format!("{n}\t{k}\n")).collect(),
         _ => return,
     };
     let _ = frames_kb;
     let l = lx(e);
-    l.mkdirs("/proc");
+    l.mkdirs("/proc/inksoc");
     l.fs.insert(p.to_string(), Node::File(text.into_bytes().into()));
 }
 
@@ -784,6 +785,29 @@ fn share_copy(e: &mut Engine, out: i32, src: &str, at: u64, n: u64) -> Option<i6
 }
 
 /// The `syscall` instruction (rip already points after it).
+/// sendfile / copy_file_range: `n` bytes of file `inp` (at *inoff, or its position) to `out` (at *outoff,
+/// or its position). File to file in blocks shares the extents (copy-on-write); otherwise the bytes move.
+fn copy_range(e: &mut Engine, out: i32, outoff: u64, inp: i32, inoff: u64, n: u64) -> i64 {
+    let (path, pos) = match lx(e).fds.get(&inp) { Some(Fd::File { path, pos, .. }) => (path.clone(), *pos), Some(_) => return -EINVAL, None => return -EBADF };
+    let at = if inoff != 0 { e.r64(inoff) } else { pos };
+    let saved = if outoff != 0 { // copy_file_range at an offset of the output: its position stays
+        let o = e.r64(outoff);
+        match lx(e).fds.get_mut(&out) { Some(Fd::File { pos, append: false, .. }) => { let p0 = *pos; *pos = o; Some(p0) } Some(_) => return -EINVAL, None => return -EBADF }
+    } else { None };
+    let k = match share_copy(e, out, &path, at, n) { Some(k) => k, None => {
+        let (l, mm) = lxm(e); let d = match l.fs.get(&path) { Some(Node::File(d)) => d.read(&mut l.bc, mm, at, n as usize), _ => return -EBADF };
+        write_data(e, out, &d)
+    } };
+    if let Some(p0) = saved {
+        if let Some(Fd::File { pos, .. }) = lx(e).fds.get_mut(&out) { *pos = p0; }
+        if k > 0 { let o = e.r64(outoff); e.w64(outoff, o + k as u64); }
+    }
+    if k > 0 {
+        if inoff != 0 { e.w64(inoff, at + k as u64); } else if let Some(Fd::File { pos, .. }) = lx(e).fds.get_mut(&inp) { *pos += k as u64; }
+    }
+    k
+}
+
 pub fn syscall(e: &mut Engine) {
     let _g = crate::lock::lock();
     let r = e.cpu.regs;
@@ -809,7 +833,7 @@ pub fn syscall(e: &mut Engine) {
         return;
     }
     if { let l = lx(e); !l.holes.is_empty() || !l.dirt.is_empty() } && mnt_gate(e, nr) { return; }
-    if matches!(nr, 2 | 257 | 76 | 77 | 82 | 264 | 316 | 83 | 258 | 84 | 87 | 263 | 86 | 88 | 265 | 266) || (matches!(nr, 1 | 18 | 20) && matches!(lx(e).fds.get(&(a0 as i32)), Some(Fd::File { .. }))) { lx(e).dirty = true; }
+    if matches!(nr, 2 | 257 | 76 | 77 | 82 | 264 | 316 | 83 | 258 | 84 | 87 | 263 | 86 | 88 | 265 | 266 | 326) || (matches!(nr, 1 | 18 | 20) && matches!(lx(e).fds.get(&(a0 as i32)), Some(Fd::File { .. }))) { lx(e).dirty = true; }
     let v: i64 = match nr {
         0 => do_read(e, a0 as i32, a1, a2),
         SYS_WASI_WAIT => { // a WebAssembly program's stub waits for the page's next call
@@ -961,23 +985,7 @@ pub fn syscall(e: &mut Engine) {
         }
         131 => { if a1 != 0 { let _ = e.mmu.write_bytes(a1, &[0u8; 24]); e.w32(a1 + 8, 2); } 0 } // sigaltstack: none (SS_DISABLE)
         16 => ioctl(e, a0 as i32, a1, a2),
-        40 => { // sendfile
-            let (out, inp, offp, n) = (a0 as i32, a1 as i32, a2, a3.min(1 << 20));
-            let buf = 0x7FFF_EFF0_0000u64; // scratch at the bottom of the stack region
-            let _ = buf;
-            let l = lx(e);
-            let (path, pos) = match l.fds.get(&inp) { Some(Fd::File { path, pos, .. }) => (path.clone(), *pos), _ => return ret(e, -EINVAL) };
-            let at = if offp != 0 { e.r64(offp) } else { pos };
-            // file to file in blocks: the extents are shared (copy-on-write), no bytes move
-            let k = match share_copy(e, out, &path, at, n) { Some(k) => k, None => {
-                let (l, mm) = lxm(e); let d = match l.fs.get(&path) { Some(Node::File(d)) => d.read(&mut l.bc, mm, at, n as usize), _ => return ret(e, -EBADF) };
-                write_data(e, out, &d)
-            } };
-            if k > 0 {
-                if offp != 0 { e.w64(offp, at + k as u64); } else if let Some(Fd::File { pos, .. }) = lx(e).fds.get_mut(&inp) { *pos += k as u64; }
-            }
-            k
-        }
+        40 => { let k = copy_range(e, a0 as i32, 0, a1 as i32, a2, a3.min(1 << 20)); if k == -EBADF { -EINVAL } else { k } } // sendfile
         17 => { let fd = a0 as i32; let k = do_pread(e, fd, a1, a2, a3); k }
         18 => do_pwrite(e, a0 as i32, a1, a2, a3),
         295 | 296 | 327 | 328 => { // preadv / pwritev / preadv2 / pwritev2
@@ -1024,7 +1032,7 @@ pub fn syscall(e: &mut Engine) {
             }
             tot
         }
-        21 | 269 => { // access / faccessat
+        21 | 269 | 439 => { // access / faccessat / faccessat2
             let p = if nr == 21 { e.read_cstr(a0, 4096) } else { path_at(e, a0, a1) };
             let l = lx(e); let q = l.resolve(&p, true);
             if q == "/" || l.fs.contains_key(&q) { 0 } else { -ENOENT }
@@ -1244,10 +1252,10 @@ pub fn syscall(e: &mut Engine) {
             let l = lx(e); let q = l.resolve(&p, false);
             match l.fs.get(&q) { Some(Node::Link(t)) => { let t = t.clone(); let k = t.len().min(n as usize); let _ = e.mmu.write_bytes(b, &t.as_bytes()[..k]); k as i64 } Some(_) => -EINVAL, None => -ENOENT }
         }
-        90 | 91 | 268 | 92 | 93 | 94 | 260 => { // chmod, fchmod, fchmodat, chown, fchown, lchown, fchownat
+        90 | 91 | 268 | 452 | 92 | 93 | 94 | 260 => { // chmod, fchmod, fchmodat(2), chown, fchown, lchown, fchownat
             let p = match nr {
                 91 | 93 => match lx(e).fds.get(&(a0 as i32)) { Some(Fd::File { path, .. }) | Some(Fd::Dir { path, .. }) => path.clone(), Some(_) => return ret(e, 0), None => return ret(e, -EBADF) },
-                268 | 260 => path_at(e, a0, a1),
+                268 | 452 | 260 => path_at(e, a0, a1),
                 _ => e.read_cstr(a0, 4096),
             };
             let l = lx(e);
@@ -1256,9 +1264,9 @@ pub fn syscall(e: &mut Engine) {
             if q != "/" && !l.fs.contains_key(&q) { return ret(e, -ENOENT); }
             let mut m = perm(l, &q, dir);
             let me = l.ids.2;
-            if matches!(nr, 90 | 91 | 268) {
+            if matches!(nr, 90 | 91 | 268 | 452) {
                 if me != 0 && me != m.1 { return ret(e, -1); } // EPERM
-                m.0 = (if nr == 268 { a2 } else { a1 }) as u32 & 0o7777;
+                m.0 = (if nr == 268 || nr == 452 { a2 } else { a1 }) as u32 & 0o7777;
             } else {
                 let (u, g) = if nr == 260 { (a2, a3) } else { (a1, a2) };
                 if me != 0 && (u as i32 != -1 && u as u32 != m.1) { return ret(e, -1); }
@@ -1322,11 +1330,31 @@ pub fn syscall(e: &mut Engine) {
             let _ = tmp;
             statx(e, &p, a0 as i32, a2, r[8])
         }
+        // copy_file_range: file to file (coreutils cp, Python shutil); other kinds EINVAL (callers fall back to read/write)
+        326 => if r[9] != 0 { -EINVAL } else { copy_range(e, a2 as i32, a3, a0 as i32, a1, r[8].min(1 << 20)) },
+        221 | 187 | 277 | 306 => 0, // fadvise64 / readahead / sync_file_range / syncfs: hints, nothing to do
+        160 | 141 | 142 | 144 | 149 | 150 | 151 | 152 | 325 => 0, // setrlimit, setpriority, sched_setparam/setscheduler, mlock family: accepted
+        140 => 20, // getpriority: nice 0 (the kernel answers 20 - nice)
+        143 => { e.w32(a1, 0); 0 } // sched_getparam: priority 0
+        145 | 146 | 147 => 0, // sched_getscheduler (SCHED_OTHER) / get_priority_max / min
+        // membarrier: threads run one at a time under the engine's lock, so every barrier already holds
+        324 => match a0 { 0 => 1 | 8 | 16, 1 | 2 | 4 | 8 | 16 => 0, _ => -EINVAL },
+        309 => { if a0 != 0 { e.w32(a0, 0); } if a1 != 0 { e.w32(a1, 0); } 0 } // getcpu: CPU 0, node 0
+        191 | 192 | 193 | 197 | 198 | 199 => -61, // getxattr / lgetxattr / fgetxattr / remove*: ENODATA (no extended attributes)
+        194 | 195 | 196 => 0, // listxattr / llistxattr / flistxattr: none
+        188 | 189 | 190 => -EOPNOTSUPP, // setxattr / lsetxattr / fsetxattr
+        436 => { // close_range (CLOSE_RANGE_CLOEXEC = 4 marks them instead)
+            let l = lx(e);
+            let ks: Vec<i32> = l.fds.keys().copied().filter(|&k| k as u32 >= a0 as u32 && k as u32 <= a1 as u32).collect();
+            for k in ks { if a2 & 4 != 0 { l.cloexec.insert(k); } else { l.cloexec.remove(&k); l.fds.remove(&k); } }
+            0
+        }
         _ => {
-            if lx(e).unknown.insert(nr) { crate::console(&format!("[inksoc] Linux system call {} is not available yet\n", nr)); }
+            if !lx(e).unknown.contains_key(&nr) { crate::console(&format!("[inksoc] Linux system call {} is not available yet\n", nr)); }
             -ENOSYS
         }
     };
+    if v == -ENOSYS { *lx(e).unknown.entry(nr).or_insert(0) += 1; }
     if v == BLOCKED {
         let c = lx(e).want.take().unwrap_or(Cond::Until);
         e.cpu.regs[0] = nr; // runs again from the start when woken
@@ -3331,4 +3359,11 @@ pub extern "C" fn wasi_alive(pid: u32) -> i32 {
     let _g = crate::lock::lock();
     let Some(l) = crate::eng().s.lx.as_mut() else { return 0 };
     (l.wasi.contains_key(&pid) && l.procs.get(&pid).map_or(false, |p| p.zombie.is_none())) as i32
+}
+
+/// System calls answered ENOSYS so far, "number\tcount" per line (out_ptr), for the tests' audit.
+#[no_mangle]
+pub extern "C" fn linux_enosys() -> u32 {
+    let Some(l) = crate::eng().s.lx.as_ref() else { return 0 };
+    crate::set_out(l.unknown.iter().map(|(n, k)| format!("{n}\t{k}\n")).collect::<String>().into_bytes())
 }

@@ -37,6 +37,19 @@ Foco: terminal Linux sólido e rápido no WebKit. Ferramenta com WASM roda diret
 | 24 | /mnt: escrever sem puxar inteiro; gravar só trechos sujos | 4 | 2 | feito (#46: 128 MB → 2,2 MB movidos p/ 1 MB escrito em 64 MB (CI página: lê 1,06 + grava 1,13 MB; linux-test 1,06 + 1,06; dd bs=1000 fora da borda: lê só os 17 extents de 64 KB tocados em parte, grava os sujos). write/pwrite/writev/truncate: copy-on-write por extent (extent coberto inteiro não é buscado), `dirt` por extent → scan manda "offset+len"; página: handle do OPFS → worker grava com createSyncAccessHandle (sem cópia); pasta do showDirectoryPicker → createWritable({keepExistingData:true}) + write(position) + truncate (navegador pode copiar o arquivo p/ swap próprio: limite). Ainda puxam inteiro: exec, link, mmap compartilhado, sendfile p/ ele; fallocate/sendfile/O_TRUNC regravam inteiro) | arquivo grande do /mnt editado sem regravar inteiro |
 | 25 | inkvideo: saída MP4 + --scale (+ áudio copiado) | 6 | 2 | feito (#47: muxer ISO BMFF próprio em inkvideo.js (sem lib): ftyp + mdat 64 bits (tamanho por pwrite no fim) gravado amostra a amostra + moov no fim (tabelas ~21 B/amostra na RAM, co64 > 4 GB, ctts/edts p/ quadros reordenados); entradas avc1/hvc1 (avcC/hvcC do decoderConfig, encoder em formato avc/hevc), vp09/vp08 (vpcC), av01 (av1C); `--codec vp9|av1` só em MP4; leitor aceita vp09/vp08/av01 e trilha de áudio; `-s/--scale WxH` (-1 = aspecto) por OffscreenCanvas drawImage + VideoFrame(canvas); áudio do MP4 de origem copiado sem reencode (stsd + tamanhos + durações, depois do vídeo no mdat); `inkvideo info ARQ` lista trilhas. CI Chromium: selftest → st.mp4 (vp9), transcode → 160x120 vp9 MP4, info/decode 30 quadros, `<video>` abre. Sobra: H.264/HEVC MP4, escala e cópia de áudio AAC só testáveis no iPhone/iPad (Chromium do CI sem H.264/AAC); áudio não intercalado (fica após o vídeo); edit list da origem (atraso AAC) ignorada) | transcode gera MP4 válido redimensionado |
 | 26 | kernel: pwrite64, preadv/pwritev(2) | 2 | 1 | feito (#48) | pwrite x86 e WASI testados |
+| 27 | kernel: auditoria de syscalls não tratadas + faltantes comuns | 2 | 2 | feito (#49: contador ENOSYS (export `linux_enosys`, `/proc/inksoc/enosys`) no fim do linux-test e do bench; passo "Syscall audit" no bench.yml roda x86 do Alpine 3.21 (python3 3.12, git, sqlite3, bash, coreutils, findutils, tar/gzip/xz, apk, getent, iconv, scanelf, wget). Achado e tratado: membarrier (musl). Tratadas antes de medir: copy_file_range, faccessat2, fchmodat2, close_range, fadvise64/readahead/sync_file_range/syncfs, xattr, setrlimit, get/setpriority, sched_*, mlock*, getcpu. Sobra: só ENOSYS certo) | contador no CI; top faltantes tratadas |
+| 28 | kernel: sqlite3 x86 em modo WAL trava (mmap compartilhado do -shm + travas fcntl por faixa) | 2 | 2 | aberto (achado no #49: `pragma journal_mode=wal` + insert espera p/ sempre) | WAL roda no audit |
+| 29 | kernel: hard link de verdade (mesmo inode) — `git clone` local morre "hardlink different from source" | 2 | 2 | aberto (achado no #49; link() copia e o inode vem do hash do caminho) | git clone /caminho ok |
+
+Auditoria ENOSYS (item 27, bench #49, x86 Alpine; linux-test: só 435):
+
+| nº | nome | vezes | quem | decisão |
+|---|---|---|---|---|
+| 324 | membarrier | 3 | musl (xz, sqlite3, python3) | feito: QUERY = 1\|8\|16, barreiras = 0 (threads rodam uma por vez sob a trava do motor) |
+| 272 | unshare | 5 | apk/getent/scanelf | ENOSYS certo (namespaces fora) |
+| 294 / 253 | inotify_init1 / inotify_init | 1 / 1 | `tail -f` (coreutils) | ENOSYS certo: tail cai p/ polling |
+| 435 | clone3 | 1 | busybox/musl (linux-test) | ENOSYS certo: musl cai p/ clone |
+| — | io_uring, bpf, setns, seccomp, perf, pidfd, memfd | 0 | — | não apareceram; ficam ENOSYS |
 
 Recomendação (item 19): próximo item WASI = cache do `WebAssembly.Module` compilado por chave (mesmo Module reusado no node/worker; na página, Module guardado no worker do motor/IndexedDB e passado ao Worker do programa) + chave do cwd por caminho+tamanho+mtime do kernel em vez do hash de 25 MB. Ganho est.: compilação 17 + hash 11–38 + parte da compilação preguiçosa dentro do "Python puro" → 133 → ~60–75 ms (~45%), 2 pts. Medir antes com o Module reusado (bench pystart já mostra as fases). Ler o .wasm 2× (execve + wasi_module) custa só ~4 ms: não atacar.
 
@@ -95,6 +108,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-24 | 1 | 24: /mnt escrita por trechos sujos | #46 | 2 |
 | 2026-11-24 | 1 | 25: inkvideo MP4 + scale | #47 | 2 |
 | 2026-11-24 | 1 | 26: kernel pwrite64/preadv/pwritev | #48 | 1 |
+| 2026-11-24 | 1 | 27: auditoria ENOSYS + syscalls | #49 | 2 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.

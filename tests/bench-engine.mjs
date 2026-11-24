@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { runWasi } from '../wasi.js';
 import { swapStore } from './swap-store.mjs';
+import { report as enosysReport } from './enosys.mjs';
 const argv = process.argv.slice(2), sep = argv.indexOf('--');
 const wasmPath = argv[0], files = argv.slice(1, sep), cmd = argv.slice(sep + 1).join(' ');
 const POOL = +(process.env.POOL_MB || 512), LIMIT = +(process.env.LIMIT_MS || 1800000);
@@ -80,5 +81,6 @@ if (st === 2) console.log(`${(performance.now() - t0).toFixed(1)}\t@@ERR engine 
 if (!done && performance.now() - t0 >= LIMIT) console.log(`${(performance.now() - t0).toFixed(1)}\t@@ERR time limit ${LIMIT} ms`);
 if (PROF) fs.writeFileSync(PROF, JSON.stringify(prof));
 if (WP) fs.writeFileSync(process.env.WASI_PROFILE_JSON || 'wasiprof.json', JSON.stringify(WP.data(t0)));
+console.log('@@ENOSYS ' + enosysReport(x, mem, 'syscalls'));
 console.log(`@@MEM wasm=${mb(mem.buffer.byteLength)} rss=${mb(peakRss)}`);
 process.exit(done ? 0 : 1);
