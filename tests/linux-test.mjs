@@ -206,8 +206,10 @@ if (hasWasi) {
     await step(`mkdir -p /tmp/rel && cd /tmp/rel && python3 -c "import os; open('rel.txt', 'w').write('rel-' + 'ok'); print(open('rel.txt').read().upper(), sorted(os.listdir('.')), open('/tmp/t/d.json').read()[:5])"; cd; cat /tmp/rel/rel.txt; echo\n`, /REL-OK \['rel\.txt'\] \{"a":[\s\S]*rel-ok/, 'python3: relative path in the shell folder, absolute path still works');
   }
   if (tools.length) { // 7-Zip, qpdf, ImageMagick, ffmpeg, sqlite, jq, lua, zip, unzip, ripgrep from the catalog (local file:// mirrors), one apk add
-    const lines = tools.map((t) => `${t.name}\\tfile:///root/${t.file}.wasm\\t${crypto.createHash('sha256').update(t.bytes).digest('hex')}\\t${t.bytes.length}\\tlicense\\t${t.progs.split(',').map((p) => '/usr/local/bin/' + p).join(',')}\\t${t.name}\\n`).join('');
-    await step(`sudo sh -c "printf '${lines}' >> /etc/inksoc/wasm-catalog.local"\n`, /Password/, 'tools: local catalog entries (sudo asks)');
+    const lines = tools.map((t) => `${t.name}\\tfile:///root/${t.file}.wasm\\t${crypto.createHash('sha256').update(t.bytes).digest('hex')}\\t${t.bytes.length}\\tlicense\\t${t.progs.split(',').map((p) => '/usr/local/bin/' + p).join(',')}\\t${t.name}\\n`);
+    // a few entries per command line (the terminal line has a length limit), then one sudo appends them
+    for (let i = 0; i < lines.length; i += 3) await step(`printf '${lines.slice(i, i + 3).join('')}' >> /tmp/wcat; echo wcat-$((${i} + 1))\n`, new RegExp(`wcat-${i + 1}\\s`), `tools: catalog entries ${i + 1}-${Math.min(i + 3, lines.length)} in /tmp/wcat`);
+    await step('sudo sh -c "cat /tmp/wcat >> /etc/inksoc/wasm-catalog.local"; rm /tmp/wcat\n', /Password/, 'tools: local catalog entries (sudo asks)');
     await step('pw1\n', /tester@inksoc/, 'tools: local catalog entries written');
     await step(`apk add --no-network ${tools.map((t) => t.name).join(' ')}; echo add-rc=$?\n`, /Password/, 'tools: apk add asks sudo');
     await step('pw1\n', new RegExp(tools.map((t) => `OK: ${t.name} installed`).join('[\\s\\S]*') + '[\\s\\S]*add-rc=0'), `tools: apk add installs ${tools.map((t) => t.name).join(', ')}`);
@@ -246,12 +248,12 @@ if (hasWasi) {
       /lua-ok\s+10\s+100\s+Lua 5\.4\s+false\s+boom[\s\S]*lua-rc=1/, 'lua: script, pcall/error, uncaught error exits 1');
   }
   if (hasTool('zip') && hasTool('unzip')) { // Info-ZIP: zip a folder, list, extract, compare, test
-    await step('mkdir -p /tmp/z/in/sub && cd /tmp/z && echo one > in/a.txt && seq 1 3000 > in/sub/n.txt && zip -qr t.zip in && unzip -l t.zip | grep -c "\\.txt$" && mkdir x && cd x && unzip -q ../t.zip && diff -r ../in in && echo zip-same; cd /tmp/z && unzip -tq t.zip; cd\n',
+    await step('mkdir -p /tmp/iz/in/sub && cd /tmp/iz && echo one > in/a.txt && seq 1 3000 > in/sub/n.txt && zip -qr t.zip in && unzip -l t.zip | grep -c "\\.txt$" && mkdir x && cd x && unzip -q ../t.zip && diff -r ../in in && echo zip-same; cd /tmp/iz && unzip -tq t.zip; cd\n',
       /^2\s+zip-same\s+No errors detected/m, 'zip/unzip: zip a folder, list, extract same files, test archive');
   }
   if (hasTool('ripgrep')) { // ripgrep: one thread; folder search, no match, pipe
-    await step('mkdir -p /tmp/r/s && cd /tmp/r && printf \'alpha\\nneedle 42\\n\' > s/a.txt && echo none > b.txt && rg -n --no-heading --color never needle .; rg -q zzz .; echo rg-rc=$?; printf \'x\\nfoo bar\\n\' | rg -o \'b.r\'; cd\n',
-      /s\/a\.txt:2:needle 42[\s\S]*rg-rc=1\s+^bar\s*$/m, 'ripgrep: finds a pattern in a folder, no match exits 1, reads a pipe');
+    await step('mkdir -p /tmp/r/s && cd /tmp/r && printf \'alpha\\nneedle 42\\n\' > s/a.txt && echo none > b.txt && rg -n --no-heading --color never needle .; rg -q zzz .; echo rg-rc=$?; printf \'x\\nfoo bar\\n\' | rg -o \'b.r\' -; cd\n',
+      /s\/a\.txt:2:needle 42[\s\S]*rg-rc=1\s+^bar\s*$/m, 'ripgrep: finds a pattern in a folder, no match exits 1, reads a pipe with -');
   }
   // inkvideo: WebCodecs of the page (node has none): exit 69 and a clear message; decode falls back to ffmpeg
   await step('inkvideo info; echo iv-rc=$?; inkvideo transcode a.mov b.h264; echo iv-rc=$?; inkvideo bogus 2>&1 | head -1; inkvideo; echo iv-rc=$?\n',
