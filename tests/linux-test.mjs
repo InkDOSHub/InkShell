@@ -328,7 +328,8 @@ if (x.linux_save_next) { // big files: 4 KB blocks in swap slots (lxdata.rs), no
   if (x.linux_mount_data) { // a big device file is read in pieces (File.slice on the page), never whole in the engine
     const big = crypto.randomBytes(64 * MB), want = crypto.createHash('sha256').update(big).digest('hex'), h1 = x.heap_used();
     for (const n of ['big.bin', 'mid.bin', 'w.bin']) devBig.set('/mnt/b/' + n, big);
-    put(enc.encode('/mnt/b\nF\t/mnt/b/big.bin\t' + big.length + '\nF\t/mnt/b/mid.bin\t' + big.length + '\nF\t/mnt/b/w.bin\t' + big.length)); x.linux_mount();
+    const eb = Buffer.from(big); devBig.set('/mnt/b/e.bin', eb); // its own copy: the page's write back is applied to it below
+    put(enc.encode('/mnt/b\nF\t/mnt/b/big.bin\t' + big.length + '\nF\t/mnt/b/mid.bin\t' + big.length + '\nF\t/mnt/b/w.bin\t' + big.length + '\nF\t/mnt/b/e.bin\t' + big.length)); x.linux_mount();
     const hex = (o, n) => [...big.subarray(o, o + n)].map((c) => c.toString(16).padStart(2, '0')).join('\\s+');
     await step('stat -c %s /mnt/b/big.bin; sha256sum /mnt/b/big.bin; dd if=/mnt/b/mid.bin bs=1 skip=40000003 count=8 2>/dev/null | od -An -tx1; printf Z | dd of=/mnt/b/w.bin bs=1 seek=3 conv=notrunc 2>/dev/null; dd if=/mnt/b/w.bin bs=1 skip=60000000 count=4 2>/dev/null | od -An -tx1; dd if=/mnt/b/w.bin bs=1 count=4 2>/dev/null | od -An -c; echo mnt-big-done\n',
       new RegExp(`^67108864\\s[\\s\\S]*^${want}  /mnt/b/big\\.bin\\s[\\s\\S]*${hex(40000003, 8)}[\\s\\S]*${hex(60000000, 4)}[\\s\\S]*Z[\\s\\S]*mnt-big-done`, 'm'),
@@ -336,6 +337,33 @@ if (x.linux_save_next) { // big files: 4 KB blocks in swap slots (lxdata.rs), no
     const g = (x.heap_used() - h1) / MB, mid = devServed.get('/mnt/b/mid.bin') || 0;
     const ok = g < 16 && mid <= 4 * MB && devPiece <= 4 * MB && devServed.get('/mnt/b/big.bin') >= big.length;
     results.push(ok); console.log((ok ? 'PASS' : 'FAIL') + ` device folder big file: engine heap grew ${g.toFixed(1)} MB; served ${(devServed.get('/mnt/b/big.bin') / MB).toFixed(0)} MB for sha256, ${(mid / MB).toFixed(1)} MB for dd skip, pieces <= ${(devPiece / MB).toFixed(0)} MB`);
+    // 1 MB written in the middle (not on 64 KB extent edges): only the extents it changes in part
+    // are read from the device, and the scan lists just the changed ranges for the page to write back
+    { put(enc.encode('/mnt/b')); x.linux_mount_scan(); } // the marks of the step above
+    const r0 = devServed.get('/mnt/b/e.bin') || 0;
+    await step('dd if=/dev/zero of=/mnt/b/e.bin bs=1000 seek=33554 count=1049 conv=notrunc 2>/dev/null; sync; echo mnt-part-done\n', /mnt-part-done/, 'device folder: 1 MB written in the middle of a 64 MB file');
+    put(enc.encode('/mnt/b')); const sn = x.linux_mount_scan();
+    const sc = dec.decode(new Uint8Array(mem.buffer, x.out_ptr(), sn).slice());
+    const parts = (sc.match(/^F\t\/mnt\/b\/e\.bin\t67108864\t1\t(\S+)$/m) || [])[1];
+    if (!parts && wasmPath === 'engine.wasm') console.log('SKIP device folder write back by ranges (published engine.wasm is older)');
+    else {
+      let wrote = 0;
+      for (const r of parts && parts !== '*' && parts !== '-' ? parts.split(',') : []) { // the page: each range read from Linux, written at its place
+        const [a, n] = r.split('+').map(Number);
+        for (let off = a; off < a + n;) {
+          const nm = enc.encode('/mnt/b/e.bin'), b = new Uint8Array(nm.length + 17), v = new DataView(b.buffer);
+          b.set(nm); v.setBigUint64(nm.length + 1, BigInt(off), true); v.setBigUint64(nm.length + 9, BigInt(Math.min(4 * MB, a + n - off)), true); put(b);
+          const k = x.linux_get_range();
+          if (k <= 8) break;
+          const d = Buffer.from(new Uint8Array(mem.buffer, x.out_ptr() + 8, k - 8));
+          d.copy(eb, off); off += d.length; wrote += d.length;
+        }
+      }
+      const exp = Buffer.from(big); exp.fill(0, 33554000, 33554000 + 1049000);
+      const rd = (devServed.get('/mnt/b/e.bin') || 0) - r0, same = eb.equals(exp);
+      const ok = !!parts && same && wrote >= 1049000 && rd + wrote <= 5 * MB;
+      results.push(ok); console.log((ok ? 'PASS' : 'FAIL') + ` device folder: 1 MB written in a 64 MB file moves read ${(rd / MB).toFixed(2)} MB + written ${(wrote / MB).toFixed(2)} MB (whole file: 128 MB); file same as expected: ${same}` + (ok ? '' : '\n' + sc));
+    }
     put(enc.encode('/mnt/b')); x.linux_remove(); devBig.clear();
   }
   // the saved tar (what the page writes to OPFS) comes in pieces: the 64 MB file never sits whole in the heap

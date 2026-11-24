@@ -117,9 +117,6 @@ try {
     const b = new Uint8Array(MB);
     for (let c = 0; c < 64; c++) { fill(b, c * MB / 4); await wr.write(b); }
     await wr.close();
-    // count the piece writes the page makes later (write back in pieces, not the file at once)
-    const W = FileSystemWritableFileStream.prototype, ow = W.write;
-    window.pieceWrites = 0; W.write = function (d) { if (d && d.type === 'write' && typeof d.position === 'number') window.pieceWrites++; return ow.call(this, d); };
     addMount(await mountDir(dir));
   }, fill.toString());
   check(await until(/\/mnt\/bigdir: 1 files, changes go back/, 30000), 'mount (folder handle): 64 MB file listed, read-write');
@@ -133,22 +130,54 @@ try {
     w.postMessage({ type: 'get', path: '/mnt/bigdir/big.bin', to: 'dl' });
   }));
   check(dl === BIGN + ' ' + hAll, 'download of a big mounted file not read whole: all of it, in pieces', dl);
-  // write back to the device folder in pieces: change 4 KB in the middle, the page writes the file
+  // write back to the device folder: change 4 KB in the middle, the page writes only that extent
+  const w0 = await p.evaluate(() => mntStats.written);
   await send('dd if=/dev/zero of=/mnt/bigdir/big.bin bs=4096 seek=100 count=1 conv=notrunc 2>/dev/null; echo wr-$((0+$?))x\r');
   check(await until(/wr-0x/, 120000), 'mount (folder handle): 4 KB written in the middle');
   big.fill(0, 100 * 4096, 101 * 4096);
   const hNew = sha(big);
-  let back = '';
-  for (let t0 = Date.now(); Date.now() - t0 < 120000; await p.waitForTimeout(2000)) {
-    back = await p.evaluate(async () => {
-      const f = await (await (await (await navigator.storage.getDirectory()).getDirectoryHandle('bigdir')).getFileHandle('big.bin')).getFile();
-      const h = await crypto.subtle.digest('SHA-256', await f.arrayBuffer());
-      return f.size + ' ' + [...new Uint8Array(h)].map((x) => x.toString(16).padStart(2, '0')).join('') + ' ' + window.pieceWrites;
-    });
-    if (back.startsWith(BIGN + ' ' + hNew)) break;
-  }
+  // the device file read outside the engine (OPFS); a write back in progress may hold it a moment
+  const devSum = async (dir, want) => {
+    let back = '';
+    for (let t0 = Date.now(); Date.now() - t0 < 120000; await p.waitForTimeout(2000)) {
+      back = await p.evaluate(async (dir) => {
+        try {
+          const f = await (await (await (await navigator.storage.getDirectory()).getDirectoryHandle(dir)).getFileHandle('big.bin')).getFile();
+          const h = await crypto.subtle.digest('SHA-256', await f.arrayBuffer());
+          return f.size + ' ' + [...new Uint8Array(h)].map((x) => x.toString(16).padStart(2, '0')).join('') + ' ' + mntStats.read + ' ' + mntStats.written;
+        } catch (er) { return 'busy ' + er.message; }
+      }, dir);
+      if (back.startsWith(BIGN + ' ' + want)) break;
+    }
+    return back;
+  };
+  const back = await devSum('bigdir', hNew);
   check(back.startsWith(BIGN + ' ' + hNew + ' '), 'mount (folder handle): the change reaches the device folder', back);
-  check(+back.split(' ')[2] >= 16, 'mount (folder handle): written back in 4 MB pieces', back);
+  const wb = +back.split(' ')[3] - w0;
+  check(wb > 0 && wb <= 2 * 65536, `mount (folder handle): only the changed extent written back (${wb} bytes, was the whole 64 MB)`, back);
+  // a fresh 64 MB device file: 1 MB written in the middle (not on extent edges) moves a few MB, not the file
+  await p.evaluate(async (src) => {
+    const fill = eval(src), MB = 1048576;
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('bigdir2', { create: true });
+    const wr = await (await dir.getFileHandle('big.bin', { create: true })).createWritable();
+    const b = new Uint8Array(MB);
+    for (let c = 0; c < 64; c++) { fill(b, c * MB / 4); await wr.write(b); }
+    await wr.close();
+    addMount(await mountDir(dir));
+  }, fill.toString());
+  check(await until(/\/mnt\/bigdir2: 1 files, changes go back/, 30000), 'mount (folder handle): second 64 MB file listed');
+  await p.waitForTimeout(500);
+  const s0 = await p.evaluate(() => [mntStats.read, mntStats.written]);
+  await send('dd if=/dev/zero of=/mnt/bigdir2/big.bin bs=1000 seek=33554 count=1049 conv=notrunc 2>/dev/null; sync; echo wp-$((0+$?))x\r');
+  check(await until(/wp-0x/, 120000), 'mount (folder handle): 1 MB written in the middle of 64 MB (dd conv=notrunc seek=)');
+  const big2 = Buffer.alloc(BIGN);
+  for (let c = 0; c < 64; c++) fill(big2.subarray(c * MB, (c + 1) * MB), c * MB / 4);
+  big2.fill(0, 33554000, 33554000 + 1049000);
+  const h2 = sha(big2), back2 = await devSum('bigdir2', h2);
+  check(back2.startsWith(BIGN + ' ' + h2 + ' '), 'mount (folder handle): sha256 of the device file (read outside the engine) has the 1 MB change', back2);
+  const rd = +back2.split(' ')[2] - s0[0], wt = +back2.split(' ')[3] - s0[1];
+  console.log(`device bytes for 1 MB written in a 64 MB file: read ${(rd / MB).toFixed(2)} MB + written ${(wt / MB).toFixed(2)} MB = ${((rd + wt) / MB).toFixed(2)} MB (whole-file write back: 128 MB)`);
+  check(rd + wt >= MB && rd + wt <= 5 * MB, 'mount (folder handle): a few MB read + written on the device, not the 64 MB file', rd + ' ' + wt);
 } catch (e) { check(false, 'page test', e.stack); }
 await browser.close(); srv.kill();
 const pass = results.filter(Boolean).length;

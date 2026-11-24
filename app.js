@@ -453,6 +453,7 @@ $('mount').onclick = async () => {
   } else $('mountdir').click();
 };
 $('mountdir').onchange = () => { const l = [...$('mountdir').files]; $('mountdir').value = ''; if (l.length) addMount(mountFiles(l)); };
+const mntStats = { read: 0, written: 0 }; // bytes read from and written to device folders (tests check them)
 const rootOf = (p) => { for (const r of mounted.keys()) if (p.startsWith(r + '/')) return r; return null; };
 async function mountFetch(paths) {
   for (const ln of paths) {
@@ -460,8 +461,11 @@ async function mountFetch(paths) {
     if (len !== undefined) { // a piece of a big file: only that slice is read from the device
       const m = mounted.get(rootOf(p)), a = +off, n = +len;
       let data = new ArrayBuffer(0);
-      try { const h = m && m.files.get(p); const f = h && (h.getFile ? await h.getFile() : h); if (f) data = await f.slice(a, a + n).arrayBuffer(); else note(p + ': not found in the device folder'); }
-      catch (er) { note(p + ': could not read (' + er.message + ')'); }
+      for (let k = 0; k < 3; k++) { // a write back in progress may hold the file a moment: try again before giving up
+        try { const h = m && m.files.get(p); const f = h && (h.getFile ? await h.getFile() : h); if (f) data = await f.slice(a, a + n).arrayBuffer(); else note(p + ': not found in the device folder'); break; }
+        catch (er) { if (k === 2) note(p + ': could not read (' + er.message + ')'); else await new Promise((r) => setTimeout(r, 300)); }
+      }
+      mntStats.read += data.byteLength;
       if (w) w.postMessage({ type: 'mdata', name: p, off: a, len: n, data }, [data]);
       continue;
     }
@@ -469,6 +473,7 @@ async function mountFetch(paths) {
     let data = new ArrayBuffer(0);
     try { const h = m && m.files.get(p); const f = h && (h.getFile ? await h.getFile() : h); if (f) data = await f.arrayBuffer(); else note(p + ': not found in the device folder'); }
     catch (er) { note(p + ': could not read (' + er.message + ')'); }
+    mntStats.read += data.byteLength;
     if (w) w.postMessage({ type: 'put', name: p, data }, [data]);
   }
 }
@@ -481,6 +486,10 @@ let roWarned = false, syncQ = Promise.resolve();
 const ranges = new Map(); let rangeId = 0; // pieces of Linux files asked from the worker
 const wRange = (path, off, len) => new Promise((res) => { if (!w) return res(null); const id = ++rangeId; ranges.set(id, res); w.postMessage({ type: 'range', id, path, off, len }); });
 const PIECE = 4 * 1048576;
+let opfsRoot = null;
+async function inOpfs(fh) { try { opfsRoot = opfsRoot || await navigator.storage.getDirectory(); return !!(await opfsRoot.resolve(fh)); } catch (er) { return false; } }
+// an OPFS file: the worker writes the changed ranges with a sync access handle (createWritable would copy the file first)
+const wPart = (o, fh) => new Promise((res) => { if (!w) return res(null); const id = ++rangeId; ranges.set(id, res); try { w.postMessage({ type: 'mwrite', id, path: o.path, size: o.size, ranges: o.ranges, fh }); } catch (er) { ranges.delete(id); res(null); } });
 async function mountSync(root, ops) {
   const m = mounted.get(root);
   if (!m) return;
@@ -502,10 +511,30 @@ async function mountSync(root, ops) {
             if (!r || !r.data) throw new Error('Linux did not give the file');
             size = r.size;
             if (!r.data.byteLength) break;
-            await wr.write({ type: 'write', position: off, data: r.data }); off += r.data.byteLength;
+            await wr.write({ type: 'write', position: off, data: r.data }); off += r.data.byteLength; mntStats.written += r.data.byteLength;
           }
           await wr.close();
         } catch (er) { try { await wr.abort(); } catch (e2) {} throw er; }
+        m.files.set(o.path, fh);
+      } else if (o.op === 'wpart') { // a big file changed in places: only those ranges are written, then the size if it changed
+        const fh = await (await dirFor(m, o.path, true)).getFileHandle(base, { create: true });
+        const r = (await inOpfs(fh)) ? await wPart(o, fh) : null;
+        if (r && r.err) throw new Error(r.err);
+        if (r) mntStats.written += r.n;
+        else { // a folder from showDirectoryPicker: keepExistingData (the browser may copy the file to its own swap file first)
+          const size0 = (await fh.getFile()).size;
+          const wr = await fh.createWritable({ keepExistingData: true });
+          try {
+            for (const [a, len] of o.ranges) for (let off = a; off < a + len;) {
+              const q = await wRange(o.path, off, Math.min(PIECE, a + len - off));
+              if (!q || !q.data) throw new Error('Linux did not give the file');
+              if (!q.data.byteLength) break;
+              await wr.write({ type: 'write', position: off, data: q.data }); off += q.data.byteLength; mntStats.written += q.data.byteLength;
+            }
+            if (size0 !== o.size) await wr.truncate(o.size);
+            await wr.close();
+          } catch (er) { try { await wr.abort(); } catch (e2) {} throw er; }
+        }
         m.files.set(o.path, fh);
       } else if (o.op === 'move') {
         const src = m.files.get(o.from);

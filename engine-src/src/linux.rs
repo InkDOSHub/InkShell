@@ -116,6 +116,9 @@ pub struct Lx {
     // extents are fetched from the page when a call needs them (bit set = not fetched yet), so
     // a 10 GB file is never read whole; see `mnt_gate` and linux_mount_data
     pub holes: BTreeMap<String, Vec<u64>>,
+    // big mounted files whose changes are kept per 64 KB extent, so the page writes back only
+    // those: Some(extents changed since the last scan), None = write it whole (see mnt_gate)
+    pub dirt: BTreeMap<String, Option<BTreeSet<u64>>>,
     pub fetch: Vec<String>,
     pub unknown: BTreeSet<u64>,
     want: Option<Cond>,
@@ -612,7 +615,7 @@ fn open(e: &mut Engine, path: &str, flags: u64, mode: u64) -> i64 {
             return NORET;
         }
     }
-    if flags & 0x200 != 0 && flags & 3 != 0 { l.holes.remove(&p); }
+    if flags & 0x200 != 0 && flags & 3 != 0 { l.holes.remove(&p); dirt_all(l, &p); }
     let exists = p == "/" || l.fs.contains_key(&p);
     if l.is_dir(&p) {
         if flags & 3 != 0 { return -EISDIR; }
@@ -805,7 +808,7 @@ pub fn syscall(e: &mut Engine) {
         if matches!(nr, 34 | 130) || (slow && flags & SA_RESTART == 0) { deliver(e, sig, (-EINTR) as u64, rip); } else { deliver(e, sig, nr, rip - 2); }
         return;
     }
-    if !lx(e).holes.is_empty() && mnt_gate(e, nr) { return; }
+    if { let l = lx(e); !l.holes.is_empty() || !l.dirt.is_empty() } && mnt_gate(e, nr) { return; }
     if matches!(nr, 2 | 257 | 76 | 77 | 82 | 264 | 316 | 83 | 258 | 84 | 87 | 263 | 86 | 88 | 265 | 266) || (matches!(nr, 1 | 18 | 20) && matches!(lx(e).fds.get(&(a0 as i32)), Some(Fd::File { .. }))) { lx(e).dirty = true; }
     let v: i64 = match nr {
         0 => do_read(e, a0 as i32, a1, a2),
@@ -1161,7 +1164,7 @@ pub fn syscall(e: &mut Engine) {
             let (f, t) = if nr == 82 { (e.read_cstr(a0, 4096), e.read_cstr(a1, 4096)) } else { (path_at(e, a0, a1), path_at(e, a2, a3)) };
             let (l, mm) = lxm(e); let (f, t) = (l.resolve(&f, false), l.resolve(&t, false));
             let keys: Vec<String> = l.fs.keys().filter(|k| **k == f || k.starts_with(&format!("{}/", f))).cloned().collect();
-            if keys.is_empty() { -ENOENT } else { for k in keys { let n = l.fs.remove(&k).unwrap(); let nk = format!("{}{}", t, &k[f.len()..]); l.written.remove(&k); if let Some(m) = l.meta.remove(&k) { l.meta.insert(nk.clone(), m); } if let Some(z) = l.stubs.remove(&k) { l.stubs.insert(nk.clone(), z); } if let Some(h) = l.holes.remove(&k) { l.holes.insert(nk.clone(), h); } else { l.holes.remove(&nk); } if matches!(n, Node::File(_)) && !l.stubs.contains_key(&nk) && !l.holes.contains_key(&nk) { l.written.insert(nk.clone()); } if let Some(Node::File(mut old)) = l.fs.insert(nk, n) { old.clear(&mut l.bc, mm); } } 0 }
+            if keys.is_empty() { -ENOENT } else { for k in keys { let n = l.fs.remove(&k).unwrap(); let nk = format!("{}{}", t, &k[f.len()..]); l.written.remove(&k); if let Some(m) = l.meta.remove(&k) { l.meta.insert(nk.clone(), m); } if let Some(z) = l.stubs.remove(&k) { l.stubs.insert(nk.clone(), z); } if let Some(h) = l.holes.remove(&k) { l.holes.insert(nk.clone(), h); } else { l.holes.remove(&nk); } l.dirt.remove(&k); l.dirt.remove(&nk); if matches!(n, Node::File(_)) && !l.stubs.contains_key(&nk) && !l.holes.contains_key(&nk) { l.written.insert(nk.clone()); } if let Some(Node::File(mut old)) = l.fs.insert(nk, n) { old.clear(&mut l.bc, mm); } } 0 }
         }
         83 | 258 => { // mkdir / mkdirat
             let (p, m) = if nr == 83 { (e.read_cstr(a0, 4096), a1) } else { (path_at(e, a0, a1), a2) };
@@ -1177,7 +1180,7 @@ pub fn syscall(e: &mut Engine) {
                 Some(Node::Dir) if !l.children(&q).is_empty() => -ENOTEMPTY,
                 Some(Node::Dir) => { l.fs.remove(&q); 0 }
                 Some(_) if dir => -ENOTDIR,
-                Some(_) => { if let Some(Node::File(mut d)) = l.fs.remove(&q) { d.clear(&mut l.bc, mm); } l.written.remove(&q); l.stubs.remove(&q); l.holes.remove(&q); l.us_names.remove(&q); l.meta.remove(&q); 0 }
+                Some(_) => { if let Some(Node::File(mut d)) = l.fs.remove(&q) { d.clear(&mut l.bc, mm); } l.written.remove(&q); l.stubs.remove(&q); l.holes.remove(&q); l.dirt.remove(&q); l.us_names.remove(&q); l.meta.remove(&q); 0 }
             }
         }
         86 | 88 | 265 | 266 => { // link / symlink / linkat / symlinkat
@@ -1482,7 +1485,7 @@ fn sync_shared(e: &mut Engine, a: u64, n: u64, unmap: bool) {
             let mut buf = vec![0u8; (ft - fs) as usize];
             if e.mmu.read_bytes(s, &mut buf).is_ok() {
                 let (l, mm) = lxm(e);
-                if let Some(Node::File(d)) = l.fs.get_mut(&path) { d.write(&mut l.bc, mm, fs, &buf); l.written.insert(path.clone()); }
+                if let Some(Node::File(d)) = l.fs.get_mut(&path) { d.write(&mut l.bc, mm, fs, &buf); l.written.insert(path.clone()); dirt_mark(l, &path, fs, ft); }
             }
         }
         if !unmap { keep.push((p, ma, ml, path, off)); continue; }
@@ -2088,6 +2091,7 @@ pub extern "C" fn linux_put_file() {
     let home = match l.fs.get("/etc/inksoc/user") { Some(Node::File(d)) if !d.is_empty() => format!("/home/{}", String::from_utf8_lossy(d.mem()).trim()), _ => "/root".to_string() };
     let path = l.abs(&if name.starts_with('/') { name } else { format!("{}/{}", home, name) });
     let fetched = l.stubs.remove(&path).is_some() | l.holes.remove(&path).is_some();
+    l.dirt.remove(&path);
     l.put(&mut e.mmu, &path, b.get(nl + 1..).unwrap_or(&[]).to_vec());
     if !fetched { l.dirty = true; }
 }
@@ -2104,7 +2108,7 @@ pub extern "C" fn linux_remove() -> u32 {
     let pre = format!("{}/", p);
     let keys: Vec<String> = l.fs.keys().filter(|k| **k == p || k.starts_with(&pre)).cloned().collect();
     if keys.is_empty() { return 0; }
-    for k in keys { if let Some(Node::File(mut d)) = l.fs.remove(&k) { d.clear(&mut l.bc, &mut e.mmu); } l.written.remove(&k); l.stubs.remove(&k); l.holes.remove(&k); l.us_names.remove(&k); l.meta.remove(&k); }
+    for k in keys { if let Some(Node::File(mut d)) = l.fs.remove(&k) { d.clear(&mut l.bc, &mut e.mmu); } l.written.remove(&k); l.stubs.remove(&k); l.holes.remove(&k); l.dirt.remove(&k); l.us_names.remove(&k); l.meta.remove(&k); }
     l.dirty = true;
     1
 }
@@ -2122,7 +2126,7 @@ pub extern "C" fn linux_mount() {
     if !root.starts_with("/mnt/") || root.len() < 6 { return; }
     let pre = format!("{}/", root);
     let old: Vec<String> = l.fs.range(pre.clone()..).take_while(|(k, _)| k.starts_with(&pre)).map(|(k, _)| k.clone()).collect();
-    for k in old { if let Some(Node::File(mut d)) = l.fs.remove(&k) { d.clear(&mut l.bc, &mut e.mmu); } l.stubs.remove(&k); l.holes.remove(&k); l.written.remove(&k); }
+    for k in old { if let Some(Node::File(mut d)) = l.fs.remove(&k) { d.clear(&mut l.bc, &mut e.mmu); } l.stubs.remove(&k); l.holes.remove(&k); l.dirt.remove(&k); l.written.remove(&k); }
     l.mkdirs(&root);
     l.mounts.insert(root.clone());
     // owned by the terminal's user (the owner of their home folder), open to everyone
@@ -2184,14 +2188,20 @@ fn hole(l: &Lx, p: &str, j: u32) -> bool {
 /// Before a call that touches the bytes of a big mounted file not fetched yet: asks the page for
 /// the first missing piece (up to 4 MB from there, read-ahead) and makes the call wait; it runs
 /// again when the piece is in (and asks for the next one if it still misses some). Reads need
-/// just their range; writes, truncation, links, exec and shared mappings need the whole file
-/// (the page then rewrites it whole when it changed). true when the call waits.
+/// just their range. Writes and truncation need only the extents they change in part (copy on
+/// write per 64 KB extent: the ones they cover whole are not fetched) and mark the extents they
+/// change, which the page then writes back alone (`dirt`, linux_mount_scan). Links, exec, shared
+/// mappings, sendfile into it and fallocate still need the whole file (the last two also make the
+/// page rewrite it whole). true when the call waits.
 fn mnt_gate(e: &mut Engine, nr: u64) -> bool {
     let r = e.cpu.regs;
     let (a0, a1, a2, a3) = (r[7], r[6], r[2], r[10]);
     const ALL: u64 = u64::MAX;
     let fd_path = |e: &mut Engine, fd: u64| match lx(e).fds.get(&(fd as i32)) { Some(Fd::File { path, pos, .. }) => Some((path.clone(), *pos)), _ => None };
     let mut need: Vec<(String, u64, u64)> = Vec::new();
+    let mut wr: Option<(String, u64, u64)> = None; // a write: file, offset, length
+    let mut tr: Option<(String, u64)> = None; // a truncation: file, new length
+    let mut whole: Option<String> = None; // the page rewrites it whole
     match nr {
         0 => if let Some((p, pos)) = fd_path(e, a0) { need.push((p, pos, a2.min(1 << 24))); },
         17 => if let Some((p, _)) = fd_path(e, a0) { need.push((p, a3, a2.min(1 << 24))); },
@@ -2202,26 +2212,84 @@ fn mnt_gate(e: &mut Engine, nr: u64) -> bool {
         },
         40 => {
             if let Some((p, pos)) = fd_path(e, a1) { let at = if a2 != 0 { e.r64(a2) } else { pos }; need.push((p, at, a3.min(1 << 20))); }
-            if let Some((p, _)) = fd_path(e, a0) { need.push((p, 0, ALL)); }
+            if let Some((p, _)) = fd_path(e, a0) { need.push((p.clone(), 0, ALL)); whole = Some(p); }
         }
         9 => if r[8] as i32 >= 0 && a3 & 0x20 == 0 { if let Some((p, _)) = fd_path(e, r[8]) { need.push((p, if a3 & 1 != 0 { 0 } else { r[9] }, if a3 & 1 != 0 { ALL } else { a1 })); } },
-        1 | 18 | 20 | 77 | 285 => if let Some((p, _)) = fd_path(e, a0) { need.push((p, 0, ALL)); },
-        59 | 76 | 86 => { let s = e.read_cstr(a0, 4096); let q = lx(e).resolve(&s, true); need.push((q, 0, ALL)); }
+        1 | 18 | 20 => if let Some((p, pos)) = fd_path(e, a0) {
+            let app = matches!(lx(e).fds.get(&(a0 as i32)), Some(Fd::File { append: true, .. }));
+            let n = if nr == 20 { let mut n = 0u64; for k in 0..a2.min(1024) { n = n.saturating_add(e.r64(a1 + 16 * k + 8)); } n } else { a2 };
+            let at = if app { flen(lx(e), &p) } else if nr == 18 { a3 } else { pos };
+            wr = Some((p, at, n));
+        },
+        77 => if let Some((p, _)) = fd_path(e, a0) { tr = Some((p, a1)); },
+        76 => { let s = e.read_cstr(a0, 4096); let q = lx(e).resolve(&s, true); tr = Some((q, a1)); }
+        285 => if let Some((p, _)) = fd_path(e, a0) { need.push((p.clone(), 0, ALL)); whole = Some(p); },
+        59 | 86 => { let s = e.read_cstr(a0, 4096); let q = lx(e).resolve(&s, true); need.push((q, 0, ALL)); }
         265 => { let s = path_at(e, a0, a1); let q = lx(e).resolve(&s, true); need.push((q, 0, ALL)); }
         _ => {}
     }
+    let ext = crate::lxdata::EXT as u64;
+    // the extents a write or truncation changes in part: fetched first, one at a time (no read-ahead)
+    let mut part: Vec<(String, u64)> = Vec::new();
+    if let Some((p, at, n)) = &wr {
+        let (len, end) = (flen(lx(e), p), at.saturating_add(*n));
+        if *n > 0 {
+            for j in [at / ext, (end - 1) / ext] { if !(j * ext >= *at && ((j + 1) * ext <= end || len <= end)) { part.push((p.clone(), j)); } }
+        }
+    }
+    if let Some((p, nl)) = &tr { if *nl < flen(lx(e), p) && nl % ext != 0 { part.push((p.clone(), nl / ext)); } }
     for (p, off, n) in need {
-        let Some(first) = want(lx(e), &p, off, n) else { continue };
+        let Some(first) = want(lx(e), &p, off, n, 64) else { continue };
         e.cpu.rip -= 2;
         e.block_linux(Cond::Range(p, first as u32), None);
         return true;
     }
+    for (p, j) in part {
+        let Some(first) = want(lx(e), &p, j * ext, 1, 1) else { continue };
+        e.cpu.rip -= 2;
+        e.block_linux(Cond::Range(p, first as u32), None);
+        return true;
+    }
+    // everything the call keeps is in: the extents it replaces whole need no fetch, and what it changes is marked
+    let l = lx(e);
+    if let Some((p, at, n)) = wr {
+        if n > 0 {
+            let (len, end) = (flen(l, &p), at.saturating_add(n));
+            unhole(l, &p, |j| j * ext >= at && ((j + 1) * ext <= end || len <= end), at / ext, end.div_ceil(ext));
+            dirt_mark(l, &p, at, end);
+        }
+    }
+    if let Some((p, nl)) = tr {
+        let len = flen(l, &p);
+        if nl < len { unhole(l, &p, |_| true, nl.div_ceil(ext), len.div_ceil(ext)); dirt_mark(l, &p, nl, len); } else { dirt_mark(l, &p, len, len); }
+    }
+    if let Some(p) = whole { dirt_all(l, &p); }
     false
 }
 
+/// The length of file `p` (0 when it is not one).
+fn flen(l: &Lx, p: &str) -> u64 { match l.fs.get(p) { Some(Node::File(d)) => d.len(), _ => 0 } }
+
+/// Extents j0..j1 of mounted file `p` for which `f` holds count as fetched (their bytes are being replaced).
+fn unhole(l: &mut Lx, p: &str, f: impl Fn(u64) -> bool, j0: u64, j1: u64) {
+    let Some(h) = l.holes.get_mut(p) else { return };
+    for j in j0..j1.min(h.len() as u64 * 64) { if f(j) { h[(j / 64) as usize] &= !(1u64 << (j % 64)); } }
+    if h.iter().all(|&w| w == 0) { l.holes.remove(p); }
+}
+
+/// Bytes [a, z) of big mounted file `p` changed: their extents go back to the page at the next scan.
+fn dirt_mark(l: &mut Lx, p: &str, a: u64, z: u64) {
+    let Some(d) = l.dirt.get_mut(p) else { return };
+    if let Some(s) = d { let ext = crate::lxdata::EXT as u64; if z > a { for j in a / ext..z.div_ceil(ext) { s.insert(j); } } }
+    l.written.insert(p.to_string());
+}
+
+/// Big mounted file `p` changed in a way not kept per extent: the page rewrites it whole.
+fn dirt_all(l: &mut Lx, p: &str) { if let Some(d) = l.dirt.get_mut(p) { *d = None; l.written.insert(p.to_string()); } }
+
 /// The first extent of [off, off+n) of mounted file `p` not fetched yet, after asking the page
-/// for it (up to 4 MB from there, read-ahead); None when the range is all in.
-fn want(l: &mut Lx, p: &str, off: u64, n: u64) -> Option<u64> {
+/// for it (up to `ra` extents from there, read-ahead); None when the range is all in.
+fn want(l: &mut Lx, p: &str, off: u64, n: u64, ra: u64) -> Option<u64> {
     let ext = crate::lxdata::EXT as u64;
     let h = l.holes.get(p)?;
     let len = match l.fs.get(p) { Some(Node::File(d)) => d.len(), _ => return None };
@@ -2231,7 +2299,7 @@ fn want(l: &mut Lx, p: &str, off: u64, n: u64) -> Option<u64> {
     let first = (j0..j1).find(|&j| miss(j))?;
     let total = len.div_ceil(ext);
     let mut last = first + 1;
-    while last < total && last - first < 64 && miss(last) { last += 1; }
+    while last < total && last - first < ra && miss(last) { last += 1; }
     let (a, z) = (first * ext, (last * ext).min(len));
     let req = format!("{}\t{}\t{}", p, a, z - a);
     if !l.fetch.contains(&req) { l.fetch.push(req); }
@@ -2247,6 +2315,7 @@ fn mount_big(l: &mut Lx, m: &mut crate::mmu::Mmu, p: &str, size: u64) {
     let mut h = vec![!0u64; n.div_ceil(64)];
     if n % 64 != 0 { *h.last_mut().unwrap() = (1u64 << (n % 64)) - 1; }
     l.holes.insert(p.to_string(), h);
+    l.dirt.insert(p.to_string(), Some(BTreeSet::new()));
 }
 
 /// Files programs are waiting for (one path per line, in out_ptr()); their total length.
@@ -2274,7 +2343,22 @@ pub extern "C" fn linux_mount_scan() -> u32 {
             Some(Node::File(d)) => {
                 let size = l.stubs.get(&k).copied().unwrap_or(d.len());
                 let ch = l.written.remove(&k);
-                o.push_str(&format!("F\t{}\t{}\t{}\n", k, size, ch as u8));
+                o.push_str(&format!("F\t{}\t{}\t{}", k, size, ch as u8));
+                // a big mounted file: what changed, as "offset+length" byte ranges ("-" none, "*" all)
+                if let (true, Some(d)) = (ch, l.dirt.get_mut(&k)) {
+                    o.push('\t');
+                    match d.replace(BTreeSet::new()) {
+                        None => o.push('*'),
+                        Some(s) if s.is_empty() => o.push('-'),
+                        Some(s) => {
+                            let ext = crate::lxdata::EXT as u64;
+                            let mut r: Vec<(u64, u64)> = Vec::new();
+                            for j in s { match r.last_mut() { Some(x) if x.1 == j => x.1 = j + 1, _ => r.push((j, j + 1)) } }
+                            o.push_str(&r.iter().map(|(a, z)| format!("{}+{}", a * ext, (z - a) * ext)).collect::<Vec<_>>().join(","));
+                        }
+                    }
+                }
+                o.push('\n');
             }
             _ => {}
         }
@@ -2326,7 +2410,7 @@ pub extern "C" fn linux_get_range() -> i32 {
     let p = l.resolve(&String::from_utf8_lossy(&b[..nl]), true);
     let off = u64::from_le_bytes(b[nl + 1..nl + 9].try_into().unwrap());
     let n = u64::from_le_bytes(b[nl + 9..nl + 17].try_into().unwrap()).min(1 << 26);
-    if want(l, &p, off, n).is_some() { return -2; }
+    if want(l, &p, off, n, 64).is_some() { return -2; }
     let Some(Node::File(d)) = l.fs.get(&p) else { return -1 };
     let mut o = d.len().to_le_bytes().to_vec();
     o.extend_from_slice(&d.read(&mut l.bc, &mut e.mmu, off, n as usize));
