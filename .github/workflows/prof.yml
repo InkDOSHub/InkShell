@@ -32,5 +32,5 @@ jobs:
           cp target/wasm32-unknown-unknown/release/inksoc.wasm ../out/plain.wasm
       - name: Run
         run: |
-          node tests/bench-engine.mjs out/plain.wasm fib=out/fib -- /root/fib
-          PROF=1 node tests/bench-engine.mjs out/prof.wasm fib=out/fib -- /root/fib
+          node tests/bench-engine.mjs out/plain.wasm fib=out/fib -- sh -c /root/fib
+          PROF=1 node tests/bench-engine.mjs out/prof.wasm fib=out/fib -- sh -c /root/fib
