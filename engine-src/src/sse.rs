@@ -801,6 +801,8 @@ pub fn op3_ok(code: u32, p66: bool) -> bool {
         0x3800..=0x380B | 0x3810 | 0x3814 | 0x3815 | 0x3817 | 0x381C..=0x381E | 0x3820..=0x3825 | 0x3828..=0x382B | 0x3830..=0x3835
         | 0x3837..=0x3841 | 0x3A08..=0x3A0F | 0x3A14..=0x3A17 | 0x3A20..=0x3A22 | 0x3A40..=0x3A42 | 0x3A60..=0x3A63 => p66,
         0x38C8..=0x38CD | 0x3ACC => !p66,
+        // AES-NI, PCLMULQDQ
+        0x38DB..=0x38DF | 0x3A44 | 0x3ADF => p66,
         _ => false,
     }
 }
@@ -883,6 +885,7 @@ fn pmovx(s: u128, k: u32, sx: bool) -> u128 {
 /// Result of op `code` on dst `d` and source `s` (x0 = xmm0: SHA256RNDS2, PBLENDVB, BLENDVPS/PD).
 pub fn op3(code: u32, d: u128, s: u128, imm: u8, x0: u128) -> u128 {
     match code {
+        0x38DB..=0x38DF | 0x3A44 | 0x3ADF => crate::aes::op(code, d, s, imm),
         // PSHUFB: byte i = d[s[i] & 15], or 0 when bit 7 of s[i] is set
         0x3800 => {
             let (a, m) = (u8s(d), u8s(s));

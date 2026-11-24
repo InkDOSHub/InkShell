@@ -436,7 +436,7 @@ fn flag_use(i: &Ins) -> (bool, bool) {
         0x0FA4 | 0x0FAC => (i.imm & 31 == 0, true),
         0x0FAF | 0x69 | 0x6B | 0x0F2E | 0x0F2F | 0x0FB8 => (false, true),
         0x0F10..=0x0F17 | 0x0F28..=0x0F2D | 0x0F50..=0x0F7F | 0x0FC2 | 0x0FC6 | 0x0FD0..=0x0FFF => (false, false),
-        0x0F3800 | 0x0F3A0E | 0x0F3A0F | 0x0F38C8..=0x0F38CD | 0x0F3ACC => (false, false),
+        0x0F3800 | 0x0F3A0E | 0x0F3A0F | 0x0F38C8..=0x0F38CD | 0x0F3ACC | 0x0F38DB..=0x0F38DF | 0x0F3A44 | 0x0F3ADF => (false, false),
         0x50..=0x5F
         | 0x63
         | 0x68
@@ -3238,7 +3238,7 @@ fn bitscan(g: &mut G, i: &Ins, live: bool) -> bool {
 }
 
 /// 0F 38 / 0F 3A ops of sse::op3: PSHUFB, PALIGNR, PBLENDW as wasm SIMD; the other xmm-only
-/// ops (SHA, SSSE3, SSE4.1/4.2) through a call to sse::jit_op3 (the block goes on). Ops with
+/// ops (SHA, AES-NI, PCLMULQDQ, SSSE3, SSE4.1/4.2) through a call to sse::jit_op3 (the block goes on). Ops with
 /// flags or general registers (PTEST, PEXTR/PINSR, PCMPxSTRx, CRC32) end the block (interpreter).
 fn op3(g: &mut G, i: &Ins) -> Option<bool> {
     if !matches!(i.op & 0xFFFF00, 0x0F3800 | 0x0F3A00) {
