@@ -7,6 +7,7 @@ import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { runWasi, cwdStats, cwdSlot } from '../wasi.js';
 import { swapStore } from './swap-store.mjs';
+import { report as enosysReport } from './enosys.mjs';
 const wasmPath = process.argv[2] || 'engine.wasm';
 const POOL = 24; // MB of real RAM: small on purpose
 const dec = new TextDecoder(), enc = new TextEncoder();
@@ -415,6 +416,7 @@ if (x.linux_save_next) { // big files: 4 KB blocks in swap slots (lxdata.rs), no
   const got = out.slice(before), ok = /back-2/.test(got) && Date.now() - t1 < 10000;
   results.push(ok); console.log((ok ? 'PASS' : 'FAIL') + ' Ctrl+C stops sleep' + (ok ? '' : '\n' + got.slice(-400)));
 }
+console.log('\n' + enosysReport(x, mem, 'system calls answered ENOSYS (number name ×times)'));
 const pass = results.filter(Boolean).length;
 console.log(`\n${pass}/${results.length} passed in ${((Date.now() - t0) / 1000).toFixed(1)} s · swap chunks used: ${swap.size}`);
 process.exit(pass === results.length ? 0 : 1);

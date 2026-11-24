@@ -75,6 +75,17 @@ jobs:
           /usr/bin/time -v -o out/wasm-py.time timeout 1800 node tests/bench-engine.mjs out/engine.wasm bench.sh=out/bench.sh pybench.py=out/pybench.py zpywasm.tar=out/zpywasm.tar -- sh /root/bench.sh py 2>&1 | tee out/wasm-py.log
           grep -q '@@T done' out/wasm-py.log || echo "- motor \`py\` (WebAssembly): não terminou (ver wasm-py.log)" | tee -a out/engine-fails.txt
           echo "::endgroup::"
+      - name: Syscall audit (x86 python3, git, sqlite3, bash, coreutils, tar/xz from Alpine; measurement only)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          docker run --rm -v "$PWD":/w -w /w alpine:3.21 sh -c '
+            mkdir /x && apk add -q --root /x --initdb --allow-untrusted --no-scripts \
+              --repositories-file /etc/apk/repositories python3 git sqlite xz bash coreutils findutils grep tar gzip &&
+            tar -C /x -cf out/zaudit.tar usr/bin usr/lib usr/libexec usr/share/git-core lib bin etc/ssl 2>/dev/null; ls -la out/zaudit.tar'
+          timeout 1500 node tests/bench-engine.mjs out/engine.wasm audit.sh=tests/bench/audit.sh zaudit.tar=out/zaudit.tar -- sh /root/audit.sh > out/audit.log 2>&1 || true
+          { echo "## Auditoria de syscalls (ENOSYS por programa x86)"; echo; echo '```'; cut -f2 out/audit.log | grep -E '^@@(A|ENOSYS|ERR)|ok$|-done$|^py |^bash ' ; echo '```'; } > out/audit.md
+          cat out/audit.md | tee -a $GITHUB_STEP_SUMMARY
       - name: WASI profile of the python3 start (INKSOC_WASI_PROFILE=1; measurement only)
         if: ${{ !cancelled() }}
         continue-on-error: true
@@ -99,7 +110,7 @@ jobs:
           node ../tests/bench/report.mjs \
             native=$(ls native-*.log | paste -sd,) engine=$(ls engine-*.log | paste -sd,) wasm=wasm-py.log \
             native.time=$(ls native-*.time | paste -sd,) wasm.time=wasm-py.time > report.md || true
-          { echo "## Terminal: motor vs nativo (runner)"; echo; cat report.md; echo; cat engine-fails.txt 2>/dev/null; } | tee -a $GITHUB_STEP_SUMMARY
+          { echo "## Terminal: motor vs nativo (runner)"; echo; cat report.md; echo; cat engine-fails.txt 2>/dev/null; echo; echo "ENOSYS (contador do motor):"; grep -h '@@ENOSYS' engine-*.log wasm-py.log 2>/dev/null | sed 's/^/- /'; } | tee -a $GITHUB_STEP_SUMMARY
       - name: Compare with previous main run
         if: ${{ !cancelled() }}
         env:
