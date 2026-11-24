@@ -178,6 +178,11 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   lx = {
     resize(r, c) { x.linux_winsize(r, c); },
     put(name, data) { const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 1 + d.length); b.set(nm); b.set(d, nm.length + 1); put(b); x.linux_put_file(); },
+    // a piece of a big mounted file (offset, length asked; the bytes may be fewer)
+    mdata(name, off, len, data) {
+      const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 17 + d.length), v = new DataView(b.buffer);
+      b.set(nm); v.setBigUint64(nm.length + 1, BigInt(off), true); v.setBigUint64(nm.length + 9, BigInt(len), true); b.set(d, nm.length + 17); put(b); x.linux_mount_data();
+    },
     get(path) { put(enc.encode(path)); const n = x.linux_get_file(); return n < 0 ? null : new Uint8Array(mem.buffer, x.out_ptr(), n).slice(); },
     text(n) { return n ? dec.decode(new Uint8Array(mem.buffer, x.out_ptr(), n)) : ''; },
   };
@@ -283,6 +288,7 @@ onmessage = async (ev) => {
   if (d.type === 'key') { keys.push(d.data); return; }
   if (d.type === 'resize') { if (lx) lx.resize(d.rows, d.cols); return; }
   if (d.type === 'put') { if (lx) { lx.put(d.name, d.data); loaded(d.name, d.data.byteLength); } else pendingPuts.push({ name: d.name, data: d.data }); return; }
+  if (d.type === 'mdata') { if (lx && x.linux_mount_data) { lx.mdata(d.name, d.off, d.len, d.data); loaded(d.name, (held.get(d.name) || 0) + d.len); } return; }
   if (d.type === 'mount') { if (lx) mount(d); else pendingMounts.push(d); return; }
   if (d.type === 'get') { const data = lx ? lx.get(d.path) : null; postMessage({ type: 'file', path: d.path, data, to: d.to }, data ? [data.buffer] : []); return; }
   if (d.type === 'rm') { // the Files view: only your own files (home, /root, /tmp, mounted folders), never the system
@@ -376,7 +382,8 @@ async function calibrate() {
 }
 
 /* Device folders mounted at /mnt/NAME (the page holds the folder; see app.js). The engine lists
-   every file but reads one only when a program opens it (the page sends it). Every 1.5 s of
+   every file but reads one only when a program opens it (the page sends it); a file over 1 MB
+   is read in pieces of up to 4 MB as programs reach them (File.slice), never whole. Every 1.5 s of
    quiet, what programs changed goes back to the page, which writes it into the real folder.
    Files only read are dropped again when more than MOUNT_RAM bytes are held. */
 const mounts = new Map(); // root -> Map(path -> 'D' | size)

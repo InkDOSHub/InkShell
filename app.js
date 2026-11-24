@@ -432,7 +432,16 @@ $('mount').onclick = async () => {
 $('mountdir').onchange = () => { const l = [...$('mountdir').files]; $('mountdir').value = ''; if (l.length) addMount(mountFiles(l)); };
 const rootOf = (p) => { for (const r of mounted.keys()) if (p.startsWith(r + '/')) return r; return null; };
 async function mountFetch(paths) {
-  for (const p of paths) {
+  for (const ln of paths) {
+    const [p, off, len] = ln.split('\t');
+    if (len !== undefined) { // a piece of a big file: only that slice is read from the device
+      const m = mounted.get(rootOf(p)), a = +off, n = +len;
+      let data = new ArrayBuffer(0);
+      try { const h = m && m.files.get(p); const f = h && (h.getFile ? await h.getFile() : h); if (f) data = await f.slice(a, a + n).arrayBuffer(); else note(p + ': not found in the device folder'); }
+      catch (er) { note(p + ': could not read (' + er.message + ')'); }
+      if (w) w.postMessage({ type: 'mdata', name: p, off: a, len: n, data }, [data]);
+      continue;
+    }
     const m = mounted.get(rootOf(p));
     let data = new ArrayBuffer(0);
     try { const h = m && m.files.get(p); const f = h && (h.getFile ? await h.getFile() : h); if (f) data = await f.arrayBuffer(); else note(p + ': not found in the device folder'); }
