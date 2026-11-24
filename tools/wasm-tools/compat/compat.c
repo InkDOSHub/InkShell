@@ -1,5 +1,7 @@
 /* Stubs for POSIX calls WASI preview1 does not have (no processes, no users). tools/wasm-tools/build.sh links them. */
 #include <errno.h>
+#include <fcntl.h>
+#include <time.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -31,3 +33,17 @@ struct group *getgrnam(const char *n) { (void)n; return NULL; }
 int sysinfo(struct sysinfo *i) { memset(i, 0, sizeof *i); i->totalram = i->freeram = 1u << 30; i->mem_unit = 1; return 0; } /* 1 GB: what a wasm32 program can use comfortably */
 int compat_chmod(const char *p, mode_t m) { struct stat st; int r = chmod(p, m); return r && errno == ENOSYS ? stat(p, &st) : r; }
 int compat_fchmod(int f, mode_t m) { struct stat st; int r = fchmod(f, m); return r && errno == ENOSYS ? fstat(f, &st) : r; }
+int mkstemp(char *t) /* WASI libc declares mkstemp but has none (zip): XXXXXX from the clock and a counter, created with O_EXCL */
+{
+  static unsigned c;
+  size_t n = strlen(t);
+  if (n < 6 || strcmp(t + n - 6, "XXXXXX")) { errno = EINVAL; return -1; }
+  for (int i = 0; i < 100; i++) {
+    struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+    unsigned v = (unsigned)ts.tv_nsec ^ (++c * 2654435761u);
+    for (int k = 0; k < 6; k++, v /= 36) t[n - 6 + k] = "0123456789abcdefghijklmnopqrstuvwxyz"[v % 36];
+    int fd = open(t, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (fd >= 0 || errno != EEXIST) return fd;
+  }
+  errno = EEXIST; return -1;
+}

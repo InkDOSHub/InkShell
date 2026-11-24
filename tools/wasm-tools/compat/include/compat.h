@@ -15,6 +15,7 @@ mode_t umask(mode_t);
 int chown(const char *, uid_t, gid_t);
 int lchown(const char *, uid_t, gid_t);
 int fchown(int, uid_t, gid_t);
+int mkstemp(char *); /* compat.c: WASI libc declares it only in some modes and has none */
 #ifndef TIOCGWINSZ /* terminal size: ioctl fails, programs keep their default width */
 #define TIOCGWINSZ 0x5413
 struct winsize { unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel; };
