@@ -7,7 +7,7 @@ ls -la / >/dev/null; stat /etc/passwd; du -sh /usr/lib | tail -1; cp /bin/busybo
 sort /etc/passwd | head -1; find /etc -newer /etc/passwd -name '*.conf' | head -2; grep -r root /etc/passwd; date; df -h / | tail -1; a coreutils
 bash -c 'echo bash $BASH_VERSION; x=$(seq 3 | tr "\n" +); echo ${x}0; read -t 0.1 y < /dev/null; mapfile l < /etc/passwd; echo ${#l[@]} lines'; a bash
 seq 20000 > s.txt; gzip -k s.txt && gzip -t s.txt.gz && xz -k s.txt && xz -t s.txt.xz && tar -cJf s.tar.xz s.txt && tar -tJf s.tar.xz && tar -czf s.tgz s.txt && tar -xzf s.tgz -C /root && echo pack-ok; a tar-gzip-xz
-sqlite3 /tmp/d.db 'create table t(a,b); insert into t values(1,'"'"'x'"'"'),(2,'"'"'y'"'"'); select count(*), sum(a) from t; pragma journal_mode=wal; insert into t values(3,'"'"'z'"'"'); select * from t;'; a sqlite3
+sqlite3 /tmp/d.db 'create table t(a,b); insert into t values(1,'"'"'x'"'"'),(2,'"'"'y'"'"'); select count(*), sum(a) from t; select * from t;'; a sqlite3
 python3 - <<'PY'
 import os, sys, json, sqlite3, subprocess, shutil, tempfile, hashlib, socket, threading, time, select, mmap, signal
 print("py", sys.version.split()[0])
@@ -30,4 +30,6 @@ python3 -c 'import os, concurrent.futures as c; print("pool", sum(c.ThreadPoolEx
 cd /tmp/r && git blame a | tail -1 && git grep -c 1 && echo y >> a && git stash -q && git stash pop -q && git checkout -qb b2 && git log --stat -1 | tail -1 && echo git2-ok; cd /tmp; a git-2
 wget -q -T 2 -O - http://127.0.0.1:9/ 2>&1 | tail -1; a wget
 echo "@@ENOSYS-TOTAL $(cat /proc/inksoc/enosys | tr '\t\n' ': ')"
+# last: sqlite3 WAL mode (shared -shm mapping + byte-range locks) waited forever here (item 27)
+sqlite3 /tmp/w.db 'pragma journal_mode=wal; create table t(a); insert into t values(1); select count(*) from t;'; a sqlite3-wal
 echo "@@T done"
