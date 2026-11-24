@@ -60,6 +60,7 @@ Auditoria ENOSYS (item 27, bench #49, x86 Alpine; linux-test: só 435):
 | 435 | clone3 | 1 | busybox/musl (linux-test) | ENOSYS certo: musl cai p/ clone |
 | 37 | loja ☰: velocidade e ETA do download | 3 | 1 | feito (média móvel de ~8 s sobre as linhas `12/25 MB 48%` do log, só em app.js; "45% · 3,2 MB/s · 12 s"; sem mudança no apk/overlay) | texto de velocidade aparece (teste da função no page-wasi) |
 | 38 | roteiro de teste à mão no iPad A16 (XeOS) e iPhone Safari: `docs/TESTE-IPAD.md` | 3 | 1 | PR aberto (só documentação; comandos conferidos em app.js, index.html, overlay e catálogo) | Paulo preenche a tabela do roteiro |
+| 39 | ponteiro cwd no catálogo (KNOWN em wasi.js por tamanho + FNV de 8 KB; 14 módulos) | 3 | 1 | em andamento (ganho est.: ~90 ms dos 216 ms do py-start frio; medir no bench) | py-start frio menor |
 | — | io_uring, bpf, setns, seccomp, perf, pidfd, memfd | 0 | — | não apareceram; ficam ENOSYS |
 
 Recomendação (item 19): próximo item WASI = cache do `WebAssembly.Module` compilado por chave (mesmo Module reusado no node/worker; na página, Module guardado no worker do motor/IndexedDB e passado ao Worker do programa) + chave do cwd por caminho+tamanho+mtime do kernel em vez do hash de 25 MB. Ganho est.: compilação 17 + hash 11–38 + parte da compilação preguiçosa dentro do "Python puro" → 133 → ~60–75 ms (~45%), 2 pts. Medir antes com o Module reusado (bench pystart já mostra as fases). Ler o .wasm 2× (execve + wasi_module) custa só ~4 ms: não atacar.
@@ -133,6 +134,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-24 | 1 | 33: hashes WASM (travado, queimado) | #54 | 2 |
 | 2026-11-24 | 1 | 36: retomada hashes WASM + WASI /mnt grande | #54 | 2 |
 | 2026-11-24 | 1 | Hub: Cache-Control immutable p/ ?v= (inkdoshub.github.io #108) | #108 | 1 |
+| 2026-11-24 | 1 | 39: ponteiro cwd no catálogo | PR | 1 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
