@@ -344,18 +344,30 @@ $('dl-x').onclick = () => { $('dl').hidden = true; fit(); term.focus(); };
    Install / Remove run "apk add/del NAME" in Linux through the worker (a root helper there), not in
    your shell; this page shows the progress and the result. */
 const stReq = () => { if (w) w.postMessage({ type: 'store' }); };
-// apk writes "NAME: 12/25 MB 48%" while it downloads, one line updated with \r: the last percent
-const stPct = (log, name) => {
-  let pct = null; const re = /(?:^|[\r\n])([A-Za-z0-9._+-]+): \d+\/\d+ [KM]B (\d+)%/g;
-  for (let r; (r = re.exec(log || ''));) if (r[1] === name) pct = +r[2];
-  return pct;
+// apk writes "NAME: 12/25 MB 48%" while it downloads, one line updated with \r: the last line wins
+const stProg = (log, name) => {
+  let p = null; const re = /(?:^|[\r\n])([A-Za-z0-9._+-]+): (\d+)\/(\d+) ([KM])B (\d+)%/g;
+  for (let r; (r = re.exec(log || ''));) if (r[1] === name) { const u = r[4] === 'M' ? 1048576 : 1024; p = { pct: +r[5], done: +r[2] * u, total: +r[3] * u }; }
+  return p;
 };
+// speed = moving average over the last ~8 s of samples; ETA from the bytes left. null until it has 2 s of data.
+const stSamples = [];
+function stRate(name, done, total, now) {
+  if (!stSamples.length || stSamples[0].name !== name || done < stSamples[stSamples.length - 1].done) stSamples.length = 0;
+  if (!stSamples.length || done > stSamples[stSamples.length - 1].done) stSamples.push({ name, t: now, done });
+  while (stSamples.length > 2 && now - stSamples[1].t > 8000) stSamples.shift();
+  const f = stSamples[0], l = stSamples[stSamples.length - 1], dt = (l.t - f.t) / 1000;
+  if (dt < 2 || l.done <= f.done) return null;
+  const bps = (l.done - f.done) / dt, eta = Math.max(0, Math.round((total - l.done) / bps));
+  return (bps / 1048576).toFixed(1).replace('.', ',') + ' MB/s · ' + (eta >= 60 ? Math.floor(eta / 60) + ' min ' + (eta % 60) + ' s' : eta + ' s');
+}
 function stShow(m) {
   if ($('st').hidden) return;
   const list = $('st-list'); list.textContent = '';
   if (!m.items) { list.textContent = 'Linux is starting…'; setTimeout(stReq, 1000); return; }
   const j = m.job, k = m.done;
-  const pName = j && j.op === 'add' ? j.name : k && k.op === 'add' ? k.name : '', pct = pName ? stPct(m.log, pName) : null;
+  const pName = j && j.op === 'add' ? j.name : k && k.op === 'add' ? k.name : '', prog = pName ? stProg(m.log, pName) : null, pct = prog ? prog.pct : null;
+  const rate = j && prog && pct < 100 ? stRate(pName, prog.done, prog.total, Date.now()) : null;
   for (const it of m.items) {
     const row = document.createElement('div'); row.className = 'pkg'; row.dataset.name = it.name;
     const d = document.createElement('div'); d.className = 'd';
@@ -375,7 +387,7 @@ function stShow(m) {
     btn.onclick = () => { btn.disabled = true; btn.textContent = 'Working…'; if (w) w.postMessage({ type: 'store-do', op: it.installed ? 'del' : 'add', name: it.name }); };
     row.append(d, btn); list.append(row);
   }
-  $('st-msg').textContent = j ? (j.op === 'add' ? 'Installing ' + j.name + '… ' + (pct !== null ? pct + '%' : '(downloading it can take a minute)') : 'Removing ' + j.name + '…')
+  $('st-msg').textContent = j ? (j.op === 'add' ? 'Installing ' + j.name + '… ' + (pct !== null ? pct + '%' + (rate ? ' · ' + rate : '') : '(downloading it can take a minute)') : 'Removing ' + j.name + '…')
     : m.busy.length ? (m.ready ? '' : 'Waiting for Linux to be ready… (if it stays, restart Linux)')
     : k ? (k.rc ? (k.op === 'add' ? 'Could not install ' : 'Could not remove ') + k.name + '.' : k.op === 'add' ? k.name + ' installed: type ' + k.name + ' in the terminal.' : k.name + ' removed.') : '';
   $('st-log').textContent = (m.log || '').split('\n').map((l) => l.slice(l.lastIndexOf('\r') + 1)).join('\n');
