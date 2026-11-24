@@ -57,6 +57,7 @@ Auditoria ENOSYS (item 27, bench #49, x86 Alpine; linux-test: só 435):
 | 294 / 253 | inotify_init1 / inotify_init | 1 / 1 | `tail -f` (coreutils) | ENOSYS certo: tail cai p/ polling |
 | 435 | clone3 | 1 | busybox/musl (linux-test) | ENOSYS certo: musl cai p/ clone |
 | 37 | loja ☰: velocidade e ETA do download | 3 | 1 | feito (média móvel de ~8 s sobre as linhas `12/25 MB 48%` do log, só em app.js; "45% · 3,2 MB/s · 12 s"; sem mudança no apk/overlay) | texto de velocidade aparece (teste da função no page-wasi) |
+| 38 | roteiro de teste à mão no iPad A16 (XeOS) e iPhone Safari: `docs/TESTE-IPAD.md` | 3 | 1 | PR aberto (só documentação; comandos conferidos em app.js, index.html, overlay e catálogo) | Paulo preenche a tabela do roteiro |
 | — | io_uring, bpf, setns, seccomp, perf, pidfd, memfd | 0 | — | não apareceram; ficam ENOSYS |
 
 Recomendação (item 19): próximo item WASI = cache do `WebAssembly.Module` compilado por chave (mesmo Module reusado no node/worker; na página, Module guardado no worker do motor/IndexedDB e passado ao Worker do programa) + chave do cwd por caminho+tamanho+mtime do kernel em vez do hash de 25 MB. Ganho est.: compilação 17 + hash 11–38 + parte da compilação preguiçosa dentro do "Python puro" → 133 → ~60–75 ms (~45%), 2 pts. Medir antes com o Module reusado (bench pystart já mostra as fases). Ler o .wasm 2× (execve + wasi_module) custa só ~4 ms: não atacar.
@@ -126,6 +127,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-24 | 1 | 35: x86-64-v2 | #57 | 3,5 |
 | 2026-11-24 | 1 | licença MIT do motor + Tahoma (LGPL) fora do build do terminal | #58 | 1 |
 | 2026-11-24 | 1 | 37: loja velocidade/ETA | #59 | 1 |
+| 2026-11-24 | 1 | 38: roteiro de teste iPad XeOS | #60 | 1 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
