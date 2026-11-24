@@ -41,8 +41,9 @@ Foco: terminal Linux sólido e rápido no WebKit. Ferramenta com WASM roda diret
 | 28 | kernel: sqlite3 x86 em modo WAL trava (mmap compartilhado do -shm + travas fcntl por faixa) | 2 | 2 | feito (#51: causa fcntl F_GETLK devolvia 0 sem escrever l_type → sqlite via trava DMS do -shm "ocupada" (SQLITE_BUSY) e repetia walTryBeginRead c/ sleeps crescentes; F_SETLK aceitava tudo. Agora tabela de travas por faixa (arquivo, pid, leitura/escrita, início–fim; whence SET/CUR/END, len 0/negativo), GETLK responde F_UNLCK ou a trava de outro processo, SETLK conflito → EAGAIN (SETLKW → EDEADLK, não espera), close/saída soltam. Teste no audit do bench.yml: WAL 1000 linhas em transação + checkpoint + 2º processo lê e checkpoint(truncate), timeout 60, não roda mais por último. Sobra: MAP_SHARED ainda é cópia por processo → 2 processos sqlite simultâneos no mesmo WAL não enxergam o -shm um do outro) | WAL roda no audit |
 | 29 | kernel: hard link de verdade (mesmo inode) — `git clone` local morre "hardlink different from source" | 2 | 2 | feito (#50: link/linkat = mesmo inode (Node::Hard → caminho dos dados), st_nlink, rm promove outro nome, rename segue, tar tipo 1 salvo/restaurado; cp segue copy-on-write. Sobra: /mnt e /dev,/proc continuam cópia; fd aberto não segue rename (já era assim)) | git clone /caminho ok |
 | 30 | medir ferramentas WASM em 1 GB (tempo + pico de memória) | 3 | 1 | feito (#52: zip -1 1,5x nativo (20 s) pico 8 MB; 7zz a -mx1 1,4x (62 s) 14 MB; unzip 1,6x (7 s) 9 MB; 7zz x 1,9x (6 s) 10 MB; sha256sum busybox x86 227x (174 s, 6 MB/s); heap motor fixo 549 MB; nada junta o arquivo: fd_read/fd_write em pedaços (zip 64 KB, unzip 8 KB, 7zz 1 MB; wasi.js ≤ 1 MB por chamada); RSS node 2,8 GB = swap em Map (2 GB de arquivos vivos; no iPad é OPFS) + ~0,8 GB base; gargalo = ferramenta x86 pesada (sha256sum/md5sum/cksum via busybox)) | tabela no PR |
+| 31 | x86 JIT: SHLD/SHRD/ROL/ROR (sha256 x86) | x86 | 2 | feito (#53: io-sha256-1024 138x → 60x nativo (mesmo run: 120 s → 41 s), io-sha256-64 128x → 52x; sort sem fallbacks (shld/shrd 2,4 M → 0). Perfil sha256sum 16 MB (novo no bench): 100% no JIT, 1398 instr/bloco, 1135 M instr ≈ 70 instr/byte (busybox C escalar); o resto do gap é o nativo usar SHA-NI (~1,5 GB/s). Próximo possível: SHA-NI (sha256rnds2/msg1/msg2) no CPUID + motor; busybox tem caminho shaNI) | sha256 x86 melhor no bench |
 
-Recomendação (item 30): próximo = hash em WASM no catálogo (sha256sum/sha1sum/md5sum/b2sum, MIT/BSD, sem GPL) — 1 GB de 174 s → ~2 s (ganho est. ~90x no passo, 2 pts); zip/7zz já 1,4–1,9x nativo e memória O(1), não mexer. Depois: medir 10 GB só com swap OPFS no WebKit (o node guarda o swap em RAM).
+Recomendação (item 30): próximo = hash em WASM no catálogo (sha256sum/sha1sum/md5sum/b2sum, MIT/BSD, sem GPL) — 1 GB de 174 s (antes do #53; ~60 s com #53) → ~2 s (ganho est. ~30x no passo, 2 pts); zip/7zz já 1,4–1,9x nativo e memória O(1), não mexer. Depois: medir 10 GB só com swap OPFS no WebKit (o node guarda o swap em RAM).
 
 Auditoria ENOSYS (item 27, bench #49, x86 Alpine; linux-test: só 435):
 
@@ -113,6 +114,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-24 | 1 | 26: kernel pwrite64/preadv/pwritev | #48 | 1 |
 | 2026-11-24 | 1 | 27: auditoria ENOSYS + syscalls | #49 | 2 |
 | 2026-11-24 | 1 | 29: hardlink real (inode compartilhado) | #50 | 2 |
+| 2026-11-24 | 1 | 31: JIT shld/shrd/rotações | #53 | 2 |
 | 2026-11-24 | 1 | 28: sqlite WAL (causa: F_GETLK sem resposta → -shm "travado") | #51 | 2 |
 | 2026-11-24 | 1 | 30: medir WASM em 1 GB | #52 | 1 |
 

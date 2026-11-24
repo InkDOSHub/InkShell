@@ -124,8 +124,8 @@ jobs:
         run: |
           cd engine-src && cargo build --release --target wasm32-unknown-unknown --features ophist
           cp target/wasm32-unknown-unknown/release/inksoc.wasm ../out/engine-ophist.wasm && cd ..
-          PROFILE_JSON=out/profile.json timeout 1800 node tests/bench-engine.mjs out/engine-ophist.wasm cpubench=out/cpubench bench.sh=out/bench.sh -- sh /root/bench.sh cpu > out/profile-cpu.log 2>&1 || true
-          { echo "## Perfil x86 do cpubench (JIT vs interpretador)"; echo; node tests/bench/profile.mjs out/profile.json; } > out/profile.md
+          PROFILE_JSON=out/profile.json timeout 1800 node tests/bench-engine.mjs out/engine-ophist.wasm cpubench=out/cpubench bench.sh=out/bench.sh -- sh /root/bench.sh cpu io 16 > out/profile-cpu.log 2>&1 || true
+          { echo "## Perfil x86 do cpubench + sha256sum 16 MB (JIT vs interpretador)"; echo; node tests/bench/profile.mjs out/profile.json; } > out/profile.md
           cat out/profile.md | tee -a $GITHUB_STEP_SUMMARY
       - name: Report
         if: always()

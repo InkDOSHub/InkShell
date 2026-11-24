@@ -300,6 +300,7 @@ impl Engine {
             }
             7 => ((a >> (cnt - 1)) & 1 != 0, a & sb != 0),
             8 => ((sx(a, size) >> (cnt - 1)) & 1 != 0, false),
+            11 => ((a >> (cnt - 1)) & 1 != 0, (a ^ r) & sb != 0), // shrd
             9 => (r < a || (c.lz_cf != 0 && r == a), (a ^ r) & (b ^ r) & sb != 0),
             10 => (a < b || (c.lz_cf != 0 && a == b), (a ^ b) & (a ^ r) & sb != 0),
             _ => (false, false),
@@ -980,12 +981,14 @@ fn step_raw(e: &mut Engine) {
                     let c = c % size;
                     let r = if c == 0 { a } else { ((a << c) | (a >> (size - c))) & msk };
                     e.cpu.cf = r & 1 != 0;
+                    e.cpu.of = (r & sign(size) != 0) != e.cpu.cf;
                     r
                 }
                 1 => {
                     let c = c % size;
                     let r = if c == 0 { a } else { ((a >> c) | (a << (size - c))) & msk };
                     e.cpu.cf = r & sign(size) != 0;
+                    e.cpu.of = ((r >> (size - 1)) ^ (r >> (size - 2))) & 1 != 0;
                     r
                 }
                 4 | 6 => {
@@ -1552,6 +1555,7 @@ fn two_byte(e: &mut Engine, d: &mut Dec, buf: &[u8; 16], rip: u64, rex: u8, osz:
                 ((a >> cnt) | (b << (osz - cnt))) & mask(osz)
             };
             e.szp(r, osz);
+            e.cpu.of = (r ^ a) & sign(osz) != 0;
             g!(e, e.set(l, osz, r));
         }
         0xB0 | 0xB1 => {
