@@ -17,6 +17,12 @@ fi
 entry() { for c in $CATS; do [ -f "$c" ] && cat "$c"; done | awk -F '\t' -v n="$1" '!/^#/ && $1 == n { print; exit }'; }
 field() { printf '%s\n' "$1" | cut -f"$2"; }
 
+progress() { # NAME BYTES TOTAL
+  t=$3; [ "$t" -gt 0 ] 2>/dev/null || t=$2; [ "$t" -gt 0 ] || t=1
+  p=$(($2 * 100 / t)); [ "$p" -gt 100 ] && p=100
+  if [ "$t" -ge 2097152 ]; then printf '\r%s: %d/%d MB %d%%' "$1" $(($2 / 1048576)) $((t / 1048576)) "$p" >&2
+  else printf '\r%s: %d/%d KB %d%%' "$1" $(($2 / 1024)) $(((t + 1023) / 1024)) "$p" >&2; fi
+}
 install_one() {
   e=$(entry "$1"); url=$(field "$e" 2); sum=$(field "$e" 3); size=$(field "$e" 4); lic=$(field "$e" 5); files=$(field "$e" 6)
   main=${files%%,*}
@@ -24,11 +30,31 @@ install_one() {
   echo "($1) WebAssembly build, $lic, $((${size:-0} / 1048576)) MB"
   mkdir -p "$(dirname "$main")" "$DB" || return 1
   tmp="$main.apk-new"
-  case "$url" in
-    file://*) cp "${url#file://}" "$tmp" ;;
-    /*) cp "$url" "$tmp" ;;
-    *) wget -q -O "$tmp" "$url" ;;
-  esac || { rm -f "$tmp"; echo "ERROR: $1: download failed: $url" >&2; return 1; }
+  rm -f "$tmp" "$tmp.fail"
+  fetch() {
+    case "$url" in
+      file://*) cat "${url#file://}" ;;
+      /*) cat "$url" ;;
+      *) wget -q -O - "$url" ;;
+    esac || : > "$tmp.fail"
+  }
+  # progress while it downloads: "NAME: 12/25 MB 48%", one line updated with \r, on a terminal or
+  # for the page's Store (inksoc-store sets INKSOC_PROGRESS; the page shows a bar). The data goes
+  # through dd a piece at a time straight into the file (no sleeping poll).
+  if [ -t 2 ] || [ -n "$INKSOC_PROGRESS" ]; then
+    : > "$tmp"; n=-1
+    fetch | while :; do
+      dd bs=65536 count=32 2>/dev/null >> "$tmp" || { : > "$tmp.fail"; break; }
+      m=$(stat -c %s "$tmp" 2>/dev/null || echo 0)
+      progress "$1" "$m" "${size:-0}"
+      [ "$m" = "$n" ] && break
+      n=$m
+    done
+    echo >&2
+  else
+    fetch > "$tmp"
+  fi
+  if [ -e "$tmp.fail" ]; then rm -f "$tmp" "$tmp.fail"; echo "ERROR: $1: download failed: $url" >&2; return 1; fi
   got=$(sha256sum "$tmp" | cut -d' ' -f1)
   [ "$got" = "$sum" ] || { rm -f "$tmp"; echo "ERROR: $1: checksum mismatch ($got)" >&2; return 1; }
   chmod 755 "$tmp" && mv -f "$tmp" "$main" || return 1

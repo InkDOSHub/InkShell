@@ -188,7 +188,7 @@ if (hasWasi) {
   await step('pw1\n', /tester@inksoc/, 'catalog: local entry written');
   await step('apk search hello-w\n', /hello-wasm \[wasm\] test program/, 'catalog: apk search lists [wasm]');
   await step('apk add --no-network hello-wasm zz-no-such-pkg; echo add-rc=$?\n', /Password/, 'catalog: apk add asks sudo');
-  await step('pw1\n', /OK: hello-wasm installed[\s\S]*(no such package|unable to select)[\s\S]*add-rc=[1-9]/, 'catalog: apk add installs WebAssembly build, other name reaches real apk');
+  await step('pw1\n', /hello-wasm: \d+\/\d+ KB 100%[\s\S]*OK: hello-wasm installed[\s\S]*(no such package|unable to select)[\s\S]*add-rc=[1-9]/, 'catalog: apk add shows progress, installs WebAssembly build, other name reaches real apk');
   await step('hello-wasm X < /dev/null; echo rc=$?\n', /wasi argc=2 arg1=X in=\(eof\)[\s\S]*rc=3/, 'catalog: installed program runs from PATH');
   await step('apk del hello-wasm; test -e /usr/local/bin/hello-wasm || echo gone\n', /Password/, 'catalog: apk del asks sudo');
   await step('pw1\n', /WebAssembly build removed[\s\S]*gone/, 'catalog: apk del removes it');
