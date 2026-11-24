@@ -48,7 +48,8 @@ const hasPy = hasWasi && fs.existsSync(pyWasm);
 const pyBytes = hasPy ? fs.readFileSync(pyWasm) : null;
 if (hasPy) add('python.wasm', pyBytes);
 // tools from the catalog (test.yml downloads them to tests/NAME.wasm, sha256 checked): [catalog name, file, programs]
-const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagick', 'magick', 'magick,convert,identify'], ['ffmpeg', 'ffmpeg', 'ffmpeg'], ['ffprobe', 'ffprobe', 'ffprobe']]
+const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagick', 'magick', 'magick,convert,identify'], ['ffmpeg', 'ffmpeg', 'ffmpeg'], ['ffprobe', 'ffprobe', 'ffprobe'],
+  ['sqlite', 'sqlite3', 'sqlite3'], ['jq', 'jq', 'jq'], ['lua5.4', 'lua', 'lua5.4,lua'], ['zip', 'zip', 'zip'], ['unzip', 'unzip', 'unzip']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -204,9 +205,11 @@ if (hasWasi) {
     // relative paths follow the shell's folder (the host preopens it as "/" and each top-level folder on its own)
     await step(`mkdir -p /tmp/rel && cd /tmp/rel && python3 -c "import os; open('rel.txt', 'w').write('rel-' + 'ok'); print(open('rel.txt').read().upper(), sorted(os.listdir('.')), open('/tmp/t/d.json').read()[:5])"; cd; cat /tmp/rel/rel.txt; echo\n`, /REL-OK \['rel\.txt'\] \{"a":[\s\S]*rel-ok/, 'python3: relative path in the shell folder, absolute path still works');
   }
-  if (tools.length) { // 7-Zip, qpdf, ImageMagick, ffmpeg from the catalog (local file:// mirrors), one apk add
-    const lines = tools.map((t) => `${t.name}\\tfile:///root/${t.file}.wasm\\t${crypto.createHash('sha256').update(t.bytes).digest('hex')}\\t${t.bytes.length}\\tlicense\\t${t.progs.split(',').map((p) => '/usr/local/bin/' + p).join(',')}\\t${t.name}\\n`).join('');
-    await step(`sudo sh -c "printf '${lines}' >> /etc/inksoc/wasm-catalog.local"\n`, /Password/, 'tools: local catalog entries (sudo asks)');
+  if (tools.length) { // 7-Zip, qpdf, ImageMagick, ffmpeg, sqlite, jq, lua, zip, unzip from the catalog (local file:// mirrors), one apk add
+    const lines = tools.map((t) => `${t.name}\\tfile:///root/${t.file}.wasm\\t${crypto.createHash('sha256').update(t.bytes).digest('hex')}\\t${t.bytes.length}\\tlicense\\t${t.progs.split(',').map((p) => '/usr/local/bin/' + p).join(',')}\\t${t.name}\\n`);
+    // a few entries per command line (the terminal line has a length limit), then one sudo appends them
+    for (let i = 0; i < lines.length; i += 3) await step(`printf '${lines.slice(i, i + 3).join('')}' >> /tmp/wcat; echo wcat-$((${i} + 1))\n`, new RegExp(`wcat-${i + 1}\\s`), `tools: catalog entries ${i + 1}-${Math.min(i + 3, lines.length)} in /tmp/wcat`);
+    await step('sudo sh -c "cat /tmp/wcat >> /etc/inksoc/wasm-catalog.local"; rm /tmp/wcat\n', /Password/, 'tools: local catalog entries (sudo asks)');
     await step('pw1\n', /tester@inksoc/, 'tools: local catalog entries written');
     await step(`apk add --no-network ${tools.map((t) => t.name).join(' ')}; echo add-rc=$?\n`, /Password/, 'tools: apk add asks sudo');
     await step('pw1\n', new RegExp(tools.map((t) => `OK: ${t.name} installed`).join('[\\s\\S]*') + '[\\s\\S]*add-rc=0'), `tools: apk add installs ${tools.map((t) => t.name).join(', ')}`);
@@ -231,6 +234,22 @@ if (hasWasi) {
     await step('cd /tmp/f && ffmpeg -nostdin -hide_banner -loglevel error -filter_complex "color=c=red:s=32x32:d=1:r=5" -c:v mpeg4 v.mp4 && echo mp4-ok; cd\n', /mp4-ok/, 'ffmpeg: 1 s MPEG-4 video in MP4');
     if (hasTool('ffprobe')) await step('cd /tmp/f && ffprobe -v error -show_entries stream=codec_name,sample_rate -of csv=p=0 t.flac && ffprobe -v error -show_entries stream=codec_name,width,height,nb_frames -of csv=p=0 v.mp4; cd\n',
       /^flac,8000\s+^mpeg4,32,32,5\s*$/m, 'ffprobe: FLAC 8 kHz, MPEG-4 32x32 with 5 frames');
+  }
+  if (hasTool('sqlite')) { // SQLite: table in a .db file (dot-file locks), queried by a second run; SQL from a pipe
+    await step('mkdir -p /tmp/sq && cd /tmp/sq && sqlite3 t.db "create table t(a, b); insert into t values (1, \'x\'), (2, \'y\');" && sqlite3 t.db "select sum(a) || \'-\' || group_concat(b) from t;" && echo "select 6 * 7;" | sqlite3 && [ -s t.db ] && echo db-ok; cd\n',
+      /^3-x,y\s+^42\s+^db-ok/m, 'sqlite3: create, insert, query a .db file; SQL from a pipe');
+  }
+  if (hasTool('jq')) { // jq: filter JSON from a pipe, @csv, bad JSON fails
+    await step('echo \'{"a":[1,2,3],"b":"hi"}\' | jq -cM \'{n: (.a | add), b, k: (keys | length)}\'; echo \'[{"x":1},{"x":5}]\' | jq -r \'map(.x * 2) | @csv\'; echo \'{\' | jq . > /dev/null 2>&1; echo jq-rc=$?\n',
+      /^\{"n":6,"b":"hi","k":2\}\s+^2,10\s+^jq-rc=[1-9]/m, 'jq: filter JSON from a pipe, @csv; bad JSON exits non-zero');
+  }
+  if (hasTool('lua5.4')) { // Lua: script file, pcall/error (setjmp/longjmp), uncaught error exits 1
+    await step('printf \'%s\\n\' \'local t = {}\' \'for i = 1, 10 do t[#t + 1] = i * i end\' \'print("lua-ok", #t, t[10], _VERSION, pcall(error, "boom"))\' > /tmp/t.lua && lua /tmp/t.lua; lua5.4 -e "error(\'x\')" 2> /dev/null; echo lua-rc=$?\n',
+      /lua-ok\s+10\s+100\s+Lua 5\.4\s+false\s+boom[\s\S]*lua-rc=1/, 'lua: script, pcall/error, uncaught error exits 1');
+  }
+  if (hasTool('zip') && hasTool('unzip')) { // Info-ZIP: zip a folder, list, extract, compare, test
+    await step('mkdir -p /tmp/iz/in/sub && cd /tmp/iz && echo one > in/a.txt && seq 1 3000 > in/sub/n.txt && zip -qr t.zip in && unzip -l t.zip | grep -c "\\.txt$" && mkdir x && cd x && unzip -q ../t.zip && diff -r ../in in && echo zip-same; cd /tmp/iz && unzip -tq t.zip; cd\n',
+      /^2\s+zip-same\s+No errors detected/m, 'zip/unzip: zip a folder, list, extract same files, test archive');
   }
   // inkvideo: WebCodecs of the page (node has none): exit 69 and a clear message; decode falls back to ffmpeg
   await step('inkvideo info; echo iv-rc=$?; inkvideo transcode a.mov b.h264; echo iv-rc=$?; inkvideo bogus 2>&1 | head -1; inkvideo; echo iv-rc=$?\n',

@@ -1,10 +1,11 @@
 #!/bin/sh
 # Builds WebAssembly (WASI preview1) command-line tools for the catalog (apk add) from upstream sources.
-# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz
+# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg
 # env: WASI_SDK (wasi-sdk-33 or later: C++ exceptions), WORK (sources, build dirs), OUT (the .wasm files)
 # CI: .github/workflows/wasm-tools.yml builds them and publishes a GitHub release; the catalog points at it.
 # No GPL: ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
-# 7-Zip without the unRAR code (LGPL-2.1+ and BSD-3-Clause), qpdf (Apache-2.0), ImageMagick (its own Apache-style license).
+# 7-Zip without the unRAR code (LGPL-2.1+ and BSD-3-Clause), qpdf (Apache-2.0), ImageMagick (its own Apache-style license),
+# SQLite (public domain), jq (MIT), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense).
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 : "${WASI_SDK:=/opt/wasi-sdk}" "${WORK:=$PWD/wasm-tools-work}" "${OUT:=$PWD/wasm-tools-out}"
@@ -22,12 +23,20 @@ SJLJ="-mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false" # setjmp/longjm
 STACK="-Wl,-z,stack-size=8388608"
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
+SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1
 
 fetch() { # github repo, tag, dir name: shallow clone once into $WORK/dir; a source tarball goes next to the binaries (LGPL)
   [ -d "$WORK/$3" ] && return 0
   echo "fetch $1 $2"
   git -c advice.detachedHead=false clone -q --depth 1 --branch "$2" "https://github.com/$1.git" "$WORK/$3"
   git -C "$WORK/$3" archive --prefix="$3-$2/" -o "$OUT/src-$3-$2.tar.gz" HEAD
+}
+
+dl() { # tarball url, dir name: download and unpack once into $WORK/dir; the tarball goes next to the binaries
+  [ -d "$WORK/$2" ] && return 0
+  echo "download $1"
+  curl -fsSL --retry 3 -o "$OUT/src-${1##*/}" "$1"
+  mkdir -p "$WORK/$2" && tar -xzf "$OUT/src-${1##*/}" -C "$WORK/$2" --strip-components=1
 }
 
 compat() { # stub headers + libcompat.a for what WASI lacks (sys/wait.h, pwd.h, fork/exec/popen...)
@@ -113,5 +122,60 @@ sevenzip() { # 7-Zip console (7zz), single-threaded (Z7_ST), without the unRAR c
   cp "$WORK/7zip/CPP/7zip/Bundles/Alone2/b/7zz" "$OUT/7zz.wasm"
 }
 
-for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
+b_sqlite3() { # amalgamation + its shell; sqlite3.c turns on its WASI mode by itself (no threads, no WAL, no extensions, dot-file locks)
+  compat
+  if [ ! -d "$WORK/sqlite" ]; then
+    curl -fsSL --retry 3 -o "$OUT/src-sqlite-amalgamation-$SQLITE.zip" "https://www.sqlite.org/$SQLITE_YEAR/sqlite-amalgamation-$SQLITE.zip"
+    unzip -q "$OUT/src-sqlite-amalgamation-$SQLITE.zip" -d "$WORK" && mv "$WORK/sqlite-amalgamation-$SQLITE" "$WORK/sqlite"
+  fi
+  $CC -O2 $EMU -I"$P/compat" -include compat.h -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_OMIT_WAL \
+    -DSQLITE_NOHAVE_SYSTEM -DSQLITE_OMIT_POPEN -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_FTS5 \
+    "$WORK/sqlite/shell.c" "$WORK/sqlite/sqlite3.c" -o "$OUT/sqlite3.wasm" -L"$P/lib" -lcompat $EMUL $STACK -lm
+}
+
+b_jq() { # no oniguruma (regex builtins test/match/sub report an error), decNumber kept
+  compat; dl "https://github.com/jqlang/jq/releases/download/jq-$JQ/jq-$JQ.tar.gz" jq
+  (cd "$WORK/jq" && [ -f Makefile ] || CFLAGS="-O2 $EMU -I$P/compat -include compat.h" LDFLAGS="-L$P/lib $STACK" LIBS="-lcompat $EMUL" \
+    ./configure --host=$T --disable-shared --enable-static --without-oniguruma --disable-docs --disable-valgrind --disable-maintainer-mode 2>&1 | tail -5)
+  (cd "$WORK/jq" && make src/builtin.inc src/version.h && make -j"$J" jq) # make jq alone skips BUILT_SOURCES
+  cp "$WORK/jq/jq" "$OUT/jq.wasm"
+}
+
+b_lua() { # Lua 5.4 interpreter (C setjmp/longjmp errors), no POSIX extras: io.popen, os.execute, os.tmpname, io.tmpfile report failure
+  compat; dl "https://www.lua.org/ftp/lua-$LUA.tar.gz" lua
+  printf '%s\n' '#include <errno.h>' '#include <setjmp.h>' '#include <string.h>' '#include <unistd.h>' 'int system(const char *);' \
+    '#define LUAI_THROW(L,c) longjmp((c)->b, 1)' '#define LUAI_TRY(L,c,a) if (setjmp((c)->b) == 0) { a }' '#define luai_jmpbuf jmp_buf' \
+    '#define LUA_TMPNAMBUFSIZE 32' '#define lua_tmpnam(b,e) { strcpy(b, "/tmp/lua_XXXXXX"); e = -1; }' \
+    '#define tmpfile() (errno = ENOSYS, (FILE *)0)' '#define lua_stdin_is_tty() isatty(0)' > "$WORK/lua/wasi.h"
+  (cd "$WORK/lua/src" && $CC -O2 $EMU $SJLJ -I"$P/compat" -include compat.h -include ../wasi.h $(ls *.c | grep -v '^luac\.c$') \
+    -o "$OUT/lua.wasm" -L"$P/lib" -lcompat -lsetjmp $EMUL $STACK -lm)
+}
+
+IZ="-DUNIX -DLARGE_FILE_SUPPORT -DHAVE_TERMIOS_H -DCOMPAT_CHMOD_OK -I$here/compat/termios -include unistd.h -include utime.h" # Info-ZIP: no configure (it runs test programs)
+
+b_zip() { # Info-ZIP zip 3.0 (Debian's copy of the upstream tarball), no bzip2; temporary archive via compat mkstemp
+  compat; dl "http://deb.debian.org/debian/pool/main/z/zip/zip_$ZIP.orig.tar.gz" zip
+  (cd "$WORK/zip" && $CC -O2 $EMU -I"$P/compat" -include compat.h $IZ -I. -DHAVE_DIRENT_H -DNO_BZIP2_SUPPORT -DZIP64_SUPPORT -DNO_ASM -DUIDGID_NOT_16BIT \
+    zip.c zipfile.c zipup.c fileio.c util.c globals.c crypt.c ttyio.c crc32.c zbz2err.c deflate.c trees.c unix/unix.c \
+    -o "$OUT/zip.wasm" -L"$P/lib" -lcompat $EMUL $STACK)
+}
+
+b_unzip() { # Info-ZIP unzip 6.0 (Debian's copy of the upstream tarball), no bzip2; times are UTC (no time zones); its ztimbuf has the layout of struct utimbuf
+  compat; dl "http://deb.debian.org/debian/pool/main/u/unzip/unzip_$UNZIP.orig.tar.gz" unzip
+  sed -i 's/^    m_time += timezone; /    m_time += 0; /' "$WORK/unzip/fileio.c"
+  (cd "$WORK/unzip" && $CC -O2 $EMU -I"$P/compat" -include compat.h $IZ -I. -DDIRENT -DNO_LCHMOD -DDATE_FORMAT=DF_YMD -Wno-error=incompatible-pointer-types \
+    unzip.c crc32.c crypt.c envargs.c explode.c extract.c fileio.c globals.c inflate.c list.c match.c process.c ttyio.c \
+    ubz2err.c unreduce.c unshrink.c zipinfo.c unix/unix.c -o "$OUT/unzip.wasm" -L"$P/lib" -lcompat $EMUL $STACK)
+}
+
+b_rg() { # ripgrep (Rust, wasm32-wasip1): one thread (WASI has none), no PCRE2
+  fetch BurntSushi/ripgrep $RG ripgrep
+  rustup target add wasm32-wasip1
+  (cd "$WORK/ripgrep" && env -u CC -u CXX -u AR -u RANLIB -u NM -u STRIP CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=true \
+    cargo build --release --locked --target wasm32-wasip1)
+  cp "$WORK/ripgrep/target/wasm32-wasip1/release/rg.wasm" "$OUT/rg.wasm"
+}
+
+# b_ prefix: functions named zip, unzip... would hide those commands
+for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
 ls -l "$OUT"
