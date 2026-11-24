@@ -768,3 +768,163 @@ fn shift(v: u128, grp: u8, sub: u8, n: u32) -> u128 {
         _ => v,
     }
 }
+
+// ---- 0F 38 / 0F 3A: SSSE3 PSHUFB/PALIGNR, SSE4.1 PBLENDW and the SHA extensions ----
+// (Intel SDM definitions; only SHA is announced in CPUID, the others are what SHA code uses)
+
+/// Whether `code` (0x38XX / 0x3AXX) with this 66 prefix is one of the ops below.
+pub fn op3_ok(code: u32, p66: bool) -> bool {
+    match code {
+        0x3800 | 0x3A0E | 0x3A0F => p66,
+        0x38C8..=0x38CD | 0x3ACC => !p66,
+        _ => false,
+    }
+}
+
+fn sig0(x: u32) -> u32 {
+    x.rotate_right(7) ^ x.rotate_right(18) ^ (x >> 3)
+}
+fn sig1(x: u32) -> u32 {
+    x.rotate_right(17) ^ x.rotate_right(19) ^ (x >> 10)
+}
+
+/// Result of op `code` on dst `d` and source `s` (x0 = xmm0, SHA256RNDS2's implicit operand).
+pub fn op3(code: u32, d: u128, s: u128, imm: u8, x0: u128) -> u128 {
+    match code {
+        // PSHUFB: byte i = d[s[i] & 15], or 0 when bit 7 of s[i] is set
+        0x3800 => {
+            let (a, m) = (u8s(d), u8s(s));
+            from_u8s(core::array::from_fn(|i| if m[i] & 0x80 != 0 { 0 } else { a[(m[i] & 15) as usize] }))
+        }
+        // PBLENDW: word k from s when imm bit k is set
+        0x3A0E => {
+            let (a, b) = (u16s(d), u16s(s));
+            from_u16s(core::array::from_fn(|k| if imm >> k & 1 != 0 { b[k] } else { a[k] }))
+        }
+        // PALIGNR: (d:s) >> imm bytes, low 16 bytes
+        0x3A0F => {
+            let n = imm as u32;
+            if n >= 32 {
+                0
+            } else if n >= 16 {
+                d >> (8 * (n - 16))
+            } else if n == 0 {
+                s
+            } else {
+                s >> (8 * n) | d << (8 * (16 - n))
+            }
+        }
+        // SHA1NEXTE: s with its top dword + rol(d.top, 30)
+        0x38C8 => {
+            let mut w = u32s(s);
+            w[3] = w[3].wrapping_add(u32s(d)[3].rotate_left(30));
+            from_u32s(w)
+        }
+        // SHA1MSG1
+        0x38C9 => {
+            let (a, b) = (u32s(d), u32s(s));
+            from_u32s([a[0] ^ b[2], a[1] ^ b[3], a[2] ^ a[0], a[3] ^ a[1]])
+        }
+        // SHA1MSG2
+        0x38CA => {
+            let (a, b) = (u32s(d), u32s(s));
+            let w16 = (a[3] ^ b[2]).rotate_left(1);
+            let w17 = (a[2] ^ b[1]).rotate_left(1);
+            let w18 = (a[1] ^ b[0]).rotate_left(1);
+            let w19 = (a[0] ^ w16).rotate_left(1);
+            from_u32s([w19, w18, w17, w16])
+        }
+        // SHA256RNDS2: two rounds; d = {C,D,G,H}, s = {A,B,E,F} (high to low), wk from xmm0
+        0x38CB => {
+            let (p, q, k) = (u32s(d), u32s(s), u32s(x0));
+            let (mut a, mut b, mut c, mut dd) = (q[3], q[2], p[3], p[2]);
+            let (mut e, mut f, mut g, mut h) = (q[1], q[0], p[1], p[0]);
+            for wk in [k[0], k[1]] {
+                let ch = (e & f) ^ (!e & g);
+                let maj = (a & b) ^ (a & c) ^ (b & c);
+                let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+                let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+                let t = ch.wrapping_add(s1).wrapping_add(wk).wrapping_add(h);
+                h = g;
+                g = f;
+                f = e;
+                e = t.wrapping_add(dd);
+                dd = c;
+                c = b;
+                b = a;
+                a = t.wrapping_add(maj).wrapping_add(s0);
+            }
+            from_u32s([f, e, b, a])
+        }
+        // SHA256MSG1
+        0x38CC => {
+            let (a, b) = (u32s(d), u32s(s));
+            from_u32s([
+                a[0].wrapping_add(sig0(a[1])),
+                a[1].wrapping_add(sig0(a[2])),
+                a[2].wrapping_add(sig0(a[3])),
+                a[3].wrapping_add(sig0(b[0])),
+            ])
+        }
+        // SHA256MSG2
+        0x38CD => {
+            let (a, b) = (u32s(d), u32s(s));
+            let w16 = a[0].wrapping_add(sig1(b[2]));
+            let w17 = a[1].wrapping_add(sig1(b[3]));
+            let w18 = a[2].wrapping_add(sig1(w16));
+            let w19 = a[3].wrapping_add(sig1(w17));
+            from_u32s([w16, w17, w18, w19])
+        }
+        // SHA1RNDS4: four rounds; d = {A,B,C,D}, s = {W0+E,W1,W2,W3} (high to low), imm = f and K
+        0x3ACC => {
+            let (p, w) = (u32s(d), u32s(s));
+            let (mut a, mut b, mut c, mut dd, mut e) = (p[3], p[2], p[1], p[0], 0u32);
+            let k = [0x5A82_7999u32, 0x6ED9_EBA1, 0x8F1B_BCDC, 0xCA62_C1D6][(imm & 3) as usize];
+            for i in 0..4 {
+                let f = match imm & 3 {
+                    0 => (b & c) ^ (!b & dd),
+                    2 => (b & c) ^ (b & dd) ^ (c & dd),
+                    _ => b ^ c ^ dd,
+                };
+                let t = f.wrapping_add(a.rotate_left(5)).wrapping_add(w[3 - i]).wrapping_add(e).wrapping_add(k);
+                e = dd;
+                dd = c;
+                c = b.rotate_left(30);
+                b = a;
+                a = t;
+            }
+            from_u32s([dd, c, b, a])
+        }
+        _ => d,
+    }
+}
+
+/// Interpreter: 0F 38 / 0F 3A (`op2` = the 38/3A byte, already read).
+pub fn op3_step(e: &mut Engine, d: &mut Dec, buf: &[u8; 16], rip: u64, rex: u8, p66: bool, rep: u8, op2: u8) {
+    let code = (op2 as u32) << 8 | d.u8() as u32;
+    if rep != 0 || !op3_ok(code, p66) {
+        e.unsupported(buf);
+        return;
+    }
+    let m = modrm(d, e, rex);
+    let imm = if op2 == 0x3A { d.u8() } else { 0 };
+    let next = rip + d.p as u64;
+    let Ok(s) = e.xsrc(&m, next, 16) else { return };
+    let r = m.reg as usize;
+    e.cpu.xmm[r] = op3(code, e.cpu.xmm[r], s, imm, e.cpu.xmm[0]);
+    e.cpu.rip = next;
+}
+
+/// Packs an op for jit_op3: bit 31 marks it, bit 30 = source in cpu.xs (memory operand),
+/// bit 29 = 0F 3A, bits 21..28 = third opcode byte, 8..15 = imm, 4..7 = dst, 0..3 = src.
+pub fn op3_pack(code: u32, mem: bool, imm: u8, r: u8, x: u8) -> u32 {
+    1 << 31 | (mem as u32) << 30 | ((code >> 8 == 0x3A) as u32) << 29 | (code & 0xFF) << 21 | (imm as u32) << 8 | ((r & 15) as u32) << 4 | (x & 15) as u32
+}
+
+/// JIT helper (called through the `cond` import with a packed op): runs it on the xmm registers.
+pub fn jit_op3(e: &mut Engine, cc: u32) {
+    let code = if cc >> 29 & 1 != 0 { 0x3A00 } else { 0x3800 } | (cc >> 21 & 0xFF);
+    let (r, x) = ((cc >> 4 & 15) as usize, (cc & 15) as usize);
+    let s = if cc >> 30 & 1 != 0 { e.cpu.xs } else { e.cpu.xmm[x] };
+    e.cpu.xmm[r] = op3(code, e.cpu.xmm[r], s, (cc >> 8) as u8, e.cpu.xmm[0]);
+}

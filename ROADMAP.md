@@ -41,6 +41,7 @@ Foco: terminal Linux sólido e rápido no WebKit. Ferramenta com WASM roda diret
 | 28 | kernel: sqlite3 x86 em modo WAL trava (mmap compartilhado do -shm + travas fcntl por faixa) | 2 | 2 | feito (#51: causa fcntl F_GETLK devolvia 0 sem escrever l_type → sqlite via trava DMS do -shm "ocupada" (SQLITE_BUSY) e repetia walTryBeginRead c/ sleeps crescentes; F_SETLK aceitava tudo. Agora tabela de travas por faixa (arquivo, pid, leitura/escrita, início–fim; whence SET/CUR/END, len 0/negativo), GETLK responde F_UNLCK ou a trava de outro processo, SETLK conflito → EAGAIN (SETLKW → EDEADLK, não espera), close/saída soltam. Teste no audit do bench.yml: WAL 1000 linhas em transação + checkpoint + 2º processo lê e checkpoint(truncate), timeout 60, não roda mais por último. Sobra: MAP_SHARED ainda é cópia por processo → 2 processos sqlite simultâneos no mesmo WAL não enxergam o -shm um do outro) | WAL roda no audit |
 | 29 | kernel: hard link de verdade (mesmo inode) — `git clone` local morre "hardlink different from source" | 2 | 2 | feito (#50: link/linkat = mesmo inode (Node::Hard → caminho dos dados), st_nlink, rm promove outro nome, rename segue, tar tipo 1 salvo/restaurado; cp segue copy-on-write. Sobra: /mnt e /dev,/proc continuam cópia; fd aberto não segue rename (já era assim)) | git clone /caminho ok |
 | 31 | x86 JIT: SHLD/SHRD/ROL/ROR (sha256 x86) | x86 | 2 | feito (#53: io-sha256-1024 138x → 60x nativo (mesmo run: 120 s → 41 s), io-sha256-64 128x → 52x; sort sem fallbacks (shld/shrd 2,4 M → 0). Perfil sha256sum 16 MB (novo no bench): 100% no JIT, 1398 instr/bloco, 1135 M instr ≈ 70 instr/byte (busybox C escalar); o resto do gap é o nativo usar SHA-NI (~1,5 GB/s). Próximo possível: SHA-NI (sha256rnds2/msg1/msg2) no CPUID + motor; busybox tem caminho shaNI) | sha256 x86 melhor no bench |
+| 32 | x86: SHA-NI (sha256/sha1) | x86 | 2 | em curso (busybox 1.37 do Alpine 3.21 sem caminho SHA-NI (0 sha256rnds2 no binário) → io-sha256 do bench não muda; libcrypto do rootfs (OpenSSL: python3 hashlib, apk, curl) tem e usa só com CPUID leaf 7 EBX bit 29) | sha256 x86 ≤ 15x |
 
 Auditoria ENOSYS (item 27, bench #49, x86 Alpine; linux-test: só 435):
 
@@ -113,6 +114,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-24 | 1 | 29: hardlink real (inode compartilhado) | #50 | 2 |
 | 2026-11-24 | 1 | 31: JIT shld/shrd/rotações | #53 | 2 |
 | 2026-11-24 | 1 | 28: sqlite WAL (causa: F_GETLK sem resposta → -shm "travado") | #51 | 2 |
+| 2026-11-24 | 1 | 32: SHA-NI | #55 | 2 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
