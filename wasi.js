@@ -152,14 +152,38 @@ export function cacheModule(cache, key, mod) {
   cache.delete(key); cache.set(key, mod);
   while (cache.size > MODS) cache.delete(cache.keys().next().value);
 }
+/** A cheap key (length + FNV of the first and last 4 KB: ~0 ms) for the catalog modules whose cwdSlot is
+ *  shipped in KNOWN (tools/wasm-tools/known-slots.mjs computes them from the catalog files). */
+export function fastKey(b) {
+  let h = 0x811c9dc5;
+  for (const [a, e] of [[0, Math.min(4096, b.length)], [Math.max(0, b.length - 4096), b.length]])
+    for (let i = a; i < e; i++) h = Math.imul(h ^ b[i], 0x01000193);
+  return b.length + ':' + (h >>> 0).toString(16);
+}
+/** Shipped cwdSlot of the catalog modules, by fastKey (no search, no hash on the first run). */
+export const KNOWN = {};
+KNOWN['26267204:5b797def'] = { ptr: 4728288, lit: 751636 }; // python3.wasm
+KNOWN['24470606:a4a50657'] = { ptr: 20570696, lit: 16866701 }; // ruby.wasm
+KNOWN['2115894:7d0408b4'] = { ptr: 8487468, lit: 8416887 }; // 7zip.wasm
+KNOWN['6583149:19625083'] = { ptr: 8667268, lit: 8443918 }; // qpdf.wasm
+KNOWN['5469573:e8cd6eaa'] = { ptr: 9171104, lit: 8562254 }; // imagemagick.wasm
+KNOWN['17376451:e7f4e40a'] = { ptr: 12030692, lit: 8676883 }; // ffmpeg.wasm
+KNOWN['17281341:329057e6'] = { ptr: 12010836, lit: 8674218 }; // ffprobe.wasm
+KNOWN['2073786:fbfb418b'] = { ptr: 8533592, lit: 8436761 }; // sqlite.wasm
+KNOWN['1013105:144787f'] = { ptr: 8464392, lit: 8403573 }; // jq.wasm
+KNOWN['719943:9afa8bef'] = { ptr: 8420180, lit: 8395242 }; // lua5.4.wasm
+KNOWN['574467:8f66d51c'] = { ptr: 8436172, lit: 8412357 }; // zip.wasm
+KNOWN['503577:8ecea3b'] = { ptr: 8426140, lit: 8395007 }; // unzip.wasm
+KNOWN['3403081:6d06aeea'] = { ptr: 2222148, lit: 1072918 }; // ripgrep.wasm
+KNOWN['321558:454cc1c1'] = { ptr: 72444, lit: 65857 }; // hashtools.wasm
 /** cwdSlot results by moduleKey: the search (~135 ms for python3) runs once per module in this thread.
  *  On the page each program has a new Worker, so app.js keeps the results and hands them over (slots, onSlot). */
 const slotCache = new Map();
 /** Each lookup: { hit, ms } (ms = key + search), for tests and benches. */
 export const cwdStats = [];
 function slotOf(bytes, slots, onSlot, k) {
-  const t = performance.now(), key = k || moduleKey(bytes), hit = slots.has(key);
-  const s = hit ? slots.get(key) : cwdSlot(bytes);
+  const t = performance.now(), fk = fastKey(bytes), known = KNOWN[fk], key = k || (known ? fk : moduleKey(bytes)), hit = slots.has(key);
+  const s = hit ? slots.get(key) : known || cwdSlot(bytes);
   if (!hit) { slots.set(key, s); if (onSlot) onSlot(key, s); }
   cwdStats.push({ hit, ms: performance.now() - t });
   if (cwdStats.length > 64) cwdStats.shift();
