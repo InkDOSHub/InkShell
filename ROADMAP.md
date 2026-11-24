@@ -1,6 +1,6 @@
 # InkShell roadmap
 
-CONTROLE: seguir
+CONTROLE: PARAR (sessões soltas; workers agora são subagentes do gerente)
 SALDO: semana 1 (até ter 24/11 17:00): 31% gasto ≈ 23 pts de 30 → sobram ~7 pts.
 
 Fonte: "Roadmap do terminal Linux (a partir de sex 27/11)", Paulo, 2026-11-22.
