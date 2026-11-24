@@ -123,7 +123,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-24 | 1 | 34: licenças atualizadas | #56 | 1 |
 | 2026-11-24 | 1 | 32: SHA-NI | #55 | 2 |
 | 2026-11-24 | 1 | 35: x86-64-v2 | #57 | 3,5 |
-| 2026-11-24 | 1 | licença MIT do motor + Tahoma (LGPL) fora do build do terminal | #? | 1 |
+| 2026-11-24 | 1 | licença MIT do motor + Tahoma (LGPL) fora do build do terminal | #58 | 1 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
