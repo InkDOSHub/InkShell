@@ -1,7 +1,8 @@
 // POPCNT, LZCNT, TZCNT, BMI1 (ANDN, BEXTR, BLSI, BLSMSK, BLSR) and BMI2 (BZHI, PDEP, PEXT,
 // MULX, RORX, SARX, SHLX, SHRX) against a plain C model: 16/32/64-bit forms, register and
 // memory operands, random values plus edges (0, ~0, single bits, low masks), the defined flags
-// (CF/ZF/SF/OF, PF for POPCNT), flags kept by the BMI2 ops, and the CPUID bits.
+// (CF/ZF/SF/OF, PF for POPCNT), flags kept by the BMI2 ops, and the CPUID bits; also
+// SHL/SHR/SAR by CL (flags, count 0 keeps them) and BSF/BSR.
 // Prints "x86bmi ok <n>".
 // Built static: gcc -O2 -mbmi -mbmi2 -mpopcnt -mlzcnt -static -o tests/x86bmi tests/src/x86bmi.c
 #include <cpuid.h>
@@ -80,6 +81,17 @@ MODEL static void m_mul(uint64_t a, uint64_t b, int n, uint64_t *hi, uint64_t *l
   *hi = hh + (lh >> 32) + (hl >> 32) + (mid >> 32);
 }
 MODEL static uint64_t zs(uint64_t r, int n) { return (r == 0 ? ZF : 0) | (r & sgn(n) ? SF : 0); }
+// SHL/SHR/SAR (op 0/1/2) of the n-bit x by k (1..n-1): result, defined flags in *fl, mask in *fm
+MODEL static uint64_t m_shf(int op, uint64_t x, int k, int n, uint64_t *fl, uint64_t *fm) {
+  uint64_t m = msk(n), r, cf, of;
+  x &= m;
+  if (op == 0) { r = (x << k) & m; cf = (x >> (n - k)) & 1; of = ((r >> (n - 1)) & 1) ^ cf; }
+  else if (op == 1) { r = x >> k; cf = (x >> (k - 1)) & 1; of = (x >> (n - 1)) & 1; }
+  else { int64_t v = n == 64 ? (int64_t)x : (int64_t)(int32_t)x; r = (uint64_t)(v >> k) & m; cf = (uint64_t)(v >> (k - 1)) & 1; of = 0; }
+  *fm = CF | ZF | SF | (k == 1 ? OF : 0);
+  *fl = (cf ? CF : 0) | zs(r, n) | (k == 1 && of ? OF : 0);
+  return r;
+}
 
 // ---- the instructions ----
 // flags in (fi) through popf, out (fo) through pushf; rsp moves past the red zone first
@@ -197,6 +209,24 @@ static void one(int i) {
   asm volatile("rorx %[n], %q[x], %q[r]" : [r] "=r"(r) : [x] "r"(x), [n] "i"(k)); check("rorx64 " #k, r, m_ror(x, k, 64), x, k); \
   asm volatile("rorx %[n], %k[x], %k[r]" : [r] "=r"(r) : [x] "r"(x), [n] "i"(k)); check("rorx32 " #k, r, m_ror(x32, k, 32), x, k);
   RORX(0) RORX(1) RORX(7) RORX(31) RORX(32) RORX(33) RORX(63)
+  // shifts by CL with the flags read right after (pushf): a zero count keeps them
+  {
+    uint64_t cl = rnd() & 0xFF, fl, fm, want;
+    if (i % 5 == 0) cl &= ~63ull;
+#define SHC(ins, reg, n, op, in) do { int k = (int)(cl & (n == 64 ? 63 : 31)); r = (in); \
+    asm volatile(PRE ins " %%cl, %" reg "[r]" POST : [r] "+&r"(r), [fo] "=&r"(fo) : "c"(cl), [fi] "r"(fi) : "cc", "memory"); \
+    if (k == 0) { check(ins " cl=0", r, (in), x, cl); KEEP(ins " cl=0"); } \
+    else { want = m_shf(op, (in), k, n, &fl, &fm); check(ins " cl", r, want, x, cl); check(ins " cl flags", fo & fm, fl, x, cl); } } while (0)
+    SHC("shlq", "", 64, 0, x); SHC("shrq", "", 64, 1, x); SHC("sarq", "", 64, 2, x);
+    SHC("shll", "k", 32, 0, x32); SHC("shrl", "k", 32, 1, x32); SHC("sarl", "k", 32, 2, x32);
+#undef SHC
+    // BSF/BSR: a zero source keeps the destination
+    r = y; asm volatile(PRE "bsfq %[x], %[r]" POST : [r] "+&r"(r), [fo] "=&r"(fo) : [x] "r"(x), [fi] "r"(fi) : "cc", "memory");
+    check("bsf64", r, x ? m_tzcnt(x, 64) : y, x, y); FL("bsf64", ZF, x ? 0 : ZF);
+    r = y; asm volatile(PRE "bsrq %[x], %[r]" POST : [r] "+&r"(r), [fo] "=&r"(fo) : [x] "r"(x), [fi] "r"(fi) : "cc", "memory");
+    check("bsr64", r, x ? 63 - m_lzcnt(x, 64) : y, x, y); FL("bsr64", ZF, x ? 0 : ZF);
+    if (x32) { asm volatile("bsfl %k[x], %k[r]" : [r] "=r"(r) : [x] "r"(x32) : "cc"); check("bsf32", r, m_tzcnt(x32, 32), x, 0); }
+  }
   // memory operands (and rip of the next instruction past an immediate)
   SET(v, c);
   {

@@ -1498,6 +1498,12 @@ fn native(g: &mut G, i: &Ins, live: bool, n: u32) -> bool {
     if i.op == 0x0FB8 && i.rep == 0xF3 {
         return popcnt(g, i, live);
     }
+    if matches!(i.op, 0x0FBC | 0x0FBD) && i.rep != 0xF2 {
+        return bitscan(g, i, live);
+    }
+    if matches!(i.op, 0xA4 | 0xA5 | 0xAA | 0xAB) && i.rep != 0xF2 {
+        return string(g, i, n);
+    }
     if i.rep != 0 && !(i.op == 0x90) {
         return false;
     }
@@ -1806,8 +1812,9 @@ fn native(g: &mut G, i: &Ins, live: bool, n: u32) -> bool {
             let cl = i.op >= 0xD2;
             let cmask = if size == 64 { 63 } else { 31 };
             if cl {
-                // count from cl: only when the flags are not needed (a zero count keeps them)
-                if live || size < 32 || sub == 2 || sub == 3 || sub == 6 {
+                // count from cl; a zero count keeps the flags: when they are live, the lazy
+                // flags of the shift are stored only for a nonzero count (rotates: dead flags only)
+                if size < 32 || sub == 2 || sub == 3 || sub == 6 || (live && sub < 4) {
                     return false;
                 }
                 let r = rm(g, size);
@@ -1857,6 +1864,20 @@ fn native(g: &mut G, i: &Ins, live: bool, n: u32) -> bool {
                 }
                 g.set(res);
                 g.opd_put(r, size, res);
+                if live {
+                    g.spill_flags();
+                    g.get(c);
+                    g.b(I64EQZ);
+                    g.b(I32EQZ);
+                    g.if_hint(VOID, true);
+                    let kind = match sub {
+                        4 => LZ_SHL,
+                        5 => LZ_SHR,
+                        _ => LZ_SAR,
+                    };
+                    g.store_lazy(kind, size, a, c, res, NONE);
+                    g.b(END);
+                }
                 return true;
             }
             let cnt = (if i.op >= 0xD0 { 1 } else { i.imm } & cmask) as u32;
@@ -2995,6 +3016,162 @@ fn muldiv(g: &mut G, i: &Ins, sub: u8, size: u32, live: bool, n: u32) -> bool {
 }
 
 /// popcnt r, r/m
+/// TZCNT/LZCNT (F3) and BSF/BSR (32/64-bit operands); flags CF/ZF as the interpreter sets
+/// them, the undefined ones cleared.
+fn bitscan(g: &mut G, i: &Ins, live: bool) -> bool {
+    let m = i.m.unwrap();
+    let size = i.osz;
+    if size < 32 {
+        return false;
+    }
+    let lz = i.op == 0x0FBD;
+    let cnt = i.rep == 0xF3;
+    let o = if m.md == 3 {
+        reg_opd(m.rm, size, i.rex)
+    } else {
+        g.ea(&m, i.next);
+        g.set(L_A);
+        Opd::Mem(L_A)
+    };
+    let s = g.val(o, size);
+    let res = g.tmp();
+    let dst = m.reg;
+    match (cnt, lz) {
+        (true, false) => {
+            // a zero source gives the operand size
+            g.get(s);
+            if size < 64 {
+                g.i64c(1 << size);
+                g.b(I64OR);
+            }
+            g.b(0x7A);
+        }
+        (true, true) => {
+            g.get(s);
+            g.b(0x79);
+            if size < 64 {
+                g.i64c(64 - size as u64);
+                g.b(I64SUB);
+            }
+        }
+        (false, _) => {
+            // a zero source keeps the destination
+            if lz {
+                g.i64c(63);
+                g.get(s);
+                g.b(0x79);
+                g.b(I64SUB);
+            } else {
+                g.get(s);
+                g.b(0x7A);
+            }
+            g.set(L_T);
+            g.get(L_T);
+            g.rd_reg(dst, false, 64);
+            g.get(s);
+            g.b(I64EQZ);
+            g.b(I32EQZ);
+            g.b(SELECT);
+        }
+    }
+    g.set(res);
+    g.wr_reg(dst, false, if cnt { size } else { 64 }, res);
+    if live {
+        g.st_base();
+        if cnt {
+            g.get(res);
+            g.b(I64EQZ);
+        } else {
+            g.get(s);
+            g.b(I64EQZ);
+        }
+        g.st_flag(off!(zf));
+        g.st_base();
+        if cnt {
+            g.get(s);
+            g.b(I64EQZ);
+        } else {
+            g.i32c(0);
+        }
+        g.st_flag(off!(cf));
+        for f in [off!(of), off!(sf), off!(pf)] {
+            g.st_base();
+            g.i32c(0);
+            g.st_flag(f);
+        }
+        g.flags_direct();
+    }
+    true
+}
+
+/// MOVS/STOS (64-bit addresses). Without REP: one element natively, the step from DF.
+/// With REP: nothing when rcx = 0, else the interpreter's run-at-a-time loop (rep_bulk)
+/// through one step, without leaving the block.
+fn string(g: &mut G, i: &Ins, n: u32) -> bool {
+    if i.seg || i.a67 || g.m32 {
+        return false;
+    }
+    let size = if i.op & 1 == 0 { 8 } else { i.osz };
+    let movs = i.op < 0xAA;
+    if i.rep != 0 {
+        g.cnt(6);
+        g.flush();
+        g.exit_flags();
+        g.rd_reg(1, false, 64);
+        g.b(I64EQZ);
+        g.b(I32EQZ);
+        g.if_hint(VOID, true);
+        g.set_rip_const(i.rip);
+        g.i64c(i.next);
+        g.call(F_STEP);
+        g.if_hint(VOID, false);
+        g.add_icount(n);
+        g.b(RET);
+        g.b(END);
+        g.b(END);
+        // the step wrote rcx/rsi/rdi to the cpu struct; the other registers there are current
+        g.valid &= !((1 << 1) | (1 << 6) | (1 << 7));
+        g.dirty = 0;
+        for r in [1u32, 6, 7] {
+            g.z.remove(&(R0 + r));
+        }
+        return true;
+    }
+    let sz = (size / 8) as u64;
+    let st = g.tmp();
+    g.i64c(sz.wrapping_neg());
+    g.i64c(sz);
+    g.i32c(0);
+    g.mem(I32LOAD8U, 0, g.cpu + off!(df));
+    g.b(SELECT);
+    g.set(st);
+    if movs {
+        g.ensure(6);
+        g.get(R0 + 6);
+        g.set(L_A);
+        g.load(L_A, size);
+        g.set(L_T);
+    } else {
+        g.rd_reg(0, false, size);
+        g.set(L_T);
+    }
+    g.ensure(7);
+    g.get(R0 + 7);
+    g.set(L_A2);
+    g.store(L_A2, L_T, size);
+    for r in [6u8, 7] {
+        if r == 6 && !movs {
+            continue;
+        }
+        g.get(R0 + r as u32);
+        g.get(st);
+        g.b(I64ADD);
+        g.set(R0 + r as u32);
+        g.dirty |= 1 << r;
+    }
+    true
+}
+
 fn popcnt(g: &mut G, i: &Ins, live: bool) -> bool {
     let m = i.m.unwrap();
     let size = i.osz;
