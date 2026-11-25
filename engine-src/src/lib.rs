@@ -283,7 +283,7 @@ pub extern "C" fn buffer(len: u32) -> *mut u8 {
 #[no_mangle]
 #[allow(static_mut_refs)]
 pub extern "C" fn init(pool_mb: u32, target_mb: u32) {
-    panic_note();
+    imark(0); panic_note();
     unsafe {
         SHARED = Some(Shared {
             exited: false, main_done: false, exit_code: 0, error: None,
@@ -297,13 +297,13 @@ pub extern "C" fn init(pool_mb: u32, target_mb: u32) {
             stack_top: 0, exe_entry: 0, exe_base: 0, cmdline: (0, 0), startup_ansi: HashMap::new(), unknown_calls: 0, crt: Default::default(), fs: Default::default(),
             sched: Default::default(), cores: 1, insns: 0, jit_on: true, lx: None, names: HashMap::new(),
             wpid: 0, procs: HashMap::new(), pinfo: HashMap::new(), std: [3, 1, 2], con_in: Vec::new(), con_live: false, pad_on: false, pad_packet: 0, pad: [0; 12], dll_dirs: Vec::new(), wow64: false, wow64_ntdll: 0, wow64_ctx: 0, images: HashMap::new(), image_files: HashMap::new(), root_off: 0, image_slots: HashMap::new(), atoms: Vec::new(),
-        });
+        }); imark(1);
         ENGINE = Some(Engine {
             mmu: Mmu::new(pool_mb as usize, target_mb as u64),
-            cpu: Cpu::new(), eh: Default::default(), jit: Default::default(),
+            cpu: { imark(6); Cpu::new() }, eh: Default::default(), jit: { imark(7); Default::default() },
             core: 0, cur: 0, want_switch: false, slice: 0, idle_ms: 0.0, not_mine: false,
             s: SHARED.as_mut().unwrap(),
-        });
+        }); imark(9);
     }
 }
 
@@ -1164,3 +1164,18 @@ mod host_stubs {
     #[no_mangle]
     pub extern "C" fn host_console(_ptr: *const u8, _len: u32) {}
 }
+
+// ---- item 53 (measurement only, feature initprof): time marks inside init ----
+// 0 start, 1 Shared built, 2 pool Vec, 3 frames Vec, 4 free list, 5 MmuShared boxed, 6 Mmu done
+// (TLB), 7 Cpu, 9 end (Jit tables). Kept at the end of the file and on existing lines so the
+// published build (imark empty) stays byte-identical (panic locations carry line numbers).
+#[cfg(feature = "initprof")]
+static mut INIT_T: [f64; 10] = [0.0; 10];
+#[inline(always)]
+pub(crate) fn imark(_i: usize) {
+    #[cfg(feature = "initprof")]
+    unsafe { INIT_T[_i] = now_ms(); }
+}
+#[cfg(feature = "initprof")]
+#[no_mangle]
+pub extern "C" fn init_prof(i: u32) -> f64 { unsafe { INIT_T[i as usize % 10] } }
