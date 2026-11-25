@@ -3618,27 +3618,76 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
     let mut total = first.list.len();
     let mut heads = vec![rip];
     let mut blocks = vec![first];
+    let mut succ: Vec<u32> = vec![0]; // per block: bitmask of the region blocks it jumps to
     let mut k = 0;
     while k < blocks.len() && blocks.len() < MAX_BLOCKS && total < MAX_REGION_INS {
         for t in targets(&blocks[k]) {
+            if let Some(j) = heads.iter().position(|&h| h == t) {
+                succ[k] |= 1 << j;
+                continue;
+            }
             if blocks.len() >= MAX_BLOCKS || total >= MAX_REGION_INS {
                 break;
             }
-            if heads.contains(&t) {
-                continue;
-            }
-            // already compiled (head of another region): leave it as an exit that chains to that
-            // code instead of copying it here (item 49: 75-88% of the blocks were copies)
-            if e.jit.map.get(&t).is_some_and(|&f| f != NONE) {
-                continue;
-            }
             if let Some(b) = decode_block(e, t) {
                 total += b.list.len();
+                succ[k] |= 1 << heads.len();
                 heads.push(t);
                 blocks.push(b);
+                succ.push(0);
             }
         }
         k += 1;
+    }
+    // blocks the budget left unscanned: their edges to blocks already here (loops)
+    for k in k..blocks.len() {
+        for t in targets(&blocks[k]) {
+            if let Some(j) = heads.iter().position(|&h| h == t) {
+                succ[k] |= 1 << j;
+            }
+        }
+    }
+    // item 49: a block that already has compiled code (head of another region) is not copied
+    // here unless it lies on a loop inside this region (loops stay internal br): its edge becomes
+    // an exit that chains to that code. Blocks only reachable through it go too.
+    let n = blocks.len();
+    if n > 1 {
+        let mut reach = succ.clone();
+        for m in 0..n {
+            for i in 0..n {
+                if reach[i] & (1 << m) != 0 {
+                    reach[i] |= reach[m];
+                }
+            }
+        }
+        let mut drop = 0u32;
+        for i in 1..n {
+            if reach[i] & (1 << i) == 0 && e.jit.map.get(&heads[i]).is_some_and(|&f| f != NONE) {
+                drop |= 1 << i;
+            }
+        }
+        if drop != 0 {
+            let mut keep = 1u32;
+            let mut todo = 1u32;
+            while todo != 0 {
+                let i = todo.trailing_zeros() as usize;
+                todo &= !(1 << i);
+                let nx = succ[i] & !drop & !keep;
+                keep |= nx;
+                todo |= nx;
+            }
+            let mut i = 0;
+            heads.retain(|_| {
+                i += 1;
+                keep & (1 << (i - 1)) != 0
+            });
+            let mut i = 0;
+            blocks.retain(|_| {
+                i += 1;
+                keep & (1 << (i - 1)) != 0
+            });
+            total = blocks.iter().map(|b| b.list.len()).sum();
+        }
     }
     #[cfg(feature = "jitprobe")]
     probe::region(&heads, total);
