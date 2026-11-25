@@ -29,7 +29,7 @@ async function run(type, name, r, hot = 0) {
     p.on('console', (m) => { if (m.type() === 'error') console.log(`[${name} console]`, m.text()); });
     await p.goto(`http://localhost:${PORT}/bench.html`);
     const ver = b.version();
-    const res = await p.evaluate(({ files, cmd, pool }) => new Promise((ok) => {
+    const res = await p.evaluate(({ files, cmd, pool, hot }) => new Promise((ok) => {
       const w = new Worker('/tests/bench/browser-worker.js', { type: 'module' });
       w.onmessage = (e) => ok(e.data);
       w.onerror = (e) => ok({ err: 'worker error: ' + e.message, lines: [], jit: {}, done: false });
