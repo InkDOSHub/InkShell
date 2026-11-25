@@ -53,7 +53,7 @@ $('calib').onclick = async () => {
   $('calib').disabled = true;
   await stop(true);
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=60');
+  const c = new Worker('worker.js?v=61');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -78,7 +78,7 @@ showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
   stop(false).then(() => {
-    const r = new Worker('worker.js?v=60');
+    const r = new Worker('worker.js?v=61');
     r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
     r.postMessage({ type: 'reset' });
   });
@@ -115,7 +115,7 @@ if (navigator.serviceWorker) {
 }
 function wasiEnd(pid) { const b = wasiWorkers.get(pid); if (b) { b.terminate(); wasiWorkers.delete(pid); } }
 function wasiStart(m) {
-  const b = new Worker('wasi-worker.js?v=60', { type: 'module' });
+  const b = new Worker('wasi-worker.js?v=61', { type: 'module' });
   wasiWorkers.set(m.pid, b);
   b.onmessage = (ev) => {
     if (ev.data.type === 'done') wasiEnd(m.pid);
@@ -137,7 +137,7 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=60');
+  w = new Worker('worker.js?v=61');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;
@@ -162,7 +162,7 @@ function start() {
   };
   fit();
   w.postMessage({ type: 'start', rows: term.rows, cols: term.cols, network, poolMb: budget().pool, targetMb: 8192, sw: swOn() });
-  for (const [root, m] of mounted) w.postMessage({ type: 'mount', root, list: m.list }); // mounted before a restart
+  for (const [root, m] of mounted) { w.postMessage({ type: 'mount', root, list: m.list }); shareFiles(m); } // mounted before a restart
 }
 
 let lastEnter = 0;
@@ -447,10 +447,22 @@ function mountFiles(list) { // the folder input: a read-only copy
   }
   return { root, dir: null, files, list: lines.join('\n'), ro: true };
 }
+// Without a service worker WebAssembly programs run inside the engine's worker, blocked: it reads the
+// device files itself (FileReaderSync), so it gets the File objects beforehand (see worker.js wasiServe)
+async function shareFiles(m, only) {
+  if (!w || swOn()) return;
+  let batch = [];
+  const flush = () => { if (batch.length && w) w.postMessage({ type: 'mfiles', files: batch }); batch = []; };
+  for (const [p, h] of (only ? [[only, m.files.get(only)]] : m.files)) {
+    try { batch.push([p, h && h.getFile ? await h.getFile() : h || null]); } catch (er) { batch.push([p, null]); }
+    if (batch.length >= 500) flush();
+  }
+  flush();
+}
 function addMount(m) {
   mounted.set(m.root, m);
   if (!w) $('start').click();
-  if (w) w.postMessage({ type: 'mount', root: m.root, list: m.list });
+  if (w) { w.postMessage({ type: 'mount', root: m.root, list: m.list }); shareFiles(m); }
   note(m.root + ': ' + m.files.size + ' files' + (m.ro ? ', read-only (this browser does not let pages write to folders; ☰ Files brings results out)' : ', changes go back to the folder') + '.  cd ' + m.root);
 }
 $('mount').onclick = async () => {
@@ -513,7 +525,7 @@ async function mountSync(root, ops) {
       else if (o.op === 'write') {
         const fh = await (await dirFor(m, o.path, true)).getFileHandle(base, { create: true });
         const wr = await fh.createWritable(); await wr.write(o.data); await wr.close();
-        m.files.set(o.path, fh);
+        m.files.set(o.path, fh); shareFiles(m, o.path);
       } else if (o.op === 'wbig') { // a big file: written in 4 MB pieces as the worker hands them, never whole in memory
         const fh = await (await dirFor(m, o.path, true)).getFileHandle(base, { create: true });
         const wr = await fh.createWritable({ keepExistingData: false });
@@ -527,7 +539,7 @@ async function mountSync(root, ops) {
           }
           await wr.close();
         } catch (er) { try { await wr.abort(); } catch (e2) {} throw er; }
-        m.files.set(o.path, fh);
+        m.files.set(o.path, fh); shareFiles(m, o.path);
       } else if (o.op === 'wpart') { // a big file changed in places: only those ranges are written, then the size if it changed
         const fh = await (await dirFor(m, o.path, true)).getFileHandle(base, { create: true });
         const r = (await inOpfs(fh)) ? await wPart(o, fh) : null;
@@ -547,7 +559,7 @@ async function mountSync(root, ops) {
             await wr.close();
           } catch (er) { try { await wr.abort(); } catch (e2) {} throw er; }
         }
-        m.files.set(o.path, fh);
+        m.files.set(o.path, fh); shareFiles(m, o.path);
       } else if (o.op === 'move') {
         const src = m.files.get(o.from);
         if (src && src.move) await src.move(await dirFor(m, o.path, true), base);

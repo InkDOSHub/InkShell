@@ -87,3 +87,11 @@ jobs:
           cp target/wasm32-unknown-unknown/release/inksoc.wasm ../engine.wasm
       - name: Page test
         run: node tests/page-wasi.mjs tests/wasihello.wasm
+      - name: hashsum from the WebAssembly catalog (URL and sha256 from the catalog)
+        run: |
+          e=$(awk -F '\t' '$1 == "hashtools"' overlay/etc/inksoc/wasm-catalog); f=tests/hashsum.wasm
+          curl -fsSL --retry 3 -o "$f" "$(printf '%s' "$e" | cut -f2)"
+          echo "$(printf '%s' "$e" | cut -f3)  $f" | sha256sum -c
+      - name: Page test without a service worker (sha256sum WASM on a 64 MB /mnt file)
+        timeout-minutes: 8
+        run: timeout 300 node tests/page-wasi-nosw.mjs tests/hashsum.wasm

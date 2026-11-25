@@ -274,6 +274,23 @@ function wasiOpen(sid) {
     if (wake) wake();
   };
 }
+/* Without a service worker the program runs here, blocked, so the page's mdata/put messages cannot arrive.
+   The page shares the device files (File objects, 'mfiles') beforehand and the pieces the kernel asks for
+   (linux_mount_fetch) are read here with FileReaderSync after each engine slice. */
+const mfiles = new Map();
+function wasiServe() {
+  const n = x.linux_mount_fetch();
+  if (!n) return;
+  const rd = (f, a, b) => { try { return f ? new FileReaderSync().readAsArrayBuffer(b === undefined ? f : f.slice(a, b)) : new ArrayBuffer(0); } catch (e) { return new ArrayBuffer(0); } };
+  for (const ln of lx.text(n).split('\n')) {
+    const [p, off, len] = ln.split('\t');
+    if (!p) continue;
+    if (p === SREQ) { storeIdle = true; continue; }
+    const f = mfiles.get(p);
+    if (len !== undefined) { const a = +off, d = rd(f, a, a + +len); lx.mdata(p, a, +len, d); loaded(p, (held.get(p) || 0) + d.byteLength); }
+    else { const d = rd(f); lx.put(p, d); loaded(p, d.byteLength); }
+  }
+}
 function wasiPump() {
   for (let pid; (pid = x.wasi_next());) {
     const k = x.wasi_info(pid), info = new Uint8Array(mem.buffer, x.out_ptr(), k).slice();
@@ -284,7 +301,7 @@ function wasiPump() {
       const z = info.indexOf(0), key = g ? `${wasiSid}:${g}:${m}:${new TextDecoder().decode(info.subarray(0, z < 0 ? info.length : z))}` : null;
       wasiLive.add(pid);
       postMessage({ type: 'wasi-start', pid, sid: wasiSid, info, bytes, key, base: x.wasi_base(), size: x.wasi_buf_size() }, [bytes.buffer]);
-    } else if (wasiInline) wasiInline.runWasi(x, pid);
+    } else if (wasiInline) wasiInline.runWasi(x, pid, { serve: wasiServe });
     else { out('\r\n\x1b[2m[WebAssembly programs need a newer browser]\x1b[0m\r\n'); put(new Uint8Array(0)); x.wasi_call(pid, 231, 126, 0, 0, 0, 0, 0, 0); }
   }
   for (const [pid, q] of wasiWait) {
@@ -303,6 +320,7 @@ onmessage = async (ev) => {
   if (d.type === 'resize') { if (lx) lx.resize(d.rows, d.cols); return; }
   if (d.type === 'put') { if (lx) { lx.put(d.name, d.data); loaded(d.name, d.data.byteLength); } else pendingPuts.push({ name: d.name, data: d.data }); return; }
   if (d.type === 'mdata') { if (lx && x.linux_mount_data) { lx.mdata(d.name, d.off, d.len, d.data); loaded(d.name, (held.get(d.name) || 0) + d.len); } return; }
+  if (d.type === 'mfiles') { for (const [p, f] of d.files) { if (f) mfiles.set(p, f); else mfiles.delete(p); } return; }
   if (d.type === 'mount') { if (lx) mount(d); else pendingMounts.push(d); return; }
   if (d.type === 'get') {
     const r = lx ? lx.range(d.path, 0, 0) : null;
