@@ -41,6 +41,7 @@ add('stage1', fs.readFileSync(new URL('./stage1', import.meta.url))); // tests/s
 add('x86string', fs.readFileSync(new URL('./x86string', import.meta.url))); // tests/src/x86string.c, built static in CI (Alpine)
 add('x86bmi', fs.readFileSync(new URL('./x86bmi', import.meta.url))); // tests/src/x86bmi.c, built static in CI (Alpine)
 add('x86pwrite', fs.readFileSync(new URL('./x86pwrite', import.meta.url))); // tests/src/x86pwrite.c, built static in CI (Alpine)
+add('x86vfork', fs.readFileSync(new URL('./x86vfork', import.meta.url))); // tests/src/x86vfork.c, built static in CI (Alpine)
 add('x86sha', fs.readFileSync(new URL('./x86sha', import.meta.url))); // tests/src/x86sha.c, built static in CI (Alpine)
 add('x86ssl', fs.readFileSync(new URL('./x86ssl', import.meta.url))); // tests/src/x86ssl.c, built in CI (Alpine), uses the rootfs libcrypto
 add('x86v2', fs.readFileSync(new URL('./x86v2', import.meta.url))); // tests/src/x86v2.c, built static in CI (Alpine)
@@ -237,24 +238,19 @@ if (process.env.INK_NET) { // item 62: real network through the wisp tunnels, li
     }
     return null;
   };
-  { // item 64: strace-like log of wget https in the engine (/proc/inksoc/trace), printed whole
-    const from = out.length;
-    send('cat /proc/inksoc/trace-on; wget -O /dev/null https://example.com/ > /tmp/w.log 2>&1; cat /proc/inksoc/trace > /tmp/t.log; cat /tmp/w.log; grep -v "^1 " /tmp/t.log | tail -n 400; echo trace-$?\n');
-    await until(/trace-\d/, 60000);
-    console.log('--- trace of wget https ---\n' + out.slice(from) + '\n--- end trace ---');
-  }
   const all = [];
-  for (const [name, cmd, ms] of [['plain http (example.com, no TLS)', 'wget -O /dev/null http://example.com/ 2>&1 | tr "\\r" "\\n" | tail -n 3', 60000],
+  for (const [name, cmd, ms, want] of [['plain http (example.com, no TLS)', 'wget -O /dev/null http://example.com/ 2>&1 | tr "\\r" "\\n" | tail -n 3', 60000],
       ['https (example.com, ssl_client)', 'wget -O /dev/null https://example.com/ 2>&1 | tr "\\r" "\\n" | tail -n 3', 60000],
       ['apk fetch over https (apk uses ssl_client too)', 'cd /tmp && apk fetch --no-cache --repository https://dl-cdn.alpinelinux.org/alpine/v3.21/main --allow-untrusted busybox-extras 2>&1 | tail -n 3; ls -l /tmp/*.apk | head -2; cd ~ && true', 120000],
-      ['hashtools (small, InkShell release)', 'wget -O /dev/null https://github.com/InkDOSHub/InkShell/releases/download/wasm-tools-7/hashsum.wasm 2>&1 | tr "\\r" "\\n" | tail -n 3', 120000],
+      // item 64: busybox wget https (openssl helper missing -> ssl_client) + sha256 of the file
+      ['hashtools (small, InkShell release, sha256)', 'wget -O /tmp/h.wasm https://github.com/InkDOSHub/InkShell/releases/download/wasm-tools-7/hashsum.wasm 2>&1 | tr "\\r" "\\n" | tail -n 3; sha256sum /tmp/h.wasm', 120000, /06b833ca3ad90fb715b30f4f7787ad02d25b40792b1075cbb6de7bd196cb65b1/],
       ['python3 (26 MB, vmware release)', 'wget -O /dev/null "$(grep ^python3 /etc/inksoc/wasm-catalog | cut -f2)" 2>&1 | tr "\\r" "\\n" | tail -n 3', 600000]]) {
     const t1 = Date.now(); send(cmd + '; echo done-$?\n');
     const got1 = await until(/done-\d/, ms, { at: 30000 });
-    const ok = !!got1 && /saved|\.apk/.test(got1);
+    const ok = !!got1 && /saved|\.apk/.test(got1) && (!want || want.test(got1));
     all.push(ok); console.log((ok ? 'PASS ' : 'FAIL ') + 'wget through wisp: ' + name + ' in ' + ((Date.now() - t1) / 1000).toFixed(1) + ' s\n' + (got1 || out.slice(-300)).slice(-500));
   }
-  process.exit(all.slice(3).every(Boolean) ? 0 : 1);
+  process.exit(all.every(Boolean) ? 0 : 1);
 }
 await step('id -un; echo $HOME\n', /tester\s+\/home\/tester/, 'id and home');
 await step('sudo id -u\n', /Password/, 'sudo asks the password');
@@ -301,6 +297,7 @@ await step('stat -c %s /mnt/t/sub/b.txt; cat /mnt/t/a.txt; echo new > /mnt/t/n.t
   const ok = /F\t\/mnt\/t\/n\.txt\t4\t1/.test(sc) && /F\t\/mnt\/t\/c\.txt\t1\t0/.test(sc) && !/a\.txt/.test(sc);
   results.push(ok); console.log((ok ? 'PASS' : 'FAIL') + ' device folder: changes listed for the page' + (ok ? '' : '\n' + sc));
 }
+await step('/root/x86vfork\n', /x86vfork ok 11/, 'vfork: parent waits; child that does not exec leaves its writes (busybox wget https); socketpair + execvp + shutdown');
 await step('/root/x86pwrite && /root/x86pwrite /mnt/t/pw.bin\n', /x86pwrite ok 26\s[\s\S]*x86pwrite ok 26/, 'pwrite64, preadv/pwritev(2): offset kept, 3 MB file, 2 iovecs, pipe ESPIPE (also in a device folder)');
 await step('/root/stage1 epoll\n', /epoll 0 1 22 1 11 5 select 0 1/, 'epoll, eventfd, select');
 await step('/root/stage1 timers\n', /timers 14 1 fd 10 14/, 'alarm, setitimer, timerfd, timer_create; SIGALRM ends a process');

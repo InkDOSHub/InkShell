@@ -26,5 +26,5 @@ jobs:
       - name: wget inside the engine (fresh build, Alpine busybox 1.37 + ssl_client) through wisp, like the page
         # tests/linux-test.mjs with INK_NET=1 stops after the first steps; its test programs are empty placeholders here
         run: |
-          touch tests/x86string tests/x86bmi tests/x86pwrite tests/x86sha tests/x86ssl tests/x86v2 tests/x86aes tests/wasihello.wasm
+          touch tests/x86string tests/x86bmi tests/x86pwrite tests/x86vfork tests/x86sha tests/x86ssl tests/x86v2 tests/x86aes tests/wasihello.wasm
           INK_NET=1 timeout 900 node tests/linux-test.mjs engine-src/target/wasm32-unknown-unknown/release/inksoc.wasm
