@@ -1,0 +1,40 @@
+name: WebKit WASM tools
+# Item 51 (measurement only): the catalog's WebAssembly tools (sha256sum, zip, unzip, rg, sqlite3, jq) in
+# Chromium (V8) and WebKit (JavaScriptCore, the iPad's engine), same run: start (--version) and the work on
+# 64 MB files of a mounted /mnt read in pieces. 3 reps, median. No big files. Runs when started by hand or
+# when a PR touches these files. Separate from webkit-bench.yml (boot and engine bench).
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/webkit-wasm-tools.yml'
+      - 'tests/bench/browser-tools*'
+permissions:
+  contents: read
+concurrency:
+  group: webkit-wasm-tools-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  tools:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: The catalog's tools (sha256 checked)
+        run: |
+          mkdir -p out/tools $RUNNER_TEMP/pw/usr/local/bin
+          for n in hashtools:sha256sum zip:zip unzip:unzip ripgrep:rg sqlite:sqlite3 jq:jq; do
+            e=$(awk -F '\t' -v n="${n%%:*}" '$1 == n' overlay/etc/inksoc/wasm-catalog); f=out/tools/${n#*:}
+            timeout 300 curl -fsSL --retry 3 -o "$f" "$(printf '%s' "$e" | cut -f2)"
+            echo "$(printf '%s' "$e" | cut -f3)  $f" | sha256sum -c
+            install -m 755 "$f" $RUNNER_TEMP/pw/usr/local/bin/${n#*:}
+          done
+          tar --format=ustar -C $RUNNER_TEMP/pw -cf out/ztools.tar usr
+          cp tests/bench/browser-tools.sh out/
+          ls -la out out/tools
+      - name: Playwright (Chromium + WebKit)
+        run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit'
+      - name: Tools in both browsers
+        run: timeout 1500 node tests/bench/browser-tools.mjs
