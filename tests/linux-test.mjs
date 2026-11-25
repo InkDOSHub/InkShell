@@ -239,15 +239,16 @@ if (process.env.INK_NET) { // item 62: real network through the wisp tunnels, li
   };
   const all = [];
   for (const [name, cmd, ms] of [['plain http (example.com, no TLS)', 'wget -O /dev/null http://example.com/ 2>&1 | tr "\\r" "\\n" | tail -n 3', 60000],
-      ['https (example.com, ssl_client)', 'wget -O /dev/null https://example.com/ 2>&1 | tr "\\r" "\\n" | tail -n 3; ls -l /usr/bin/ssl_client; echo | ssl_client -s 0 -n x 2>&1 | head -3', 60000],
+      ['https (example.com, ssl_client)', 'wget -O /dev/null https://example.com/ 2>&1 | tr "\\r" "\\n" | tail -n 3', 60000],
+      ['apk fetch over https (apk uses ssl_client too)', 'cd /tmp && apk fetch --no-cache --repository https://dl-cdn.alpinelinux.org/alpine/v3.21/main --allow-untrusted busybox-extras 2>&1 | tail -n 3; ls -l /tmp/*.apk | head -2; cd ~ && true', 120000],
       ['hashtools (small, InkShell release)', 'wget -O /dev/null https://github.com/InkDOSHub/InkShell/releases/download/wasm-tools-7/hashsum.wasm 2>&1 | tr "\\r" "\\n" | tail -n 3', 120000],
       ['python3 (26 MB, vmware release)', 'wget -O /dev/null "$(grep ^python3 /etc/inksoc/wasm-catalog | cut -f2)" 2>&1 | tr "\\r" "\\n" | tail -n 3', 600000]]) {
     const t1 = Date.now(); send(cmd + '; echo done-$?\n');
     const got1 = await until(/done-\d/, ms, { at: 30000 });
-    const ok = !!got1 && /saved/.test(got1);
+    const ok = !!got1 && /saved|\.apk/.test(got1);
     all.push(ok); console.log((ok ? 'PASS ' : 'FAIL ') + 'wget through wisp: ' + name + ' in ' + ((Date.now() - t1) / 1000).toFixed(1) + ' s\n' + (got1 || out.slice(-300)).slice(-500));
   }
-  process.exit(all.slice(2).every(Boolean) ? 0 : 1);
+  process.exit(all.slice(3).every(Boolean) ? 0 : 1);
 }
 await step('id -un; echo $HOME\n', /tester\s+\/home\/tester/, 'id and home');
 await step('sudo id -u\n', /Password/, 'sudo asks the password');
@@ -315,7 +316,7 @@ if (hasWasi) {
   // item 62: a download that fails is retried (resume) and shows wget's own message, not just "download failed"
   await step(`sudo sh -c "printf 'bad-wasm\\thttp://127.0.0.1:9/bad.wasm\\t${hsum}\\t10\\tMIT\\t/usr/local/bin/bad-wasm\\tunreachable\\n' >> /etc/inksoc/wasm-catalog.local"\n`, /Password/, 'catalog: unreachable entry (sudo asks)');
   await step('pw1\n', /tester@inksoc/, 'catalog: unreachable entry written');
-  await step('apk add --no-network bad-wasm; echo bad-rc=$?\n', /Password/, 'catalog: failing download asks sudo');
+  await step('sudo sh -c "INKSOC_RETRY_WAIT=0 apk add --no-network bad-wasm"; echo bad-rc=$?\n', /Password/, 'catalog: failing download asks sudo');
   await step('pw1\n', /continuing \(3\/3\)[\s\S]*ERROR: bad-wasm: download failed: http:\/\/127\.0\.0\.1:9\/bad\.wasm\s+\S*wget[^\n]*(refused|connect)[\s\S]*bad-rc=1/i, 'catalog: failed download retries 3 times and shows the wget message');
   if (hasPy) { // python3 from the catalog (local file:// mirror), run in the terminal
     const psum = crypto.createHash('sha256').update(pyBytes).digest('hex');

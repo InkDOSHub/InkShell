@@ -61,7 +61,7 @@ install_one() {
     case "$url" in file://*|/*) break ;; esac
     tries=$((tries + 1)); rm -f "$tmp.fail"
     echo "$1: connection lost at $(($(stat -c %s "$tmp" 2>/dev/null || echo 0) / 1024)) KB, continuing ($tries/3)" >&2
-    sleep 2
+    sleep "${INKSOC_RETRY_WAIT:-2}"
     wget -q -c -T 60 -O "$tmp" "$url" 2>> "$tmp.err" || : > "$tmp.fail"
   done
   if [ -e "$tmp.fail" ]; then
