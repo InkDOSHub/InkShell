@@ -22,6 +22,11 @@ const PROF = process.env.PROFILE_JSON, prof = [];
 // INKSOC_WASI_PROFILE=1: phases of each WebAssembly program (read, compile, instantiate, WASI calls), to
 // WASI_PROFILE_JSON (default wasiprof.json), for tests/bench/wasiprof.mjs; off = nothing is loaded
 const WP = process.env.INKSOC_WASI_PROFILE === '1' ? await import('./bench/wasiprof-hook.mjs') : null;
+// JITLOG=FILE: every region handed to host_jit (output line before it, wasm bytes, Module and Instance ms;
+// with a --features jitprobe engine also guest block heads, instructions, translate ms), for tests/bench/jitwarm.mjs.
+// INKSOC_HOT=N (jitprobe engine): visits before a block is compiled (default 40)
+const JL = process.env.JITLOG, jl = [];
+let lastLine = '';
 const snap = () => ({ ctr: Array.from({ length: 32 }, (_, i) => x.prof_ctr(i)), op: Array.from({ length: 512 }, (_, i) => x.ophist(i)) });
 const mb = (b) => (b / 1048576).toFixed(0);
 function emit(s) {
@@ -30,6 +35,7 @@ function emit(s) {
     const l = line.slice(0, k).replace(/\r/g, '');
     console.log(`${(performance.now() - t0).toFixed(1)}\t${l}\t${mb(mem.buffer.byteLength)}\t${mb(sw.chunks.size * 65536)}`);
     if (l === '@@T done') done = true;
+    lastLine = l;
     if (PROF && x.prof_ctr) prof.push({ line: l, ms: performance.now() - t0, c: snap() });
   }
 }
@@ -42,14 +48,20 @@ const env = {
   host_audio: () => {}, host_gl: () => 0, host_drive_read: () => 0, host_drive_write: () => 0,
   host_jit: (p, n) => {
     try {
+      const t1 = performance.now();
       const m = new WebAssembly.Module(new Uint8Array(mem.buffer, p, n).slice());
+      const t2 = performance.now();
       const i = new WebAssembly.Instance(m, { env: { memory: mem, rd: x.jit_rd, wr: x.jit_wr, step: x.jit_step, cond: x.jit_cond } });
-      const t = x.__indirect_function_table, k = t.grow(1); t.set(k, i.exports.f); return k;
+      const t = x.__indirect_function_table, k = t.grow(1); t.set(k, i.exports.f);
+      if (JL) jl.push({ t: t1 - t0, at: lastLine, bytes: n, mod: t2 - t1, inst: performance.now() - t2,
+        ...(x.jit_probe ? { ins: x.jit_probe(1), tr: x.jit_probe(2), heads: Array.from({ length: x.jit_probe(0) }, (_, h) => x.jit_probe_head(h)) } : {}) });
+      return k;
     } catch (e) { if (!jitErr) { jitErr = 1; console.error('host_jit: ' + e.message); } return -1; }
   },
 };
 x = (await WebAssembly.instantiate(fs.readFileSync(wasmPath), { env })).instance.exports;
 mem = x.memory;
+if (process.env.INKSOC_HOT && x.set_jit_hot) x.set_jit_hot(+process.env.INKSOC_HOT);
 if (process.env.INKSOC_CHAIN === '0' && x.set_jit_chain) x.set_jit_chain(0); // A/B: JIT exits not chained
 const put = (b) => { const p = x.buffer(b.length); new Uint8Array(mem.buffer, p, b.length).set(b); };
 const add = (name, data) => { const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 1 + d.length); b.set(nm); b.set(d, nm.length + 1); put(b); x.add_file(); };
@@ -80,6 +92,7 @@ try {
 if (line) emit('\n');
 if (st === 2) console.log(`${(performance.now() - t0).toFixed(1)}\t@@ERR engine stopped: ${dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()))}`);
 if (!done && performance.now() - t0 >= LIMIT) console.log(`${(performance.now() - t0).toFixed(1)}\t@@ERR time limit ${LIMIT} ms`);
+if (JL) fs.writeFileSync(JL, JSON.stringify({ jitMs: x.stat(14), regions: jl }));
 if (PROF) fs.writeFileSync(PROF, JSON.stringify(prof));
 if (WP) fs.writeFileSync(process.env.WASI_PROFILE_JSON || 'wasiprof.json', JSON.stringify(WP.data(t0)));
 console.log('@@ENOSYS ' + enosysReport(x, mem, 'syscalls'));
