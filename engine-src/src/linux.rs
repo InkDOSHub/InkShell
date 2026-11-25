@@ -125,6 +125,9 @@ pub struct Lx {
     pub dirt: BTreeMap<String, Option<BTreeSet<u64>>>,
     pub fetch: Vec<String>,
     pub unknown: BTreeMap<u64, u64>, // system calls answered ENOSYS: number -> times (/proc/inksoc/enosys, linux_enosys)
+    // strace-like log of the last system calls (opening /proc/inksoc/trace-on starts it, /proc/inksoc/trace reads it)
+    trace_on: bool,
+    trace: std::collections::VecDeque<String>,
     want: Option<Cond>,
     // network: sockets go out through the page (wisp tunnel on our server)
     pub socks: BTreeMap<u32, Sock>,
@@ -659,6 +662,8 @@ fn proc_file(e: &mut Engine, p: &str) {
         "/proc/version" => "Linux version 6.6.0-inksoc (InkSoC engine in WebAssembly) #1 SMP\n".to_string(),
         "/proc/stat" => format!("cpu  {u} 0 0 0 0 0 0 0 0 0\ncpu0 {u} 0 0 0 0 0 0 0 0 0\nbtime 0\nprocesses 1\nprocs_running 1\n", u = (up * 100.0) as u64),
         "/proc/inksoc/enosys" => lx(e).unknown.iter().map(|(n, k)| format!("{n}\t{k}\n")).collect(),
+        "/proc/inksoc/trace-on" => { let l = lx(e); l.trace_on = true; l.trace.clear(); String::new() }
+        "/proc/inksoc/trace" => { let l = lx(e); l.trace_on = false; l.trace.iter().map(|t| format!("{t}\n")).collect() }
         _ => return,
     };
     let _ = frames_kb;
@@ -1438,6 +1443,14 @@ pub fn syscall(e: &mut Engine) {
         }
     };
     if v == -ENOSYS { *lx(e).unknown.entry(nr).or_insert(0) += 1; }
+    if lx(e).trace_on {
+        let what = if matches!(nr, 59 | 2 | 257 | 21 | 4 | 6) { let p = if nr == 257 { a1 } else { a0 }; format!(" \"{}\"", e.read_cstr(p, 200)) } else { String::new() };
+        let res = match v { BLOCKED => "wait".to_string(), NORET => "-".to_string(), _ => v.to_string() };
+        let l = lx(e);
+        let t = format!("{} {}({:#x}, {:#x}, {:#x}, {:#x}){} = {}", l.pid, nr, a0, a1, a2, a3, what, res);
+        l.trace.push_back(t);
+        if l.trace.len() > 3000 { l.trace.pop_front(); }
+    }
     if v == BLOCKED {
         let c = lx(e).want.take().unwrap_or(Cond::Until);
         e.cpu.regs[0] = nr; // runs again from the start when woken
@@ -1839,6 +1852,7 @@ fn exit_proc(e: &mut Engine, status: i32) {
         e.s.exited = true;
         return;
     }
+    if l.trace_on { l.trace.push_back(format!("{} exit status {:#x}", pid, status)); }
     l.fds.clear(); l.cloexec.clear();
     for p in l.procs.values_mut() { if p.ppid == pid { p.ppid = 1; } }
     if let Some(p) = l.procs.get_mut(&pid) { p.zombie = Some(status); }

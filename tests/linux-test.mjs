@@ -237,6 +237,12 @@ if (process.env.INK_NET) { // item 62: real network through the wisp tunnels, li
     }
     return null;
   };
+  { // item 64: strace-like log of wget https in the engine (/proc/inksoc/trace), printed whole
+    const from = out.length;
+    send('cat /proc/inksoc/trace-on; wget -O /dev/null https://example.com/ > /tmp/w.log 2>&1; cat /proc/inksoc/trace > /tmp/t.log; cat /tmp/w.log; grep -v "^1 " /tmp/t.log | tail -n 400; echo trace-$?\n');
+    await until(/trace-\d/, 60000);
+    console.log('--- trace of wget https ---\n' + out.slice(from) + '\n--- end trace ---');
+  }
   const all = [];
   for (const [name, cmd, ms] of [['plain http (example.com, no TLS)', 'wget -O /dev/null http://example.com/ 2>&1 | tr "\\r" "\\n" | tail -n 3', 60000],
       ['https (example.com, ssl_client)', 'wget -O /dev/null https://example.com/ 2>&1 | tr "\\r" "\\n" | tail -n 3', 60000],
