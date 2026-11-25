@@ -30,12 +30,12 @@ install_one() {
   echo "($1) WebAssembly build, $lic, $((${size:-0} / 1048576)) MB"
   mkdir -p "$(dirname "$main")" "$DB" || return 1
   tmp="$main.apk-new"
-  rm -f "$tmp" "$tmp.fail"
+  rm -f "$tmp" "$tmp.fail" "$tmp.err"
   fetch() {
     case "$url" in
       file://*) cat "${url#file://}" ;;
       /*) cat "$url" ;;
-      *) wget -q -O - "$url" ;;
+      *) wget -q -O - "$url" 2>> "$tmp.err" ;;
     esac || : > "$tmp.fail"
   }
   # progress while it downloads: "NAME: 12/25 MB 48%", one line updated with \r, on a terminal or
@@ -54,7 +54,22 @@ install_one() {
   else
     fetch > "$tmp"
   fi
-  if [ -e "$tmp.fail" ]; then rm -f "$tmp" "$tmp.fail"; echo "ERROR: $1: download failed: $url" >&2; return 1; fi
+  # the connection can drop in the middle of a big file (wisp tunnel): keep what came and continue it
+  # (wget -c, a Range request), up to 3 times; only for http(s), a local file has nothing to resume
+  tries=0
+  while [ -e "$tmp.fail" ] && [ "$tries" -lt 3 ]; do
+    case "$url" in file://*|/*) break ;; esac
+    tries=$((tries + 1)); rm -f "$tmp.fail"
+    echo "$1: connection lost at $(($(stat -c %s "$tmp" 2>/dev/null || echo 0) / 1024)) KB, continuing ($tries/3)" >&2
+    sleep "${INKSOC_RETRY_WAIT:-2}"
+    wget -q -c -T 60 -O "$tmp" "$url" 2>> "$tmp.err" || : > "$tmp.fail"
+  done
+  if [ -e "$tmp.fail" ]; then
+    echo "ERROR: $1: download failed: $url" >&2
+    if [ -s "$tmp.err" ]; then tail -n 4 "$tmp.err" | sed 's/^/  /' >&2; else echo "  (wget gave no message: the connection was closed)" >&2; fi
+    rm -f "$tmp" "$tmp.fail" "$tmp.err"; return 1
+  fi
+  rm -f "$tmp.err"
   got=$(sha256sum "$tmp" | cut -d' ' -f1)
   [ "$got" = "$sum" ] || { rm -f "$tmp"; echo "ERROR: $1: checksum mismatch ($got)" >&2; return 1; }
   chmod 755 "$tmp" && mv -f "$tmp" "$main" || return 1
