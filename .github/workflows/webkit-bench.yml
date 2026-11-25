@@ -4,11 +4,14 @@ name: WebKit benchmark
 # JIT compile time. Light: no big files. Runs only when started by hand or when a PR touches these files.
 # Item 48: HOTS (comma list) also sweeps the x86 JIT hot threshold (set_jit_hot) in both browsers.
 # Item 52: REGIONS (comma list, blocks per JIT region, set_jit_region) makes the sweep HOTS x REGIONS.
+# Item 59: STACKS (comma list, e.g. 1,0) = A/B of the JIT stack window (set_jit_stack), 2 alternated rounds.
+# A PR run does no HOT x region sweep (only STACKS); start it by hand for the sweep.
 on:
   workflow_dispatch:
     inputs:
       hots: { description: 'JIT hot thresholds to sweep (empty = none)', default: '500,1000,2000' }
       regions: { description: 'JIT region sizes in blocks to sweep (empty = engine default)', default: '16,32,64' }
+      stacks: { description: 'JIT stack window A/B (set_jit_stack values, empty = none)', default: '1,0' }
   pull_request:
     paths:
       - '.github/workflows/webkit-bench.yml'
@@ -46,8 +49,9 @@ jobs:
         run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit'
       - name: Bench in both browsers
         env:
-          HOTS: ${{ github.event_name == 'workflow_dispatch' && inputs.hots || '500,1000,2000' }}
+          HOTS: ${{ github.event_name == 'workflow_dispatch' && inputs.hots || '' }}
           REGIONS: ${{ github.event_name == 'workflow_dispatch' && inputs.regions || '16,32,64' }}
+          STACKS: ${{ github.event_name == 'workflow_dispatch' && inputs.stacks || '1,0' }}
         run: timeout 1200 node tests/bench/browser.mjs
   boot:
     # Item 50 (measurement only): the real page boot to the prompt, Chromium vs WebKit (no big inputs).

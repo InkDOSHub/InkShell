@@ -5,6 +5,7 @@
 // HOTS=10,40,100 (item 48): also runs the x86 subset once per JIT hot threshold (set_jit_hot) in each
 // browser and adds a sweep table; the main table stays the engine default (no set_jit_hot call).
 // REGIONS=16,32,64 (item 52): the sweep becomes HOTS x REGIONS (set_jit_region = max blocks per region).
+// STACKS=1,0 (item 59): A/B of the JIT stack window (set_jit_stack), x86 subset, 2 alternated rounds per browser.
 import { chromium, webkit } from 'playwright';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -13,6 +14,7 @@ const PORT = 8124, POOL = +(process.env.POOL_MB || 512);
 const HOTS = (process.env.HOTS || '').split(',').map(Number).filter((n) => n > 0);
 const REGIONS = (process.env.REGIONS || '').split(',').map(Number).filter((n) => n > 0);
 const RS = REGIONS.length ? REGIONS : [0]; // 0 = engine default (no set_jit_region call)
+const STACKS = (process.env.STACKS || '').split(',').filter((v) => v !== '').map(Number);
 const types = { '.js': 'text/javascript', '.mjs': 'text/javascript', '.html': 'text/html', '.wasm': 'application/wasm' };
 const srv = http.createServer((q, r) => {
   const u = decodeURIComponent(q.url.split('?')[0]);
@@ -24,7 +26,7 @@ const RUNS = [
   { id: 'x86', files: [['cpubench', '/out/cpubench'], ['zpkgs.tar', '/out/zpkgs.tar'], ['browser.sh', '/out/browser.sh']], cmd: 'sh /root/browser.sh cpu py' },
   { id: 'wasm', files: [['zpywasm.tar', '/out/zpywasm.tar'], ['browser.sh', '/out/browser.sh']], cmd: 'sh /root/browser.sh py' },
 ];
-async function run(type, name, r, hot = 0, region = 0) {
+async function run(type, name, r, hot = 0, region = 0, stack = 1) {
   const b = await type.launch();
   try {
     const p = await b.newPage();
@@ -32,12 +34,12 @@ async function run(type, name, r, hot = 0, region = 0) {
     p.on('console', (m) => { if (m.type() === 'error') console.log(`[${name} console]`, m.text()); });
     await p.goto(`http://localhost:${PORT}/bench.html`);
     const ver = b.version();
-    const res = await p.evaluate(({ files, cmd, pool, hot, region }) => new Promise((ok) => {
+    const res = await p.evaluate(({ files, cmd, pool, hot, region, stack }) => new Promise((ok) => {
       const w = new Worker('/tests/bench/browser-worker.js', { type: 'module' });
       w.onmessage = (e) => ok(e.data);
       w.onerror = (e) => ok({ err: 'worker error: ' + e.message, lines: [], jit: {}, done: false });
-      w.postMessage({ files, cmd, pool, hot, region });
-    }), { files: r.files, cmd: r.cmd, pool: POOL, hot, region });
+      w.postMessage({ files, cmd, pool, hot, region, stack });
+    }), { files: r.files, cmd: r.cmd, pool: POOL, hot, region, stack });
     return { ...res, ver };
   } catch (e) {
     return { err: String(e), lines: [], jit: {}, done: false, ver: '?' };
@@ -58,10 +60,11 @@ const out = {};
 const jobs = [];
 for (const r of RUNS) for (const n of ['chromium', 'webkit']) jobs.push([r, n, 0, 0, `${r.id}/${n}`]);
 for (const h of HOTS) for (const g of RS) for (const n of ['chromium', 'webkit']) jobs.push([RUNS[0], n, h, g, `hot${h}r${g}/${n}`]);
-for (const [r, n, hot, region, key] of jobs) {
+for (const k of [1, 2]) for (const s of STACKS) for (const n of ['chromium', 'webkit']) jobs.push([RUNS[0], n, 0, 0, `stack${s}x${k}/${n}`, s]);
+for (const [r, n, hot, region, key, stack = 1] of jobs) {
   const t = n === 'chromium' ? chromium : webkit;
   console.log(`::group::${key}`);
-  const res = await run(t, n, r, hot, region);
+  const res = await run(t, n, r, hot, region, stack);
   console.log(res.lines.map(([t, l]) => `${t}\t${l}`).join('\n'));
   if (res.err) console.log('ERR: ' + res.err);
   console.log(`done=${res.done} jit=${JSON.stringify(res.jit)} mem=${res.mem}MB version=${res.ver}`);
@@ -91,6 +94,16 @@ if (HOTS.length) {
     const o = out[`hot${h}r${g}/${n}`], m = o?.ms || {}, v = o?.jit || {};
     const c = ['cpu.calls', 'cpu.sort', 'cpu.float', 'cpu.int', 'cpu.total', 'py-start-1', 'py-start-2', 'py-loop'].map((k) => f(m[k]));
     L.push(`| ${n} | ${h} | ${g || 'default'} | ${c.join(' | ')} | ${v.n ?? 'n/a'} | ${v.bytes != null ? (v.bytes / 1024).toFixed(0) : 'n/a'} | ${v.ms != null ? v.ms.toFixed(0) : 'n/a'} |`);
+  }
+}
+if (STACKS.length) {
+  L.push('', '### x86 JIT stack window A/B (set_jit_stack; 1 = on, 0 = off; 2 alternated rounds)', '',
+    '| browser | stack | round | cpu calls | cpu sort | cpu float | cpu int | cpu total | py -c pass 1st | py -c pass 2nd | py 1M loop | JIT modules | JIT KB | compile ms |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|');
+  for (const n of ['chromium', 'webkit']) for (const k of [1, 2]) for (const s of STACKS) {
+    const o = out[`stack${s}x${k}/${n}`], m = o?.ms || {}, v = o?.jit || {};
+    const c = ['cpu.calls', 'cpu.sort', 'cpu.float', 'cpu.int', 'cpu.total', 'py-start-1', 'py-start-2', 'py-loop'].map((x) => f(m[x]));
+    L.push(`| ${n} | ${s} | ${k} | ${c.join(' | ')} | ${v.n ?? 'n/a'} | ${v.bytes != null ? (v.bytes / 1024).toFixed(0) : 'n/a'} | ${v.ms != null ? v.ms.toFixed(0) : 'n/a'} |`);
   }
 }
 const bad = Object.entries(out).filter(([, v]) => !v.done).map(([k, v]) => `${k}: ${v.err || 'did not finish'}`);
