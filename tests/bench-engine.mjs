@@ -86,6 +86,7 @@ mem = x.memory;
 if (process.env.INKSOC_HOT && x.set_jit_hot) x.set_jit_hot(+process.env.INKSOC_HOT);
 if (process.env.INKSOC_CHAIN === '0' && x.set_jit_chain) x.set_jit_chain(0); // A/B: JIT exits not chained
 if (process.env.INKSOC_STACK === '0' && x.set_jit_stack) x.set_jit_stack(0); // A/B: no stack window (item 59)
+if (process.env.INKSOC_CALLRET === '0' && x.set_jit_callret) x.set_jit_callret(0); // A/B: call/ret leave the JIT region (item 66)
 if (process.env.INKSOC_AB && x.set_jit_ab) x.set_jit_ab(+process.env.INKSOC_AB); // item 63 A/B (jitprobe engine): parts of the block code emitted twice
 if (process.env.INKSOC_REGION && x.set_jit_region) x.set_jit_region(+process.env.INKSOC_REGION); // blocks per JIT region (item 60)
 // HRMARK=1 (item 60): process.hrtime (us, same clock as node --cpu-prof samples) at t0, to cut a CPU profile by output lines

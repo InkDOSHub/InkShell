@@ -55,11 +55,11 @@ for (const [lab, f] of Object.entries(P)) {
 const k = (d) => ({
   disp: d[0], ins: d[1] + d[3], insJ: d[1], interp: d[3], l1miss: d[4], comp: d[6],
   fwd: d[16], back: d[17], exC: d[18], loads: d[19], stores: d[20], cond: d[21], fb: d[22], exD: d[24], exB: d[25],
-  chained: d[26], win: d[27], winSlow: d[28], winChk: d[29], rets: d[30], calls: d[31], tlbSlow: d[32], tries: d[33],
+  chained: d[26], win: d[27], winSlow: d[28], winChk: d[29], rets: d[30], calls: d[31], tlbSlow: d[32], tries: d[33], retIn: d[34],
 });
 const V = Object.fromEntries(Object.entries(C).map(([l, d]) => [l, k(d)]));
 const labs = [...new Set([...Object.keys(time), ...Object.keys(V)])];
-const DESC = { default: 'padrão (região 16, encadeado)', r4: 'região 4 blocos', r1: 'região 1 bloco (todo salto = saída)', c0: 'encadeamento desligado (saída → dispatcher)' };
+const DESC = { default: 'padrão (região 16, encadeado)', r4: 'região 4 blocos', r1: 'região 1 bloco (todo salto = saída)', c0: 'encadeamento desligado (saída → dispatcher)', k0: 'call/ret dentro da região desligado (item 66)' };
 let md = `### 1. Variantes: fib(32) em regime estável (mediana runs ≥5 de \`x86fib 10 36\`, média das rodadas) e contadores ophist por run\n\n`;
 md += `Nativo (runner): fib(32) estável ${f2(natSteady)} ms.\n\n`;
 md += '| variante | rodadas | run 0 ms | estável ms | x nativo | instr (M) | calls (M) | rets (M) | saídas encadeadas (M) | saídas p/ dispatcher (M) | saltos internos (M) | tentativas de encadear (M) / falta no cache (M) | loads (M) | stores (M) | janela: acessos / lentos / checagens (M) | TLB lento (helper) (M) | cond() (M) | fallbacks (M) |\n';
@@ -76,7 +76,7 @@ if (d && d.calls > 0) {
   const pc = (x) => (x / d.calls).toFixed(2);
   const tlb = d.winChk + (d.loads + d.stores - d.win); // window checks + one check per access outside a window
   md += `\n### 2. Por call (variante padrão; ${M(d.calls)} M calls por fib(32) estável)\n\n| medida | por call |\n|---|---:|\n`;
-  md += `| instruções x86 (${(100 * d.insJ / (d.ins || 1)).toFixed(2)}% no JIT) | ${pc(d.ins)} |\n| rets | ${pc(d.rets)} |\n| saídas de bloco encadeadas (sem dispatcher) | ${pc(d.chained)} |\n`;
+  md += `| instruções x86 (${(100 * d.insJ / (d.ins || 1)).toFixed(2)}% no JIT) | ${pc(d.ins)} |\n| rets | ${pc(d.rets)} |\n| rets que viram salto interno (item 66) | ${pc(d.retIn || 0)} |\n| saídas de bloco encadeadas (sem dispatcher) | ${pc(d.chained)} |\n`;
   md += `| saídas p/ o dispatcher (rip fixo + calculado + orçamento) | ${pc(disp(d))} |\n| entradas do dispatcher em bloco JIT | ${pc(d.disp)} |\n| saltos internos da região (frente + trás) | ${pc(d.fwd + d.back)} |\n`;
   md += `| encadear: tentativas / acertos / faltas no cache L1 | ${pc(d.tries)} / ${pc(d.chained)} / ${pc(d.tries - d.chained)} |\n| loads / stores | ${pc(d.loads)} / ${pc(d.stores)} |\n`;
   md += `| checagens de TLB (janela + acessos fora da janela) | ${pc(tlb)} |\n| chamadas a helper (TLB lento + janela lenta + cond() + fallback) | ${pc(d.tlbSlow + d.winSlow + d.cond + d.fb)} |\n`;

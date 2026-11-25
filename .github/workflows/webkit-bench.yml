@@ -12,7 +12,8 @@ on:
     inputs:
       hots: { description: 'JIT hot thresholds to sweep (empty = none)', default: '500,1000,2000' }
       regions: { description: 'JIT region sizes in blocks to sweep (empty = engine default)', default: '16,32,64' }
-      stacks: { description: 'JIT stack window A/B (set_jit_stack values, empty = none)', default: '1,0' }
+      stacks: { description: 'JIT A/B values for set_jit_<ab_fn> (empty = none)', default: '1,0' }
+      ab_fn: { description: 'JIT switch for the A/B (stack = item 59, callret = item 66)', default: 'callret' }
       fibs: { description: 'steady fib per region:chain (item 60, empty = none)', default: '16:1,4:1,1:1,16:0' }
   pull_request:
     paths:
@@ -56,6 +57,7 @@ jobs:
           HOTS: ${{ github.event_name == 'workflow_dispatch' && inputs.hots || '' }}
           REGIONS: ${{ github.event_name == 'workflow_dispatch' && inputs.regions || '16,32,64' }}
           STACKS: ${{ github.event_name == 'workflow_dispatch' && inputs.stacks || '' }}
+          AB_FN: ${{ github.event_name == 'workflow_dispatch' && inputs.ab_fn || 'stack' }}
           FIBS: ${{ github.event_name == 'workflow_dispatch' && inputs.fibs || '16:1,4:1,1:1,16:0' }}
         run: timeout 1200 node tests/bench/browser.mjs
   boot:

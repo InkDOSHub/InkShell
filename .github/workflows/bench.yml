@@ -73,23 +73,23 @@ jobs:
             grep -q '@@T done' out/engine-$n.log || echo "- motor \`$s\`: não terminou (ver engine-$n.log)" | tee -a out/engine-fails.txt
             echo "::endgroup::"
           done
-      - name: Calls microbench (tests/src/x86calls.c; items 43 and 59, measurement only)
+      - name: Calls microbench (tests/src/x86calls.c; items 43, 59, 66, measurement only)
         if: ${{ !cancelled() }}
         continue-on-error: true
         run: |
           out/x86calls > out/native-calls.txt; cat out/native-calls.txt
           printf '/root/x86calls\necho "@@T done"\n' > out/xc.sh
           for v in 1 0; do
-            INKSOC_STACK=$v timeout 600 node tests/bench-engine.mjs out/engine.wasm x86calls=out/x86calls xc.sh=out/xc.sh -- sh /root/xc.sh | cut -f2 | grep '^x86calls' > out/engine-calls-$v.txt || true
+            INKSOC_CALLRET=$v timeout 600 node tests/bench-engine.mjs out/engine.wasm x86calls=out/x86calls xc.sh=out/xc.sh -- sh /root/xc.sh | cut -f2 | grep '^x86calls' > out/engine-calls-$v.txt || true
             cat out/engine-calls-$v.txt
           done
-          { echo "## Calls x86: passo a passo (ns/iteração; janela de pilha do JIT (item 59) ligada = 1, desligada = 0)"; echo; echo '| variante | nativo | motor 1 | motor 0 | x nativo (1) |'; echo '|---|---:|---:|---:|---:|'
+          { echo "## Calls x86: passo a passo (ns/iteração; call/ret dentro da região do JIT (item 66) ligado = 1, desligado = 0)"; echo; echo '| variante | nativo | motor 1 | motor 0 | x nativo (1) |'; echo '|---|---:|---:|---:|---:|'
             paste -d'|' out/native-calls.txt out/engine-calls-1.txt out/engine-calls-0.txt | awk -F'|' '{
               n = $1; sub(/^x86calls +/, "", n); sub(/ +[0-9.]+ ns.*/, "", n);
               match($1, /[0-9.]+ ns/); a = substr($1, RSTART, RLENGTH - 3); match($2, /[0-9.]+ ns/); b = substr($2, RSTART, RLENGTH - 3); match($3, /[0-9.]+ ns/); c = substr($3, RSTART, RLENGTH - 3);
               printf "| %s | %.2f | %.2f | %.2f | %.1fx |\n", n, a, b, c, (a > 0 ? b / a : 0) }'; } > out/callsprof.md
           cat out/callsprof.md | tee -a $GITHUB_STEP_SUMMARY
-      - name: A/B JIT stack window (INKSOC_STACK 1 = on, 0 = off; item 59, measurement only)
+      - name: A/B JIT call/ret inside the region (INKSOC_CALLRET 1 = on, 0 = off; item 66, measurement only)
         if: ${{ !cancelled() }}
         continue-on-error: true
         timeout-minutes: 20
@@ -97,7 +97,7 @@ jobs:
           E="node tests/bench-engine.mjs out/engine.wasm cpubench=out/cpubench bench.sh=out/bench.sh pybench.py=out/pybench.py zpkgs.tar=out/zpkgs.tar x86fib=out/x86fib"
           printf '/root/x86fib 10 36\nsh /root/bench.sh cpu py\n' > out/ab.sh
           for r in 1 2; do for v in 1 0; do
-            INKSOC_STACK=$v timeout 600 $E ab.sh=out/ab.sh -- sh /root/ab.sh > out/stack-$v-$r.log 2>&1 || true
+            INKSOC_CALLRET=$v timeout 600 $E ab.sh=out/ab.sh -- sh /root/ab.sh > out/stack-$v-$r.log 2>&1 || true
           done; done
           ab() { awk -F '\t' '
             $2 ~ /^x86fib run 0 / { split($2, a, " "); f0 = a[4] } $2 ~ /^x86fib run [5-9] / { split($2, a, " "); fs += a[4]; fn++ }
@@ -107,9 +107,9 @@ jobs:
             $2 ~ /^total / { split($2, a, " +"); t = a[2] }
             $2 ~ /^py total/ { split($2, a, " +"); pt = a[3] }
             END { printf "| %.1f | %.1f | %.1f | %.0f | %.0f | %.0f | %.0f |", f0, (fn ? fs / fn : 0), ca, so, t, ps, pt }' "$1"; }
-          { echo "## A/B janela de pilha do JIT (item 59): mesmo runner, alternado (ms)"; echo
+          { echo "## A/B call/ret dentro da região do JIT (item 66): mesmo runner, alternado (ms)"; echo
             echo '| rodada | variante | fib(32) run 0 | fib(32) estável (runs 5–9) | cpu calls | cpu sort | cpu total | py-start | py.total |'; echo '|---|---|---:|---:|---:|---:|---:|---:|---:|'
-            for r in 1 2; do for v in 1 0; do echo "| $r | stack=$v $(ab out/stack-$v-$r.log)"; done; done; } > out/stack.md
+            for r in 1 2; do for v in 1 0; do echo "| $r | callret=$v $(ab out/stack-$v-$r.log)"; done; done; } > out/stack.md
           cat out/stack.md | tee -a $GITHUB_STEP_SUMMARY
           grep -h '@@ERR\|access violation' out/stack-*.log | head -5 || true
       - name: Engine, python3 via WASI (the catalog's python.wasm run by the kernel)
@@ -216,12 +216,12 @@ jobs:
           out/x86fib 10 36 > out/native-fib10.txt; cat out/native-fib10.txt
           printf '/root/x86fib 10 36\necho "@@T done"\n' > out/cp.sh
           E=tests/bench-engine.mjs; F="x86fib=out/x86fib cp.sh=out/cp.sh -- sh /root/cp.sh"
-          var() { case $1 in r4) echo INKSOC_REGION=4;; r1) echo INKSOC_REGION=1;; c0) echo INKSOC_CHAIN=0;; *) echo X=1;; esac; }
+          var() { case $1 in r4) echo INKSOC_REGION=4;; r1) echo INKSOC_REGION=1;; c0) echo INKSOC_CHAIN=0;; k0) echo INKSOC_CALLRET=0;; *) echo X=1;; esac; }
           T=""; P=""
-          for r in 1 2; do for v in default r4 r1 c0; do
+          for r in 1 2; do for v in default k0 r4 r1 c0; do
             env $(var $v) timeout 300 node $E out/engine.wasm $F > out/cp-$v-$r.log 2>&1 || true; T="$T t:$v=out/cp-$v-$r.log"
           done; done
-          if [ -f out/engine-ophist.wasm ]; then for v in default r4 r1 c0; do
+          if [ -f out/engine-ophist.wasm ]; then for v in default k0 r4 r1 c0; do
             env $(var $v) PROFILE_JSON=out/cp-prof-$v.json timeout 300 node $E out/engine-ophist.wasm $F > out/cp-ophist-$v.log 2>&1 || true; P="$P p:$v=out/cp-prof-$v.json"
           done; fi
           printf '/root/x86fib 30 32\necho "@@T done"\n' > out/cp30.sh
