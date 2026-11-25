@@ -3627,6 +3627,11 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
             if heads.contains(&t) {
                 continue;
             }
+            // already compiled (head of another region): leave it as an exit that chains to that
+            // code instead of copying it here (item 49: 75-88% of the blocks were copies)
+            if e.jit.map.get(&t).is_some_and(|&f| f != NONE) {
+                continue;
+            }
             if let Some(b) = decode_block(e, t) {
                 total += b.list.len();
                 heads.push(t);
