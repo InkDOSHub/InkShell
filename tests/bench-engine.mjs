@@ -27,7 +27,7 @@ const WP = process.env.INKSOC_WASI_PROFILE === '1' ? await import('./bench/wasip
 // INKSOC_HOT=N (jitprobe engine): visits before a block is compiled (default 40)
 const JL = process.env.JITLOG, jl = [];
 let lastLine = '';
-const snap = () => ({ ctr: Array.from({ length: 32 }, (_, i) => x.prof_ctr(i)), op: Array.from({ length: 512 }, (_, i) => x.ophist(i)) });
+const snap = () => ({ ctr: Array.from({ length: 48 }, (_, i) => x.prof_ctr(i)), op: Array.from({ length: 512 }, (_, i) => x.ophist(i)) });
 const mb = (b) => (b / 1048576).toFixed(0);
 function emit(s) {
   line += s;
@@ -64,6 +64,9 @@ mem = x.memory;
 if (process.env.INKSOC_HOT && x.set_jit_hot) x.set_jit_hot(+process.env.INKSOC_HOT);
 if (process.env.INKSOC_CHAIN === '0' && x.set_jit_chain) x.set_jit_chain(0); // A/B: JIT exits not chained
 if (process.env.INKSOC_STACK === '0' && x.set_jit_stack) x.set_jit_stack(0); // A/B: no stack window (item 59)
+if (process.env.INKSOC_REGION && x.set_jit_region) x.set_jit_region(+process.env.INKSOC_REGION); // blocks per JIT region (item 60)
+// HRMARK=1 (item 60): process.hrtime (us, same clock as node --cpu-prof samples) at t0, to cut a CPU profile by output lines
+if (process.env.HRMARK === '1') console.log(`@@HR0\t${Number(process.hrtime.bigint() / 1000n) - Math.round((performance.now() - t0) * 1000)}`);
 const put = (b) => { const p = x.buffer(b.length); new Uint8Array(mem.buffer, p, b.length).set(b); };
 const add = (name, data) => { const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 1 + d.length); b.set(nm); b.set(d, nm.length + 1); put(b); x.add_file(); };
 x.init(POOL, 8192);

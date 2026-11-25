@@ -208,6 +208,29 @@ jobs:
               fiblog=out/jit-fib.json fiblogN=out/fib-probe.log hot:10=out/jit-fib-10.json hot:200=out/jit-fib-200.json hot:1000=out/jit-fib-1000.json \
               prof=out/prof-fib.json pylog=out/jit-py.json pylogN=out/py-probe.log; } > out/jitwarm.md
           cat out/jitwarm.md | tee -a $GITHUB_STEP_SUMMARY
+      - name: Calls profile after item 59 (x86fib steady state; item 60, measurement only)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          out/x86fib 10 36 > out/native-fib10.txt; cat out/native-fib10.txt
+          printf '/root/x86fib 10 36\necho "@@T done"\n' > out/cp.sh
+          E=tests/bench-engine.mjs; F="x86fib=out/x86fib cp.sh=out/cp.sh -- sh /root/cp.sh"
+          var() { case $1 in r4) echo INKSOC_REGION=4;; r1) echo INKSOC_REGION=1;; c0) echo INKSOC_CHAIN=0;; *) echo X=1;; esac; }
+          T=""; P=""
+          for r in 1 2; do for v in default r4 r1 c0; do
+            env $(var $v) timeout 300 node $E out/engine.wasm $F > out/cp-$v-$r.log 2>&1 || true; T="$T t:$v=out/cp-$v-$r.log"
+          done; done
+          if [ -f out/engine-ophist.wasm ]; then for v in default r4 r1 c0; do
+            env $(var $v) PROFILE_JSON=out/cp-prof-$v.json timeout 300 node $E out/engine-ophist.wasm $F > out/cp-ophist-$v.log 2>&1 || true; P="$P p:$v=out/cp-prof-$v.json"
+          done; fi
+          printf '/root/x86fib 30 32\necho "@@T done"\n' > out/cp30.sh
+          HRMARK=1 timeout 300 node --cpu-prof --cpu-prof-interval 50 --cpu-prof-dir out/cpuprof $E out/engine.wasm x86fib=out/x86fib cp30.sh=out/cp30.sh -- sh /root/cp30.sh > out/cp-cpuprof.log 2>&1 || true
+          CPU=$(ls out/cpuprof/*.cpuprofile 2>/dev/null | head -1)
+          cut -f2 out/cp-*.log | grep -E '^x86fib (run 0|run 9|long)|@@ERR' | head -40
+          { echo "## Perfil de calls x86 após #83 (item 60: só medição)"; echo
+            node tests/bench/callsprof.mjs native=out/native-fib10.txt $T $P ${CPU:+cpuprof=$CPU cpulog=out/cp-cpuprof.log}; } > out/callsprof60.md
+          cat out/callsprof60.md | tee -a $GITHUB_STEP_SUMMARY
       - name: Report
         if: always()
         run: |
@@ -235,7 +258,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           cd out
-          { echo '<!-- bench-compare -->'; cat compare.md; echo; echo '<details><summary>Motor vs nativo</summary>'; echo; cat report.md; echo; echo '</details>'; echo; echo '<details><summary>Perfil x86 (cpubench)</summary>'; echo; cat profile.md 2>/dev/null; echo; echo '</details>'; echo; echo '<details><summary>Perfil abertura python3 WASM</summary>'; echo; cat wasiprof.md 2>/dev/null; echo; echo '</details>'; echo; echo '<details><summary>Ferramentas WASM em arquivo grande</summary>'; echo; cat bigwasm.md 2>/dev/null; echo; echo '</details>'; } > body.md
+          { echo '<!-- bench-compare -->'; cat compare.md; echo; echo '<details><summary>Motor vs nativo</summary>'; echo; cat report.md; echo; echo '</details>'; echo; echo '<details><summary>Perfil calls x86 (item 60)</summary>'; echo; cat callsprof60.md 2>/dev/null; echo; echo '</details>'; echo; echo '<details><summary>Perfil x86 (cpubench)</summary>'; echo; cat profile.md 2>/dev/null; echo; echo '</details>'; echo; echo '<details><summary>Perfil abertura python3 WASM</summary>'; echo; cat wasiprof.md 2>/dev/null; echo; echo '</details>'; echo; echo '<details><summary>Ferramentas WASM em arquivo grande</summary>'; echo; cat bigwasm.md 2>/dev/null; echo; echo '</details>'; } > body.md
           cid=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate -q '.[] | select(.body | startswith("<!-- bench-compare -->")) | .id' | tail -1)
           if [ -n "$cid" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$cid" -F body=@body.md >/dev/null
           else gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@body.md >/dev/null; fi

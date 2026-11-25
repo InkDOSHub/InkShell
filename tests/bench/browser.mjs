@@ -6,6 +6,7 @@
 // browser and adds a sweep table; the main table stays the engine default (no set_jit_hot call).
 // REGIONS=16,32,64 (item 52): the sweep becomes HOTS x REGIONS (set_jit_region = max blocks per region).
 // STACKS=1,0 (item 59): A/B of the JIT stack window (set_jit_stack), x86 subset, 2 alternated rounds per browser.
+// FIBS=16:1,4:1,1:1,16:0 (item 60): steady fib(32) (out/x86fib 10 36) per JIT region size : chaining on/off, 2 rounds.
 import { chromium, webkit } from 'playwright';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -15,6 +16,7 @@ const HOTS = (process.env.HOTS || '').split(',').map(Number).filter((n) => n > 0
 const REGIONS = (process.env.REGIONS || '').split(',').map(Number).filter((n) => n > 0);
 const RS = REGIONS.length ? REGIONS : [0]; // 0 = engine default (no set_jit_region call)
 const STACKS = (process.env.STACKS || '').split(',').filter((v) => v !== '').map(Number);
+const FIBS = (process.env.FIBS || '').split(',').filter((v) => v.includes(':')).map((v) => v.split(':').map(Number));
 const types = { '.js': 'text/javascript', '.mjs': 'text/javascript', '.html': 'text/html', '.wasm': 'application/wasm' };
 const srv = http.createServer((q, r) => {
   const u = decodeURIComponent(q.url.split('?')[0]);
@@ -26,7 +28,7 @@ const RUNS = [
   { id: 'x86', files: [['cpubench', '/out/cpubench'], ['zpkgs.tar', '/out/zpkgs.tar'], ['browser.sh', '/out/browser.sh']], cmd: 'sh /root/browser.sh cpu py' },
   { id: 'wasm', files: [['zpywasm.tar', '/out/zpywasm.tar'], ['browser.sh', '/out/browser.sh']], cmd: 'sh /root/browser.sh py' },
 ];
-async function run(type, name, r, hot = 0, region = 0, stack = 1) {
+async function run(type, name, r, hot = 0, region = 0, stack = 1, chain = 1) {
   const b = await type.launch();
   try {
     const p = await b.newPage();
@@ -34,12 +36,12 @@ async function run(type, name, r, hot = 0, region = 0, stack = 1) {
     p.on('console', (m) => { if (m.type() === 'error') console.log(`[${name} console]`, m.text()); });
     await p.goto(`http://localhost:${PORT}/bench.html`);
     const ver = b.version();
-    const res = await p.evaluate(({ files, cmd, pool, hot, region, stack }) => new Promise((ok) => {
+    const res = await p.evaluate(({ files, cmd, pool, hot, region, stack, chain }) => new Promise((ok) => {
       const w = new Worker('/tests/bench/browser-worker.js', { type: 'module' });
       w.onmessage = (e) => ok(e.data);
       w.onerror = (e) => ok({ err: 'worker error: ' + e.message, lines: [], jit: {}, done: false });
-      w.postMessage({ files, cmd, pool, hot, region, stack });
-    }), { files: r.files, cmd: r.cmd, pool: POOL, hot, region, stack });
+      w.postMessage({ files, cmd, pool, hot, region, stack, chain });
+    }), { files: r.files, cmd: r.cmd, pool: POOL, hot, region, stack, chain });
     return { ...res, ver };
   } catch (e) {
     return { err: String(e), lines: [], jit: {}, done: false, ver: '?' };
@@ -61,10 +63,12 @@ const jobs = [];
 for (const r of RUNS) for (const n of ['chromium', 'webkit']) jobs.push([r, n, 0, 0, `${r.id}/${n}`]);
 for (const h of HOTS) for (const g of RS) for (const n of ['chromium', 'webkit']) jobs.push([RUNS[0], n, h, g, `hot${h}r${g}/${n}`]);
 for (const k of [1, 2]) for (const s of STACKS) for (const n of ['chromium', 'webkit']) jobs.push([RUNS[0], n, 0, 0, `stack${s}x${k}/${n}`, s]);
-for (const [r, n, hot, region, key, stack = 1] of jobs) {
+const FIB = { id: 'fib', files: [['x86fib', '/out/x86fib'], ['fib.sh', '/out/fib.sh']], cmd: 'sh /root/fib.sh' };
+for (const k of [1, 2]) for (const [g, c] of FIBS) for (const n of ['chromium', 'webkit']) jobs.push([FIB, n, 0, g, `fib${g}c${c}x${k}/${n}`, 1, c]);
+for (const [r, n, hot, region, key, stack = 1, chain = 1] of jobs) {
   const t = n === 'chromium' ? chromium : webkit;
   console.log(`::group::${key}`);
-  const res = await run(t, n, r, hot, region, stack);
+  const res = await run(t, n, r, hot, region, stack, chain);
   console.log(res.lines.map(([t, l]) => `${t}\t${l}`).join('\n'));
   if (res.err) console.log('ERR: ' + res.err);
   console.log(`done=${res.done} jit=${JSON.stringify(res.jit)} mem=${res.mem}MB version=${res.ver}`);
@@ -104,6 +108,16 @@ if (STACKS.length) {
     const o = out[`stack${s}x${k}/${n}`], m = o?.ms || {}, v = o?.jit || {};
     const c = ['cpu.calls', 'cpu.sort', 'cpu.float', 'cpu.int', 'cpu.total', 'py-start-1', 'py-start-2', 'py-loop'].map((x) => f(m[x]));
     L.push(`| ${n} | ${s} | ${k} | ${c.join(' | ')} | ${v.n ?? 'n/a'} | ${v.bytes != null ? (v.bytes / 1024).toFixed(0) : 'n/a'} | ${v.ms != null ? v.ms.toFixed(0) : 'n/a'} |`);
+  }
+}
+if (FIBS.length) {
+  const fib = (o) => { const r = []; for (const [, l] of o?.lines || []) { const m = /^x86fib run (\d+) ([\d.]+) ms/.exec(l); if (m) r[+m[1]] = +m[2]; } const s = r.filter((v, i) => i >= 5 && v > 0).sort((a, b) => a - b); return { r0: r[0], st: s.length ? s[s.length >> 1] : null }; };
+  L.push('', '### x86 fib(32) steady state per JIT region size / chaining (item 60; median of runs 5-9 of `x86fib 10 36`, ms, mean of 2 rounds)', '',
+    '| browser | region blocks | chained exits | run 0 | steady | steady vs region 16 chained |', '|---|---:|---:|---:|---:|---:|');
+  for (const n of ['chromium', 'webkit']) {
+    const st = (g, c) => { const v = [1, 2].map((k) => fib(out[`fib${g}c${c}x${k}/${n}`])); const a = v.map((x) => x.st).filter((x) => x > 0), b = v.map((x) => x.r0).filter((x) => x > 0); return { st: a.length ? a.reduce((p, q) => p + q, 0) / a.length : null, r0: b.length ? b.reduce((p, q) => p + q, 0) / b.length : null }; };
+    const base = st(16, 1).st;
+    for (const [g, c] of FIBS) { const s = st(g, c); L.push(`| ${n} | ${g} | ${c ? 'on' : 'off'} | ${f(s.r0)} | ${s.st == null ? 'n/a' : s.st.toFixed(1)} | ${s.st && base ? (s.st / base).toFixed(2) + 'x' : 'n/a'} |`); }
   }
 }
 const bad = Object.entries(out).filter(([, v]) => !v.done).map(([k, v]) => `${k}: ${v.err || 'did not finish'}`);

@@ -5,13 +5,15 @@ name: WebKit benchmark
 # Item 48: HOTS (comma list) also sweeps the x86 JIT hot threshold (set_jit_hot) in both browsers.
 # Item 52: REGIONS (comma list, blocks per JIT region, set_jit_region) makes the sweep HOTS x REGIONS.
 # Item 59: STACKS (comma list, e.g. 1,0) = A/B of the JIT stack window (set_jit_stack), 2 alternated rounds.
-# A PR run does no HOT x region sweep (only STACKS); start it by hand for the sweep.
+# Item 60: FIBS (comma list region:chain) = steady fib(32) per JIT region size and chaining on/off, 2 rounds.
+# A PR run does no HOT x region sweep and no STACKS A/B (only FIBS); start it by hand for those.
 on:
   workflow_dispatch:
     inputs:
       hots: { description: 'JIT hot thresholds to sweep (empty = none)', default: '500,1000,2000' }
       regions: { description: 'JIT region sizes in blocks to sweep (empty = engine default)', default: '16,32,64' }
       stacks: { description: 'JIT stack window A/B (set_jit_stack values, empty = none)', default: '1,0' }
+      fibs: { description: 'steady fib per region:chain (item 60, empty = none)', default: '16:1,4:1,1:1,16:0' }
   pull_request:
     paths:
       - '.github/workflows/webkit-bench.yml'
@@ -35,10 +37,12 @@ jobs:
           timeout 300 docker run --rm -v "$PWD":/w -w /w alpine:3.21 sh -c '
             apk add -q gcc musl-dev &&
             gcc -O2 -static -o out/cpubench tests/src/cpubench.c &&
+            gcc -O2 -static -o out/x86fib tests/src/x86fib.c &&
             mkdir /x && apk add -q --root /x --initdb --allow-untrusted --no-scripts \
               --repositories-file /etc/apk/repositories python3 &&
             tar -C /x -cf out/zpkgs.tar usr/bin usr/lib lib etc/ssl 2>/dev/null'
           cp tests/bench/browser.sh out/
+          printf '/root/x86fib 10 36\necho "@@T done"\n' > out/fib.sh
           e=$(awk -F '\t' '$1 == "python3"' overlay/etc/inksoc/wasm-catalog)
           mkdir -p $RUNNER_TEMP/pw/usr/local/bin
           timeout 300 curl -fsSL --retry 3 -o $RUNNER_TEMP/pw/usr/local/bin/python3 "$(printf '%s' "$e" | cut -f2)"
@@ -51,7 +55,8 @@ jobs:
         env:
           HOTS: ${{ github.event_name == 'workflow_dispatch' && inputs.hots || '' }}
           REGIONS: ${{ github.event_name == 'workflow_dispatch' && inputs.regions || '16,32,64' }}
-          STACKS: ${{ github.event_name == 'workflow_dispatch' && inputs.stacks || '1,0' }}
+          STACKS: ${{ github.event_name == 'workflow_dispatch' && inputs.stacks || '' }}
+          FIBS: ${{ github.event_name == 'workflow_dispatch' && inputs.fibs || '16:1,4:1,1:1,16:0' }}
         run: timeout 1200 node tests/bench/browser.mjs
   boot:
     # Item 50 (measurement only): the real page boot to the prompt, Chromium vs WebKit (no big inputs).
