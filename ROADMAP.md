@@ -62,7 +62,7 @@ Auditoria ENOSYS (item 27, bench #49, x86 Alpine; linux-test: só 435):
 | 38 | roteiro de teste à mão no iPad A16 (XeOS) e iPhone Safari: `docs/TESTE-IPAD.md` | 3 | 1 | PR aberto (só documentação; comandos conferidos em app.js, index.html, overlay e catálogo) | Paulo preenche a tabela do roteiro |
 | 39 | ponteiro cwd no catálogo (KNOWN em wasi.js por tamanho + FNV de 8 KB; 14 módulos) | 3 | 1 | feito (#62: detecção cwd frio 131 → 0,3 ms; py-start frio 216 → 133 ms (perfil do bench; base = números antigos do ROADMAP, não mesma rodada)) | py-start frio menor |
 | 40 | retomada 10: x86 JIT ret/call indireto encadeado (pilha-sombra; alvo: 416M saídas por rip calculado do sort + calls ~27x) | x86 | 2 | aberto (aval Paulo 24/11: até 2 tentativas; ganho est. sort 10x → ≤ 6x, calls 27x → ≤ 15x) | bench sort/calls melhor |
-| 41 | x86: AES-NI (aesenc/aesdec/aeskeygenassist/pclmulqdq via helper) + CPUID | x86 | 2 | aberto (aval Paulo 24/11: até 2 tentativas; aes-128-cbc 31 MB/s caiu c/ SSSE3; ganho est. ≥ 3x) | openssl aes-128-cbc > 39 MB/s |
+| 41 | x86: AES-NI (aesenc/aesdec/aeskeygenassist/pclmulqdq via helper) + CPUID | x86 | 2 | feito (#65, 1 rodada: AESENC/ENCLAST/DEC/DECLAST/IMC/KEYGENASSIST + PCLMULQDQ no interpretador (aes.rs, tabela T de 256 por sentido gerada em const), JIT via helper `jit_op3` sem flags; CPUID leaf 1 ECX bits 1 e 25; x86aes = 37024 checagens iguais ao modelo C e ao nativo (EPYC 7763). libcrypto mesmo run: aes-128-cbc 32,0 → 47,8 MB/s (AES-NI mascarado = vpaes; 1,5x; nativo 1134 MB/s = 24x), cifra igual nos 2 caminhos; chacha/sha iguais. Ganho est. ≥ 3x não veio: ~335 ns por bloco de 16 B ≈ 60 instr x86 (laço do aesni_cbc_encrypt c/ salto p/ trás por rodada) ≈ 5,5 ns/instr, helper + rodada Rust ~15–30 ns cada. Próximo possível (sem prova): rodada AES inline em wasm (tabela TE na memória do motor) ou CBC decrypt/CTR/GCM (paralelos) no bench; bench cpu/py sem piora) | openssl aes-128-cbc > 39 MB/s |
 | 42 | medir float x86 (perfil: onde vai o tempo do bench float ~8x) → prova p/ item 11 | x86 | 1 | aberto (aval Paulo 24/11: até 2 tentativas p/ 11) | perfil no PR |
 | — | io_uring, bpf, setns, seccomp, perf, pidfd, memfd | 0 | — | não apareceram; ficam ENOSYS |
 
@@ -139,6 +139,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-24 | 1 | 36: retomada hashes WASM + WASI /mnt grande | #54 | 2 |
 | 2026-11-24 | 1 | Hub: Cache-Control immutable p/ ?v= (inkdoshub.github.io #108) | #108 | 1 |
 | 2026-11-24 | 1 | 39: ponteiro cwd no catálogo | #62 | 1 |
+| 2026-11-24 | 2 | 41: x86 AES-NI + PCLMULQDQ (aes-128-cbc 32 → 48 MB/s) | #65 | 2 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
