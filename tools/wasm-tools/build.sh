@@ -190,7 +190,7 @@ b_hashsum() { # md5sum, sha1sum, sha224/256/384/512sum, b2sum: one small C progr
   $CC -O3 -Wall "$here/hashsum/hashsum.c" -o "$OUT/hashsum.wasm" $CWDL
 }
 
-b_coreutils() { # uutils coreutils (Rust, wasm32-wasip1), multicall "coreutils": the utilities upstream builds for WASI (feat_wasm), picked by argv[0] (ls, cat, cp, sort...)
+b_coreutils() { # uutils coreutils 0.8.0 (Rust, wasm32-wasip1), multicall "coreutils": the utilities upstream builds for WASI (feat_wasm), picked by argv[0] (ls, cat, cp, sort...)
   fetch uutils/coreutils $UUTILS uutils
   rustup target add wasm32-wasip1
   (cd "$WORK/uutils" && env -u CC -u CXX -u AR -u RANLIB -u NM -u STRIP CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=true \

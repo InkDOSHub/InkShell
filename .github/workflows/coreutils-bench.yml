@@ -1,0 +1,40 @@
+name: Coreutils bench
+# Item 56 (proof of gain): busybox x86 (JIT) vs uutils coreutils WebAssembly (the catalog's `coreutils`),
+# same run, in Chromium (V8) and WebKit (JavaScriptCore, the iPad's engine): ls -la, sort, wc, cat, cp, cut, tr,
+# uniq, head/tail, seq, cp -r, start cold and warm. 3 reps, median. Runs when started by hand or when a PR
+# touches these files.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/coreutils-bench.yml'
+      - 'tests/bench/browser-coreutils*'
+      - 'overlay/etc/inksoc/wasm-catalog'
+permissions:
+  contents: read
+concurrency:
+  group: coreutils-bench-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: The catalog's coreutils (sha256 checked) and one link per program
+        run: |
+          mkdir -p out/tools $RUNNER_TEMP/pw/usr/local/bin
+          e=$(awk -F '\t' '$1 == "coreutils"' overlay/etc/inksoc/wasm-catalog); f=out/tools/coreutils
+          timeout 300 curl -fsSL --retry 3 -o "$f" "$(printf '%s' "$e" | cut -f2)"
+          echo "$(printf '%s' "$e" | cut -f3)  $f" | sha256sum -c
+          install -m 755 "$f" $RUNNER_TEMP/pw/usr/local/bin/coreutils
+          for l in $(printf '%s' "$e" | cut -f6 | tr ',' ' '); do [ "$l" = /usr/local/bin/coreutils ] || ln -s coreutils "$RUNNER_TEMP/pw$l"; done
+          tar --format=ustar -C $RUNNER_TEMP/pw -cf out/ztools.tar usr
+          cp tests/bench/browser-coreutils.sh out/
+          ls -la out out/tools; tar tvf out/ztools.tar | head -5
+      - name: Playwright (Chromium + WebKit)
+        run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit'
+      - name: busybox vs WebAssembly in both browsers
+        run: timeout 2100 node tests/bench/browser-coreutils.mjs
