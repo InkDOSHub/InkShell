@@ -62,6 +62,7 @@ const env = {
 x = (await WebAssembly.instantiate(fs.readFileSync(wasmPath), { env })).instance.exports;
 mem = x.memory;
 if (process.env.INKSOC_HOT && x.set_jit_hot) x.set_jit_hot(+process.env.INKSOC_HOT);
+if (process.env.INKSOC_DEDUPE === '0' && x.set_jit_dedupe) x.set_jit_dedupe(0); // A/B: regions copy compiled blocks (item 49)
 if (process.env.INKSOC_CHAIN === '0' && x.set_jit_chain) x.set_jit_chain(0); // A/B: JIT exits not chained
 const put = (b) => { const p = x.buffer(b.length); new Uint8Array(mem.buffer, p, b.length).set(b); };
 const add = (name, data) => { const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 1 + d.length); b.set(nm); b.set(d, nm.length + 1); put(b); x.add_file(); };

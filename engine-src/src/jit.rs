@@ -43,6 +43,14 @@ fn chain_on() -> bool {
     CHAIN.load(core::sync::atomic::Ordering::Relaxed)
 }
 
+static DEDUPE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+/// Regions without copies (item 49; on by default, 0 = off to measure): a block that already has
+/// compiled code is not copied into a new region unless it lies on a loop of that region.
+#[no_mangle]
+pub extern "C" fn set_jit_dedupe(on: u32) {
+    DEDUPE.store(on != 0, core::sync::atomic::Ordering::Relaxed);
+}
+
 static HOT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(40);
 /// Visits before a block is compiled (default 40). Run-time settable in every build (item 48 sweeps
 /// it in Chromium and WebKit; item 46's jitprobe build uses it too).
@@ -3650,7 +3658,7 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
     // here unless it lies on a loop inside this region (loops stay internal br): its edge becomes
     // an exit that chains to that code. Blocks only reachable through it go too.
     let n = blocks.len();
-    if n > 1 {
+    if n > 1 && DEDUPE.load(core::sync::atomic::Ordering::Relaxed) {
         let mut reach = succ.clone();
         for m in 0..n {
             for i in 0..n {
