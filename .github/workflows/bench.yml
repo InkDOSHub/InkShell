@@ -36,6 +36,7 @@ jobs:
           docker run --rm -v "$PWD":/w -w /w alpine:3.21 sh -c '
             apk add -q gcc musl-dev &&
             gcc -O2 -static -o out/cpubench tests/src/cpubench.c &&
+            gcc -O2 -static -o out/x86float tests/src/x86float.c &&
             mkdir /x && apk add -q --root /x --initdb --allow-untrusted --no-scripts \
               --repositories-file /etc/apk/repositories python3 zip unzip &&
             tar -C /x -cf out/zpkgs.tar usr/bin usr/lib lib etc/ssl 2>/dev/null; ls -la out'
@@ -119,6 +120,21 @@ jobs:
           INKSOC_WASI_PROFILE=1 WASI_PROFILE_JSON=out/wasiprof.json timeout 900 node tests/bench-engine.mjs out/engine.wasm bench.sh=out/bench.sh zpywasm.tar=out/zpywasm.tar -- sh /root/bench.sh pystart > out/wasi-pystart.txt 2>&1 || true
           { echo "## Perfil da abertura do python3 WASM"; echo; node tests/bench/wasiprof.mjs out/wasiprof.json out/wasi-pystart.txt out/native-pystart.txt; } > out/wasiprof.md
           cat out/wasiprof.md | tee -a $GITHUB_STEP_SUMMARY
+      - name: Float microbench (tests/src/x86float.c; item 42, measurement only)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          out/x86float > out/native-float.txt; cat out/native-float.txt
+          printf '/root/x86float\necho "@@T done"\n' > out/fl.sh
+          timeout 600 node tests/bench-engine.mjs out/engine.wasm x86float=out/x86float fl.sh=out/fl.sh -- sh /root/fl.sh | cut -f2 | grep '^x86float' > out/engine-float.txt || true
+          cat out/engine-float.txt
+          { echo "## Float x86: laço do cpubench instrução a instrução (ns/iteração)"; echo; echo '| variante | nativo | motor | motor − anterior | x nativo |'; echo '|---|---:|---:|---:|---:|'
+            paste -d'|' out/native-float.txt out/engine-float.txt | awk -F'|' '{ split($1, a, /  +| /); split($2, b, /  +| /);
+              n = $1; sub(/^x86float /, "", n); sub(/ +[0-9.]+ ns.*/, "", n);
+              match($1, /[0-9.]+ ns/); nv = substr($1, RSTART, RLENGTH - 3); match($2, /[0-9.]+ ns/); ev = substr($2, RSTART, RLENGTH - 3);
+              d = (NR > 1 && NR <= 5) ? sprintf("%+.2f", ev - p) : "—"; p = ev;
+              printf "| %s | %.2f | %.2f | %s | %.1fx |\n", n, nv, ev, d, (nv > 0 ? ev / nv : 0) }'; } > out/floatprof.md
+          cat out/floatprof.md | tee -a $GITHUB_STEP_SUMMARY
       - name: Profile (engine built with --features ophist; measurement only, not published)
         if: ${{ !cancelled() }}
         continue-on-error: true
@@ -126,7 +142,7 @@ jobs:
           cd engine-src && cargo build --release --target wasm32-unknown-unknown --features ophist
           cp target/wasm32-unknown-unknown/release/inksoc.wasm ../out/engine-ophist.wasm && cd ..
           PROFILE_JSON=out/profile.json timeout 1800 node tests/bench-engine.mjs out/engine-ophist.wasm cpubench=out/cpubench bench.sh=out/bench.sh -- sh /root/bench.sh cpu io 16 > out/profile-cpu.log 2>&1 || true
-          { echo "## Perfil x86 do cpubench + sha256sum 16 MB (JIT vs interpretador)"; echo; node tests/bench/profile.mjs out/profile.json; } > out/profile.md
+          { echo "## Perfil x86 do cpubench + sha256sum 16 MB (JIT vs interpretador)"; echo; node tests/bench/profile.mjs out/profile.json; echo; cat out/floatprof.md 2>/dev/null; } > out/profile.md
           cat out/profile.md | tee -a $GITHUB_STEP_SUMMARY
       - name: Report
         if: always()
