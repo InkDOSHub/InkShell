@@ -1,0 +1,58 @@
+name: v86 compare
+# Item 58 (measurement only): our x86 engine (committed engine.wasm) vs v86 (copy.sh/v86, BSD-2) in Chromium and WebKit,
+# same runner, same job, same C source (tests/src/v86bench.c; x86-64 build for us, i386 build for v86, both musl static).
+# v86 (npm release build), its BIOS images and its buildroot kernel are downloaded here for the measurement only:
+# nothing from v86 is committed or served by the app.
+on:
+  workflow_dispatch:
+    inputs:
+      reps: { description: 'Runs per engine and browser (median)', default: '3' }
+  pull_request:
+    paths:
+      - '.github/workflows/v86-compare.yml'
+      - 'tests/bench/v86-compare*'
+      - 'tests/src/v86bench.c'
+permissions:
+  contents: read
+concurrency:
+  group: v86-compare-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Build the workload twice (x86-64 and i386, musl static) and the v86 initramfs
+        run: |
+          mkdir -p out/v86 out/initrd
+          timeout 300 docker run --rm -v "$PWD":/w -w /w alpine:3.21 sh -c \
+            'apk add -q gcc musl-dev linux-headers && gcc -O2 -static -o out/cb64 tests/src/v86bench.c'
+          timeout 300 docker run --rm --platform linux/386 -v "$PWD":/w -w /w i386/alpine:3.21 sh -c \
+            'apk add -q gcc musl-dev linux-headers && gcc -O2 -static -march=pentium4 -msse2 -mfpmath=sse -o out/cb32 tests/src/v86bench.c'
+          file out/cb64 out/cb32 || true
+          cp out/cb32 out/initrd/init
+          (cd out/initrd && mkdir -p dev && find . | cpio -o -H newc -R 0:0 --quiet > ../initrd.cpio)
+          ls -la out
+      - name: v86 release build, BIOS images, buildroot kernel (downloaded, not committed)
+        run: |
+          cd out/v86
+          timeout 120 npm pack v86@0.5.476 -s
+          tar xzf v86-0.5.476.tgz
+          cp package/build/libv86.js package/build/v86.wasm package/build/v86-fallback.wasm .
+          timeout 120 curl -fsSL --retry 3 -o seabios.bin https://raw.githubusercontent.com/copy/v86/master/bios/seabios.bin
+          timeout 120 curl -fsSL --retry 3 -o vgabios.bin https://raw.githubusercontent.com/copy/v86/master/bios/vgabios.bin
+          timeout 300 curl -fsSL --retry 3 -o bzImage https://i.copy.sh/buildroot-bzimage68.bin
+          rm -rf package v86-0.5.476.tgz
+          sha256sum * | tee ../v86-files.sha256
+      - name: Playwright (Chromium + WebKit)
+        run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit'
+      - name: Compare, 4 engines x 2 browsers
+        env:
+          REPS: ${{ inputs.reps || '3' }}
+        run: timeout 2100 node tests/bench/v86-compare.mjs
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with: { name: v86-compare, path: out/v86-compare.json }
