@@ -43,18 +43,6 @@ fn chain_on() -> bool {
     CHAIN.load(core::sync::atomic::Ordering::Relaxed)
 }
 
-static STACK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
-/// Stack page cache (on by default; 0 = off, to measure): accesses based on RSP (push, pop,
-/// call, ret, [rsp+disp]) first try the page of the last stack access that hit the TLB writable,
-/// kept in two locals of the block function (one compare, no TLB lookup).
-#[no_mangle]
-pub extern "C" fn set_jit_stack(on: u32) {
-    STACK.store(on != 0, core::sync::atomic::Ordering::Relaxed);
-}
-fn stack_on() -> bool {
-    STACK.load(core::sync::atomic::Ordering::Relaxed)
-}
-
 const HOT: u32 = 40; // visits before a block is compiled
 const MAX_INS: usize = 80;
 const NONE: u32 = u32::MAX;
@@ -600,18 +588,14 @@ const F_COND: u32 = 3;
 const L_E: u32 = 0; // TLB entry address
 const L_C: u32 = 1; // i32 scratch (conditions)
 const L_B: u32 = 2; // next block of the region
-const L_SB: u32 = 3; // stack page cache: the TLB entry's add for the cached page
-const N_I32: u32 = 4;
+const N_I32: u32 = 3;
 const R0: u32 = N_I32; // 16 guest registers
 const L_A: u32 = R0 + 16; // address of the memory operand
 const L_A2: u32 = R0 + 17; // second address (stack)
 const L_V: u32 = R0 + 18; // page number scratch
 const L_T: u32 = R0 + 19; // value scratch
 const L_IC: u32 = R0 + 20; // instruction count while the region runs (opt)
-const L_SPB: u32 = R0 + 21; // stack page cache: base address of the cached page (SP_NONE = empty)
-const FIRST_TMP: u32 = R0 + 22;
-// no guest address minus this is below 4096: the empty cache never matches
-const SP_NONE: u64 = 0x8000_0000_0000_0000;
+const FIRST_TMP: u32 = R0 + 21;
 const MAX_LOCALS: u32 = 900;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -652,9 +636,6 @@ struct G {
     cur: usize,              // index of the block being emitted
     hints: Vec<(usize, u8)>, // branch hints: code position of an `if`, 1 = usually taken, 0 = rarely
     chain: bool,             // exits tail-call the next block found in the dispatcher's cache
-    sc: bool,                // stack page cache on (locals L_SPB/L_SB)
-    ea_stk: bool,            // the last effective address was RSP-based
-    a_stk: bool,             // L_A holds an RSP-based address
 }
 
 macro_rules! off {
@@ -687,9 +668,6 @@ impl G {
         self.last_get = (self.c.len(), l);
     }
     fn set(&mut self, l: u32) {
-        if l == L_A {
-            self.a_stk = core::mem::take(&mut self.ea_stk);
-        }
         self.track(l);
         self.b(LSET);
         self.u(l as u64);
@@ -734,33 +712,6 @@ impl G {
     fn call(&mut self, f: u32) {
         self.b(CALL);
         self.u(f as u64);
-        if self.sc && f != F_COND {
-            // the engine may have changed the TLB or evicted the cached page
-            self.i64c(SP_NONE);
-            self.set(L_SPB);
-        }
-    }
-    /// Is local `a` an RSP-based address (stack page cache)?
-    fn stk(&self, a: u32) -> bool {
-        self.sc && (a == L_A2 || (a == L_A && self.a_stk))
-    }
-    /// Stack page cache check for n bytes at local `a`: leaves i32 "inside the cached page".
-    fn sc_check(&mut self, a: u32, n: u32) {
-        self.get(a);
-        self.get(L_SPB);
-        self.b(I64SUB);
-        self.i64c(4096 - n as u64);
-        self.b(I64LEU);
-    }
-    /// After a TLB hit for a stack access (writable entry at L_E): cache its page.
-    fn sc_fill(&mut self, a: u32) {
-        self.get(a);
-        self.i64c(!0xFFFu64);
-        self.b(I64AND);
-        self.set(L_SPB);
-        self.get(L_E);
-        self.mem(I32LOAD, 2, self.tlb + 8);
-        self.set(L_SB);
     }
 
     // cpu struct fields (absolute addresses as load/store offsets from 0)
@@ -925,23 +876,6 @@ impl G {
     /// Pushes the size-bit value at address local `a`.
     fn load(&mut self, a: u32, size: u32) {
         self.cnt(3);
-        let sc = self.stk(a);
-        if sc {
-            self.sc_check(a, size / 8);
-            self.if_hint(T_I64, true);
-            self.get(L_SB);
-            self.get(a);
-            self.b(I32WRAP);
-            self.b(I32ADD);
-            let (op, al) = match size {
-                8 => (0x31, 0),
-                16 => (0x33, 1),
-                32 => (0x35, 2),
-                _ => (I64LOAD, 3),
-            };
-            self.mem(op, al, self.pool);
-            self.b(ELSE);
-        }
         self.tlb_check(a, size / 8, false);
         #[cfg(feature = "ab_tlb")]
         {
@@ -981,15 +915,6 @@ impl G {
                 self.b(END);
             }
         } else {
-            if sc {
-                // cache the page when its entry is writable (a clean page is not, until written)
-                self.get(L_E);
-                self.mem(I32LOAD8U, 0, self.tlb + 12);
-                self.b(IF);
-                self.b(VOID);
-                self.sc_fill(a);
-                self.b(END);
-            }
             self.host(a);
             self.mem(op, al, self.pool);
         }
@@ -998,32 +923,11 @@ impl G {
         self.i32c(size as i32);
         self.call(F_RD);
         self.b(END);
-        if sc {
-            self.b(END);
-        }
     }
 
     /// Stores local v (size bits) at address local `a`.
     fn store(&mut self, a: u32, v: u32, size: u32) {
         self.cnt(4);
-        let sc = self.stk(a);
-        if sc {
-            self.sc_check(a, size / 8);
-            self.if_hint(VOID, true);
-            self.get(L_SB);
-            self.get(a);
-            self.b(I32WRAP);
-            self.b(I32ADD);
-            self.get(v);
-            let (op, al) = match size {
-                8 => (0x3C, 0),
-                16 => (0x3D, 1),
-                32 => (0x3E, 2),
-                _ => (I64STORE, 3),
-            };
-            self.mem(op, al, self.pool);
-            self.b(ELSE);
-        }
         self.tlb_check(a, size / 8, true);
         #[cfg(feature = "ab_tlb")]
         {
@@ -1065,9 +969,6 @@ impl G {
                 self.b(END);
             }
         } else {
-            if sc {
-                self.sc_fill(a);
-            }
             self.host(a);
             self.get(v);
             self.mem(op, al, self.pool);
@@ -1078,14 +979,10 @@ impl G {
         self.i32c(size as i32);
         self.call(F_WR);
         self.b(END);
-        if sc {
-            self.b(END);
-        }
     }
 
     /// Pushes the effective address of a memory operand (no segment prefix).
     fn ea(&mut self, m: &ModRm, next: u64) {
-        self.ea_stk = false;
         if self.m32 {
             if m.riprel {
                 self.i64c(m.disp as u32 as u64);
@@ -1104,7 +1001,6 @@ impl G {
             return;
         }
         let mut any = false;
-        self.ea_stk = m.base == Some(4);
         if let Some(b) = m.base {
             self.ensure(b);
             self.get(R0 + b as u32);
@@ -3766,18 +3662,10 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
         hints: Vec::new(),
         cur: 0,
         chain: chain_on(),
-        // multi-core: another core may change the TLB at any time
-        sc: stack_on() && opt() && !crate::mmu::strong(),
-        ea_stk: false,
-        a_stk: false,
     };
     if lic {
         g.cpu_ld64(off!(icount));
         g.set(L_IC);
-    }
-    if g.sc {
-        g.i64c(SP_NONE);
-        g.set(L_SPB);
     }
     g.b(0x03);
     g.b(VOID); // loop: every jump between blocks comes back here
