@@ -2679,6 +2679,23 @@ fn sse(g: &mut G, i: &Ins) -> Option<bool> {
         g.simd(sop);
         g.x_st(r);
     };
+    // Same-register idioms: xorps/xorpd/andnps/andnpd/pxor/pandn/psub* x,x = 0, pcmpeq* x,x = all ones.
+    // Constant 16-byte store with no read of x (a v128 load right after a narrow store of the
+    // previous op stalls on store forwarding).
+    if !mem && r == x {
+        let fill = match op {
+            0x55 | 0x57 if kind < 2 => Some(0u8),
+            0xDF | 0xEF | 0xF8..=0xFB if kind == 1 => Some(0),
+            0x74..=0x76 if kind == 1 => Some(0xFF),
+            _ => None,
+        };
+        if let Some(f) = fill {
+            g.st_base();
+            g.vconst([f; 16]);
+            g.x_st(r);
+            return Some(true);
+        }
+    }
     let ok = match op {
         // moves into xmm r
         0x10 | 0x28 | 0x6F => match (op, kind) {
