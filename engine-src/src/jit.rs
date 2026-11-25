@@ -43,17 +43,16 @@ fn chain_on() -> bool {
     CHAIN.load(core::sync::atomic::Ordering::Relaxed)
 }
 
-const HOT: u32 = 40; // visits before a block is compiled
+static HOT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(40);
+/// Visits before a block is compiled (default 40). Run-time settable in every build (item 48 sweeps
+/// it in Chromium and WebKit; item 46's jitprobe build uses it too).
+#[no_mangle]
+pub extern "C" fn set_jit_hot(n: u32) {
+    HOT.store(n.max(1), core::sync::atomic::Ordering::Relaxed);
+}
 #[inline(always)]
 fn hot() -> u32 {
-    #[cfg(feature = "jitprobe")]
-    {
-        probe::HOT_V.load(core::sync::atomic::Ordering::Relaxed)
-    }
-    #[cfg(not(feature = "jitprobe"))]
-    {
-        HOT
-    }
+    HOT.load(core::sync::atomic::Ordering::Relaxed)
 }
 const MAX_INS: usize = 80;
 const NONE: u32 = u32::MAX;
@@ -3937,12 +3936,11 @@ pub extern "C" fn prof_ctr(i: u32) -> f64 {
     }
 }
 
-/// jitprobe build (measurement only, item 46): HOT set at run time, and the region being handed to
+/// jitprobe build (measurement only, item 46; HOT via set_jit_hot in any build): the region being handed to
 /// host_jit (block heads, guest instructions, translate time) readable from the host inside host_jit.
 /// JIT code is the same as the default build's.
 #[cfg(feature = "jitprobe")]
 pub mod probe {
-    pub static HOT_V: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(super::HOT);
     static mut HEADS: Vec<u64> = Vec::new();
     static mut INS: u32 = 0;
     static mut TR_MS: f64 = 0.0;
@@ -3956,10 +3954,6 @@ pub mod probe {
     }
     pub fn translated(ms: f64) {
         unsafe { TR_MS = ms }
-    }
-    #[no_mangle]
-    pub extern "C" fn set_jit_hot(n: u32) {
-        HOT_V.store(n.max(1), core::sync::atomic::Ordering::Relaxed);
     }
     /// 0 = number of heads, 1 = guest instructions, 2 = translate ms (Rust side, before host_jit)
     #[no_mangle]
