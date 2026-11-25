@@ -179,7 +179,7 @@ pub struct Fault;
 
 /// What every core shares: the frames of real RAM and the page table.
 pub struct MmuShared {
-    pool: Vec<u8>,
+    pool: &'static mut [u8],
     frames: Vec<Frame>,
     free: Vec<u32>,
     /// freed frames other cores may still reach through a stale TLB entry: (epoch, frame)
@@ -248,11 +248,26 @@ pub fn set_strong(on: bool) { STRONG.store(on, Relaxed); }
 #[inline(always)]
 pub fn strong() -> bool { STRONG.load(Relaxed) }
 
+/// The pool straight from memory.grow: fresh wasm pages are zero (wasm spec), so nothing is
+/// written. `vec![0; n]` went through calloc, which wrote all of it: 256 MB touched at init
+/// (~100 ms of x.init in V8 and JSC, item 53) and committed up front instead of page by page.
+/// Never freed (the MMU lives as long as the page).
+fn zeroed_pool(len: usize) -> &'static mut [u8] {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let at = core::arch::wasm32::memory_grow(0, len.div_ceil(65536));
+        if at != usize::MAX {
+            return unsafe { core::slice::from_raw_parts_mut((at * 65536) as *mut u8, len) };
+        }
+    }
+    Box::leak(vec![0u8; len].into_boxed_slice())
+}
+
 impl Mmu {
     pub fn new(pool_mb: usize, target_mb: u64) -> Mmu {
         let n = pool_mb * 256;
         let sh = Box::leak(Box::new(MmuShared {
-            pool: { let p = vec![0u8; n * PAGE as usize]; crate::imark(2); p },
+            pool: { let p = zeroed_pool(n * PAGE as usize); crate::imark(2); p },
             frames: { let f = vec![Frame { vpn: 0, used: false, referenced: false, dirty: false, asid: 0, protect: 4 }; n]; crate::imark(3); f },
             free: { let f = (0..n as u32).rev().collect(); crate::imark(4); f }, limbo: Vec::new(),
             hand: 0,

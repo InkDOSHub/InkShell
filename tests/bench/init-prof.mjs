@@ -1,17 +1,17 @@
 // Item 53 (measurement only): where x.init's ~150 ms goes (item 50). Same code in node (V8) and, with
 // playwright installed, in Chromium and WebKit (JavaScriptCore). Uses an engine built with
 // `--features initprof` (export init_prof: time marks inside init) and the published engine.wasm.
-// usage (repo root, CI): node tests/bench/init-prof.mjs out/engine-initprof.wasm [engine.wasm]
+// usage (repo root, CI): node tests/bench/init-prof.mjs out/engine-initprof.wasm [engine.wasm] [main's engine.wasm]
 // Prints markdown (and appends it to $GITHUB_STEP_SUMMARY).
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 
-const PROF = process.argv[2] || 'out/engine-initprof.wasm', PUB = process.argv[3] || 'engine.wasm';
+const PROF = process.argv[2] || 'out/engine-initprof.wasm', PUB = process.argv[3] || 'engine.wasm', MAIN = process.argv[4] || PUB;
 const REPS = 5, BREPS = 3, POOLS = [256, 16]; // fewer reps in browsers: each instance keeps 256+ MB until GC
 
 // Runs inside node or a page: fresh instance per rep (fresh memory, as on a page load).
-async function measure({ prof, pub, reps, pools }) {
+async function measure({ prof, pub, main, reps, pools }) {
   const now = () => performance.now();
   const med = (a) => { const s = a.slice().sort((x, y) => x - y); return s[(s.length - 1) >> 1]; };
   const stub = (mod) => {
@@ -19,9 +19,9 @@ async function measure({ prof, pub, reps, pools }) {
     for (const i of WebAssembly.Module.imports(mod)) if (i.kind === 'function') env[i.name] = i.name === 'host_now_ms' ? () => performance.now() : i.name === 'host_epoch_ms' ? () => Date.now() : () => 0;
     return { env };
   };
-  const out = { steps: {}, total: {}, pub: {}, base: {}, mem: {} };
+  const out = { steps: {}, total: {}, pub: {}, main: {}, base: {}, mem: {} };
   const names = [['shared', 0, 1], ['pool Vec (256 MB calloc)', 1, 2], ['frames Vec', 2, 3], ['free list', 3, 4], ['MmuShared box', 4, 5], ['TLB Vec', 5, 6], ['Cpu', 6, 7], ['Jit tables', 7, 9], ['inside init (0→9)', 0, 9]];
-  const mods = { prof: await WebAssembly.compile(prof), pub: await WebAssembly.compile(pub) };
+  const mods = { prof: await WebAssembly.compile(prof), pub: await WebAssembly.compile(pub), main: await WebAssembly.compile(main) };
   for (const [k, m] of Object.entries(mods)) {
     for (const pool of pools) {
       const call = [], inst = [], per = names.map(() => []);
@@ -38,7 +38,7 @@ async function measure({ prof, pub, reps, pools }) {
         after = x.memory.buffer.byteLength;
         if (k === 'prof') names.forEach(([, a, b], i) => per[i].push(x.init_prof(b) - x.init_prof(a)));
       }
-      (k === 'prof' ? out.total : out.pub)[pool] = { call: med(call), first: call[0], inst: med(inst) };
+      out[k === 'prof' ? 'total' : k][pool] = { call: med(call), first: call[0], inst: med(inst) };
       if (k === 'prof' && pool === pools[0]) names.forEach(([n], i) => { out.steps[n] = { med: med(per[i]), first: per[i][0] }; });
       if (k === 'pub') out.mem[pool] = [before / 1048576, after / 1048576];
     }
@@ -57,9 +57,9 @@ async function measure({ prof, pub, reps, pools }) {
   return out;
 }
 
-const prof = fs.readFileSync(PROF), pub = fs.readFileSync(PUB);
+const prof = fs.readFileSync(PROF), pub = fs.readFileSync(PUB), main = fs.readFileSync(MAIN);
 const results = {};
-results.node = await measure({ prof, pub, reps: REPS, pools: POOLS });
+results.node = await measure({ prof, pub, main, reps: REPS, pools: POOLS });
 
 let pw = null;
 try { pw = await import('playwright'); } catch { console.log('(playwright not installed: node only)'); }
@@ -75,11 +75,11 @@ if (pw) {
     try {
       const p = await b.newPage();
       await p.goto(`http://localhost:${PORT}/p.html`);
-      results[`${n} ${b.version()}`] = await p.evaluate(async ({ src, a, c, reps, pools }) => {
+      results[`${n} ${b.version()}`] = await p.evaluate(async ({ src, a, c, d, reps, pools }) => {
         const f = (0, eval)('(' + src + ')');
         const ld = async (u) => new Uint8Array(await (await fetch(u)).arrayBuffer());
-        return f({ prof: await ld(a), pub: await ld(c), reps, pools });
-      }, { src: measure.toString(), a: '/' + PROF, c: '/' + PUB, reps: BREPS, pools: POOLS });
+        return f({ prof: await ld(a), pub: await ld(c), main: await ld(d), reps, pools });
+      }, { src: measure.toString(), a: '/' + PROF, c: '/' + PUB, d: '/' + MAIN, reps: BREPS, pools: POOLS });
     } catch (e) { console.log(`[${n}] ${e}`); } finally { await b.close().catch(() => {}); }
   }
   srv.close();
@@ -92,7 +92,8 @@ md += `| step (pool 256 MB) | ${rt.join(' | ')} |\n|---|${rt.map(() => '---').jo
 for (const s of Object.keys(results.node.steps)) md += `| ${s} | ${rt.map((r) => `${f(results[r].steps[s]?.med)} (${f(results[r].steps[s]?.first)})`).join(' | ')} |\n`;
 for (const pool of POOLS) {
   md += `| x.init call, initprof build, pool ${pool} | ${rt.map((r) => `${f(results[r].total[pool]?.call)} (${f(results[r].total[pool]?.first)})`).join(' | ')} |\n`;
-  md += `| x.init call, published engine.wasm, pool ${pool} | ${rt.map((r) => `${f(results[r].pub[pool]?.call)} (${f(results[r].pub[pool]?.first)})`).join(' | ')} |\n`;
+  md += `| x.init call, this branch's engine.wasm, pool ${pool} | ${rt.map((r) => `${f(results[r].pub[pool]?.call)} (${f(results[r].pub[pool]?.first)})`).join(' | ')} |\n`;
+  md += `| x.init call, main's engine.wasm, pool ${pool} | ${rt.map((r) => `${f(results[r].main[pool]?.call)} (${f(results[r].main[pool]?.first)})`).join(' | ')} |\n`;
 }
 md += `| instantiate (published, pool 256 run) | ${rt.map((r) => f(results[r].pub[256]?.inst)).join(' | ')} |\n`;
 md += `| wasm memory MB before → after init 256 | ${rt.map((r) => results[r].mem[256]?.map((v) => v.toFixed(0)).join(' → ')).join(' | ')} |\n`;

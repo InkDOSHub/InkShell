@@ -19,6 +19,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - name: Build engine with init marks
@@ -26,7 +27,8 @@ jobs:
           rustup target add wasm32-unknown-unknown
           cd engine-src && timeout 600 cargo build --release --target wasm32-unknown-unknown --features initprof
           mkdir -p ../out && cp target/wasm32-unknown-unknown/release/inksoc.wasm ../out/engine-initprof.wasm
+          cd .. && git show origin/main:engine.wasm > out/engine-main.wasm
       - name: Playwright (Chromium + WebKit)
         run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit'
       - name: x.init by sub-step (node, Chromium, WebKit)
-        run: timeout 300 node --expose-gc tests/bench/init-prof.mjs out/engine-initprof.wasm engine.wasm
+        run: timeout 300 node --expose-gc tests/bench/init-prof.mjs out/engine-initprof.wasm engine.wasm out/engine-main.wasm
