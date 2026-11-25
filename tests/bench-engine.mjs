@@ -43,15 +43,14 @@ const env = {
   host_jit: (p, n) => {
     try {
       const m = new WebAssembly.Module(new Uint8Array(mem.buffer, p, n).slice());
-      const i = new WebAssembly.Instance(m, { env: { memory: mem, rd: x.jit_rd, wr: x.jit_wr, step: x.jit_step, cond: x.jit_cond, table: x.__indirect_function_table } });
+      const i = new WebAssembly.Instance(m, { env: { memory: mem, rd: x.jit_rd, wr: x.jit_wr, step: x.jit_step, cond: x.jit_cond } });
       const t = x.__indirect_function_table, k = t.grow(1); t.set(k, i.exports.f); return k;
     } catch (e) { if (!jitErr) { jitErr = 1; console.error('host_jit: ' + e.message); } return -1; }
   },
 };
 x = (await WebAssembly.instantiate(fs.readFileSync(wasmPath), { env })).instance.exports;
 mem = x.memory;
-// wasm tail calls: JIT blocks chain to the next block (INKSOC_CHAIN=0 = off, A/B)
-if (x.set_jit_chain) x.set_jit_chain(process.env.INKSOC_CHAIN !== '0' && WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 4, 4, 1, 112, 0, 0, 10, 9, 1, 7, 0, 65, 0, 19, 0, 0, 11])) ? 1 : 0);
+if (process.env.INKSOC_CHAIN === '0' && x.set_jit_chain) x.set_jit_chain(0); // A/B: JIT exits not chained
 const put = (b) => { const p = x.buffer(b.length); new Uint8Array(mem.buffer, p, b.length).set(b); };
 const add = (name, data) => { const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 1 + d.length); b.set(nm); b.set(d, nm.length + 1); put(b); x.add_file(); };
 x.init(POOL, 8192);

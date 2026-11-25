@@ -58,5 +58,5 @@ for (const { name, o } of secs) {
   const top = o.map((v, k) => [k, v]).filter((x) => x[1] > 0).sort((a, b) => b[1] - a[1]).slice(0, 6);
   md += `| ${name} | ${M(tot)} | ${top.map(([k, v]) => `\`${op(k)}\` ${M(v)} (${pct(v, tot)})`).join(', ') || '—'} |\n`;
 }
-md += '\n_Motor com `--features ophist` (contadores ligados, tempos não comparáveis com o motor normal). "busca lenta" = falta no cache L1 do dispatcher (HashMap). Cada trace volta ao dispatcher; um bloco JIT também, salvo saída encadeada (tail call direto p/ o próximo bloco do cache L1). "rip fixo"/"rip calculado" = só as saídas que voltaram ao dispatcher._\n';
+md += '\n_Motor com `--features ophist` (contadores ligados, tempos não comparáveis com o motor normal). "busca lenta" = falta no cache L1 do dispatcher (HashMap). Cada trace volta ao dispatcher; um bloco JIT também, salvo saída encadeada (o bloco devolve o próximo bloco do cache L1 e o laço curto de jit::call o chama direto). "rip fixo"/"rip calculado" = só as saídas que voltaram ao dispatcher._\n';
 console.log(md);

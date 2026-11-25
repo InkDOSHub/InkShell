@@ -138,7 +138,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
     host_jit: (p, n) => {
       try {
         const m = new WebAssembly.Module(new Uint8Array(mem.buffer, p, n).slice());
-        const i = new WebAssembly.Instance(m, { env: { memory: mem, rd: x.jit_rd, wr: x.jit_wr, step: x.jit_step, cond: x.jit_cond, table: x.__indirect_function_table } });
+        const i = new WebAssembly.Instance(m, { env: { memory: mem, rd: x.jit_rd, wr: x.jit_wr, step: x.jit_step, cond: x.jit_cond } });
         const t = x.__indirect_function_table, k = t.grow(1);
         t.set(k, i.exports.f);
         return k;
@@ -157,8 +157,6 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   }
   x = (await WebAssembly.instantiate(wasm, { env })).instance.exports;
   mem = x.memory;
-  // wasm tail calls (return_call_indirect): JIT blocks jump straight to the next block
-  if (x.set_jit_chain) x.set_jit_chain(WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 4, 4, 1, 112, 0, 0, 10, 9, 1, 7, 0, 65, 0, 19, 0, 0, 11])) ? 1 : 0);
   const addFile = (name, data) => {
     const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 1 + d.length);
     b.set(nm); b.set(d, nm.length + 1); put(b); x.add_file();

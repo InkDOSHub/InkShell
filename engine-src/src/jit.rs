@@ -31,10 +31,10 @@ fn opt() -> bool {
     OPT.load(core::sync::atomic::Ordering::Relaxed)
 }
 
-static CHAIN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-/// The host supports wasm tail calls (return_call_indirect) and passes the function table to
-/// block modules as env.table: an exit then jumps straight to the next compiled block when the
-/// dispatcher's cache has it and the budget is not spent (no trip through the dispatcher).
+static CHAIN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+/// Chained exits (on by default; 0 = off, to measure): an exit whose target the dispatcher's
+/// cache has a compiled block for returns that block's function index while the budget lasts,
+/// and the dispatcher calls it at once (no checks, no lookup).
 #[no_mangle]
 pub extern "C" fn set_jit_chain(on: u32) {
     CHAIN.store(on != 0, core::sync::atomic::Ordering::Relaxed);
@@ -174,10 +174,16 @@ impl Jit {
     }
 }
 
+/// Runs block f, then every block its exits chain to (see G::chain_to).
 #[inline(always)]
-pub fn call(f: u32) {
-    let func: extern "C" fn() = unsafe { core::mem::transmute(f as usize) };
-    func();
+pub fn call(mut f: u32) {
+    loop {
+        let func: extern "C" fn() -> u32 = unsafe { core::mem::transmute(f as usize) };
+        f = func();
+        if f == NONE {
+            return;
+        }
+    }
 }
 
 static mut SHARED_MEM: bool = false;
@@ -1337,7 +1343,7 @@ impl G {
             self.chain_to(None, rip);
         }
         self.cnt(2);
-        self.b(RET);
+        self.ret();
     }
     /// Leaves the block for the address in local t.
     fn exit_dyn(&mut self, t: u32, n: u32) {
@@ -1352,11 +1358,17 @@ impl G {
             self.chain_to(Some(t), 0);
         }
         self.cnt(8);
+        self.ret();
+    }
+    /// Leaves the block function: -1 = back to the dispatcher (rip is in Cpu).
+    fn ret(&mut self) {
+        self.i32c(-1);
         self.b(RET);
     }
     /// After an exit has stored rip and icount: while the budget lasts, a target the dispatcher's
-    /// cache (Jit::l1) holds a compiled block for is tail-called right here (`t` = local with
-    /// the target, or None for the constant `rip`). Falls through when it cannot chain.
+    /// cache (Jit::l1) holds a compiled block for is returned (its function index): the dispatcher
+    /// calls it at once, skipping its checks and lookup (`t` = local with the target, or None for
+    /// the constant `rip`). Falls through when it cannot chain.
     fn chain_to(&mut self, t: Option<u32>, rip: u64) {
         self.cpu_ld64(off!(icount));
         self.cpu_ld64(off!(jit_limit));
@@ -1398,9 +1410,7 @@ impl G {
         self.if_hint(VOID, true);
         self.cnt(10);
         self.get(L_C);
-        self.b(0x13); // return_call_indirect (type 0 = () -> (), table 0 = env.table)
-        self.u(0);
-        self.u(0);
+        self.b(RET); // jit::call runs it right away
         self.b(END);
         self.b(END);
         self.b(END);
@@ -1450,7 +1460,7 @@ impl G {
             self.get(L_IC);
             self.mem(I64STORE, 3, a);
             self.set_rip_const(target);
-            self.b(RET);
+            self.ret();
             self.b(END);
             self.i32c(idx as i32);
             self.set(L_B);
@@ -1467,7 +1477,7 @@ impl G {
         self.if_hint(VOID, false);
         self.cnt(9);
         self.set_rip_const(target);
-        self.b(RET);
+        self.ret();
         self.b(END);
         self.i32c(idx as i32);
         self.set(L_B);
@@ -1492,7 +1502,7 @@ impl G {
         self.call(F_STEP);
         self.if_hint(VOID, false);
         self.add_icount(n);
-        self.b(RET);
+        self.ret();
         self.b(END);
         self.valid = 0;
         self.dirty = 0;
@@ -2440,7 +2450,7 @@ impl G {
         self.call(F_STEP);
         self.b(DROP);
         self.add_icount(n);
-        self.b(RET);
+        self.ret();
     }
     /// Stores flag byte (i32 on the stack after st_base).
     fn st_flag(&mut self, off: u32) {
@@ -3419,7 +3429,7 @@ fn string(g: &mut G, i: &Ins, n: u32) -> bool {
         g.call(F_STEP);
         g.if_hint(VOID, false);
         g.add_icount(n);
-        g.b(RET);
+        g.ret();
         g.b(END);
         g.b(END);
         // the step wrote rcx/rsi/rdi to the cpu struct; the other registers there are current
@@ -3672,6 +3682,7 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
         g.max_tmp = g.max_tmp.max(g.ntmp);
     }
     g.b(END); // loop
+    g.i32c(-1);
     g.b(END); // function
     #[cfg(feature = "prof")]
     {
@@ -3806,7 +3817,7 @@ fn finish(g: G) -> Option<Vec<u8>> {
 
     let mut m = Vec::with_capacity(body.len() + 128);
     m.extend_from_slice(&[0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00]);
-    let types: &[u8] = &[5, 0x60, 0, 0, 0x60, 2, 0x7E, 0x7F, 1, 0x7E, 0x60, 3, 0x7E, 0x7E, 0x7F, 0, 0x60, 1, 0x7E, 1, 0x7F, 0x60, 1, 0x7F, 1, 0x7F];
+    let types: &[u8] = &[5, 0x60, 0, 1, 0x7F, 0x60, 2, 0x7E, 0x7F, 1, 0x7E, 0x60, 3, 0x7E, 0x7E, 0x7F, 0, 0x60, 1, 0x7E, 1, 0x7F, 0x60, 1, 0x7F, 1, 0x7F];
     section(&mut m, 1, types);
     let mut imp = vec![5u8];
     let name = |v: &mut Vec<u8>, s: &str| {
@@ -3827,13 +3838,7 @@ fn finish(g: G) -> Option<Vec<u8>> {
         imp.push(0x00);
         imp.push(k as u8 + 1);
     }
-    if g.chain {
-        // the engine's function table (chained exits tail-call blocks through it)
-        imp[0] += 1;
-        name(&mut imp, "env");
-        name(&mut imp, "table");
-        imp.extend_from_slice(&[0x01, 0x70, 0x00, 0x00]);
-    }
+
     section(&mut m, 2, &imp);
     section(&mut m, 3, &[1, 0]);
     section(&mut m, 7, &[1, 1, b'f', 0x00, 4]);
@@ -3869,7 +3874,7 @@ fn section(m: &mut Vec<u8>, id: u8, data: &[u8]) {
 /// dynamic counters bumped by JIT code (prof and ophist builds): 0 fwd jumps, 1 back jumps,
 /// 2 exits to a constant rip, 3 loads, 4 stores, 5 cond calls, 6 fallbacks, 7 flag stores at jumps,
 /// 8 exits to a computed rip (ret, indirect jmp/call), 9 exits at a back jump (budget spent),
-/// 10 chained exits (tail call to the next cached block; 2 and 8 count only exits to the dispatcher)
+/// 10 chained exits (the next cached block is called at once; 2 and 8 count only exits to the dispatcher)
 #[cfg(any(feature = "prof", feature = "ophist"))]
 pub static mut DYN: [u64; 16] = [0; 16];
 
