@@ -31,7 +31,7 @@ jobs:
         env: { GH_TOKEN: '${{ github.token }}' }
         run: |
           # a draft left by a release step that failed half way (GitHub 504) is not "published": delete it
-          for id in $(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[]|select(.tag_name==\"$TAG\" and .draft)|.id"); do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"; done
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[]|select(.draft and (.tag_name==\"$TAG\" or .name==\"WebAssembly tools ($TAG)\"))|.id"); do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"; done
           gh release view "$TAG" >/dev/null 2>&1 && echo "done=1" >> "$GITHUB_OUTPUT" || true
       - name: wasi-sdk-33
         if: steps.rel.outputs.done != '1'
@@ -68,7 +68,7 @@ jobs:
       - name: Publish release ${{ env.TAG }} (once)
         env: { GH_TOKEN: '${{ github.token }}' }
         run: |
-          for id in $(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[]|select(.tag_name==\"$TAG\" and .draft)|.id"); do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"; done
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[]|select(.draft and (.tag_name==\"$TAG\" or .name==\"WebAssembly tools ($TAG)\"))|.id"); do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"; done
           if gh release view "$TAG" >/dev/null 2>&1; then echo "$TAG already published"; gh release view "$TAG"; exit 0; fi
           gh release download "$PREV" -D out --skip-existing && rm -f out/SHA256SUMS
           cd out && ls -l && sha256sum * > SHA256SUMS
