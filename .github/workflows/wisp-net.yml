@@ -5,7 +5,7 @@ name: Store download over wisp
 on:
   push:
     branches: ['claude/**']
-    paths: ['engine-src/src/linux.rs', 'tests/wisp-download.mjs', 'tests/linux-test.mjs', 'overlay/usr/local/bin/apk', '.github/workflows/wisp-net.yml', 'overlay/etc/inksoc/wasm-catalog']
+    paths: ['engine-src/src/linux.rs', 'overlay.tar', 'tests/wisp-download.mjs', 'tests/linux-test.mjs', 'overlay/usr/local/bin/apk', '.github/workflows/wisp-net.yml', 'overlay/etc/inksoc/wasm-catalog']
   workflow_dispatch:
     inputs:
       names: { description: 'catalog names', default: 'python3 ruby hashtools', required: false }
