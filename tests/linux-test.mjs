@@ -194,6 +194,62 @@ results.push(/New UNIX username/.test(out)); console.log((results[0] ? 'PASS' : 
 await step('tester\n', /New password/, 'user name accepted');
 await step('pw1\n', /Retype/, 'password asked twice');
 await step('pw1\n', /tester@inksoc/, 'shell as the new user');
+if (process.env.INK_NET) { // item 62: real network through the wisp tunnels, like worker.js (INK_NET=1; only the wisp-net workflow sets it)
+  const TUN = ['wss://wisp.mercurywork.shop/v86/', 'wss://hub.inkdos.workers.dev/net/wisp/'];
+  let wsUrl = null, ws = null, wsq = [], opened = false; const got = new Set();
+  const packet = (t, id, body) => { const b = Buffer.alloc(5 + body.length); b[0] = t; b.writeUInt32LE(id, 1); Buffer.from(body).copy(b, 5); return b; };
+  const wsSend = (b) => { if (ws && ws.readyState === 1) ws.send(b); else wsq.push(b); };
+  const netIn = (id, kind, d) => { put(d || new Uint8Array(0)); x.linux_net_in(id, kind); };
+  const openWs = () => {
+    wsUrl = wsUrl || TUN[0]; opened = false;
+    const sock = ws = new WebSocket(wsUrl); ws.binaryType = 'arraybuffer';
+    ws.onopen = () => { opened = true; console.log('  [net: tunnel open ' + wsUrl + ']'); for (const b of wsq) ws.send(b); wsq = []; };
+    ws.onmessage = (ev) => {
+      const b = new Uint8Array(ev.data); if (b.length < 5) return;
+      const id = new DataView(b.buffer).getUint32(1, true);
+      if (b[0] === 2) { got.add(id); netIn(id, 1, b.subarray(5)); }
+      else if (b[0] === 4) { console.log('  [net: stream ' + id + ' closed by the tunnel, reason ' + b[5] + ', got data: ' + got.has(id) + ']'); netIn(id, got.has(id) || b[5] === 2 ? 2 : 3); }
+    };
+    const lost = () => { if (ws !== sock) return; ws = null; console.log('  [net: tunnel lost, opened=' + opened + ']'); if (!opened && wsUrl !== TUN[1]) { wsUrl = TUN[1]; openWs(); return; } wsq = []; };
+    ws.onclose = lost; ws.onerror = lost;
+  };
+  const pump = () => {
+    const n = x.linux_net_poll(); if (!n) return;
+    const b = new Uint8Array(mem.buffer, x.out_ptr(), n).slice(), v = new DataView(b.buffer);
+    for (let o = 0; o < n;) {
+      const op = b[o], id = v.getUint32(o + 1, true), len = v.getUint32(o + 5, true), d = b.subarray(o + 9, o + 9 + len); o += 9 + len;
+      if (op === 1) {
+        if (!ws) openWs();
+        const sd = dec.decode(d), k = sd.lastIndexOf(':'), host = enc.encode(sd.slice(0, k)), body = new Uint8Array(3 + host.length);
+        body[0] = 1; new DataView(body.buffer).setUint16(1, +sd.slice(k + 1), true); body.set(host, 3); wsSend(packet(1, id, body));
+      } else if (op === 2) wsSend(packet(2, id, d));
+      else if (op === 3) { got.delete(id); wsSend(packet(4, id, new Uint8Array([2]))); }
+    }
+  };
+  const until = async (re, maxMs, mark) => {
+    const t1 = Date.now(), from = out.length;
+    for (let tick = 0; Date.now() - t1 < maxMs;) {
+      const st = x.run(2000000); pump();
+      if (re.test(out.slice(from))) return out.slice(from);
+      if (st === 2) { console.log('engine stopped'); process.exit(1); }
+      if (st === 3) await new Promise((r) => setTimeout(r, 5)); else if (++tick % 50 === 0) await new Promise((r) => setTimeout(r, 0));
+      if (mark && Date.now() - t1 > mark.at) { mark.at += 30000; console.log('  ... ' + ((Date.now() - t1) / 1000 | 0) + ' s'); }
+    }
+    return null;
+  };
+  const all = [];
+  for (const [name, cmd, ms] of [['plain http (example.com, no TLS)', 'wget -O /dev/null http://example.com/ 2>&1 | tr "\\r" "\\n" | tail -n 3', 60000],
+      ['https (example.com, ssl_client)', 'wget -O /dev/null https://example.com/ 2>&1 | tr "\\r" "\\n" | tail -n 3', 60000],
+      ['apk fetch over https (apk uses ssl_client too)', 'cd /tmp && apk fetch --no-cache --repository https://dl-cdn.alpinelinux.org/alpine/v3.21/main --allow-untrusted busybox-extras 2>&1 | tail -n 3; ls -l /tmp/*.apk | head -2; cd ~ && true', 120000],
+      ['hashtools (small, InkShell release)', 'wget -O /dev/null https://github.com/InkDOSHub/InkShell/releases/download/wasm-tools-7/hashsum.wasm 2>&1 | tr "\\r" "\\n" | tail -n 3', 120000],
+      ['python3 (26 MB, vmware release)', 'wget -O /dev/null "$(grep ^python3 /etc/inksoc/wasm-catalog | cut -f2)" 2>&1 | tr "\\r" "\\n" | tail -n 3', 600000]]) {
+    const t1 = Date.now(); send(cmd + '; echo done-$?\n');
+    const got1 = await until(/done-\d/, ms, { at: 30000 });
+    const ok = !!got1 && /saved|\.apk/.test(got1);
+    all.push(ok); console.log((ok ? 'PASS ' : 'FAIL ') + 'wget through wisp: ' + name + ' in ' + ((Date.now() - t1) / 1000).toFixed(1) + ' s\n' + (got1 || out.slice(-300)).slice(-500));
+  }
+  process.exit(all.slice(3).every(Boolean) ? 0 : 1);
+}
 await step('id -un; echo $HOME\n', /tester\s+\/home\/tester/, 'id and home');
 await step('sudo id -u\n', /Password/, 'sudo asks the password');
 await step('pw1\n', /^\s*0\s*$/m, 'sudo runs as root');
@@ -257,6 +313,11 @@ if (hasWasi) {
   await step('hello-wasm X < /dev/null; echo rc=$?\n', /wasi argc=2 arg1=X in=\(eof\)[\s\S]*rc=3/, 'catalog: installed program runs from PATH');
   await step('apk del hello-wasm; test -e /usr/local/bin/hello-wasm || echo gone\n', /Password/, 'catalog: apk del asks sudo');
   await step('pw1\n', /WebAssembly build removed[\s\S]*gone/, 'catalog: apk del removes it');
+  // item 62: a download that fails is retried (resume) and shows wget's own message, not just "download failed"
+  await step(`sudo sh -c "printf 'bad-wasm\\thttp://127.0.0.1:9/bad.wasm\\t${hsum}\\t10\\tMIT\\t/usr/local/bin/bad-wasm\\tunreachable\\n' >> /etc/inksoc/wasm-catalog.local"\n`, /Password/, 'catalog: unreachable entry (sudo asks)');
+  await step('pw1\n', /tester@inksoc/, 'catalog: unreachable entry written');
+  await step('sudo sh -c "INKSOC_RETRY_WAIT=0 apk add --no-network bad-wasm"; echo bad-rc=$?\n', /Password/, 'catalog: failing download asks sudo');
+  await step('pw1\n', /continuing \(3\/3\)[\s\S]*ERROR: bad-wasm: download failed: http:\/\/127\.0\.0\.1:9\/bad\.wasm\s+\S*wget[^\n]*(refused|connect)[\s\S]*bad-rc=1/i, 'catalog: failed download retries 3 times and shows the wget message');
   if (hasPy) { // python3 from the catalog (local file:// mirror), run in the terminal
     const psum = crypto.createHash('sha256').update(pyBytes).digest('hex');
     await step(`sudo sh -c "printf 'python3\\tfile:///root/python.wasm\\t${psum}\\t${pyBytes.length}\\tPSF-2.0\\t/usr/local/bin/python3,/usr/local/bin/python\\tPython\\n' >> /etc/inksoc/wasm-catalog.local"\n`, /Password/, 'python3: local catalog entry (sudo asks)');

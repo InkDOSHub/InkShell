@@ -994,6 +994,7 @@ impl G {
             self.mem(op, al, self.pool);
         }
         self.b(ELSE);
+        self.cnt(16);
         self.get(a);
         self.i32c(size as i32);
         self.call(F_RD);
@@ -1072,6 +1073,7 @@ impl G {
             self.mem(op, al, self.pool);
         }
         self.b(ELSE);
+        self.cnt(16);
         self.get(a);
         self.get(v);
         self.i32c(size as i32);
@@ -1510,6 +1512,7 @@ impl G {
         self.cpu_ld64(off!(jit_limit));
         self.b(I64LTU);
         self.if_hint(VOID, true);
+        self.cnt(17);
         // L_C = address of the cache entry
         self.i32c(0);
         self.mem(I32LOAD, 2, self.cpu + off!(jit_l1));
@@ -4019,6 +4022,7 @@ fn emit_block(g: &mut G, b: Block) {
                 break;
             }
             0xE8 => {
+                g.cnt(15);
                 g.i64c(i.next);
                 g.set(L_T);
                 g.push(L_T);
@@ -4027,6 +4031,7 @@ fn emit_block(g: &mut G, b: Block) {
                 break;
             }
             0xC3 | 0xC2 => {
+                g.cnt(14);
                 g.ensure(4);
                 g.get(R0 + 4);
                 g.set(L_A2);
@@ -4054,6 +4059,7 @@ fn emit_block(g: &mut G, b: Block) {
                 };
                 let t = g.val(opd, if g.m32 { 32 } else { 64 });
                 if m.reg & 7 == 2 {
+                    g.cnt(15);
                     g.i64c(i.next);
                     g.set(L_T);
                     g.push(L_T);
@@ -4223,9 +4229,12 @@ fn section(m: &mut Vec<u8>, id: u8, data: &[u8]) {
 /// dynamic counters bumped by JIT code (prof and ophist builds): 0 fwd jumps, 1 back jumps,
 /// 2 exits to a constant rip, 3 loads, 4 stores, 5 cond calls, 6 fallbacks, 7 flag stores at jumps,
 /// 8 exits to a computed rip (ret, indirect jmp/call), 9 exits at a back jump (budget spent),
-/// 10 chained exits (the next cached block is called at once; 2 and 8 count only exits to the dispatcher)
+/// 10 chained exits (the next cached block is called at once; 2 and 8 count only exits to the dispatcher),
+/// 11 stack window accesses, 12 of them slow (helper), 13 stack window checks,
+/// item 60 (measurement only): 14 rets run, 15 calls run (direct + indirect), 16 TLB-miss helper calls
+/// of plain loads/stores (rd/wr), 17 chained-exit attempts (budget left; 17 - 10 = target not in the cache)
 #[cfg(any(feature = "prof", feature = "ophist"))]
-pub static mut DYN: [u64; 16] = [0; 16];
+pub static mut DYN: [u64; 32] = [0; 32];
 
 /// ophist build: host-side counters (see prof_ctr); a no-op otherwise.
 #[cfg(feature = "ophist")]
@@ -4241,13 +4250,13 @@ pub fn pc(i: usize, n: u64) {
 /// ophist build: 0 JIT block runs, 1 instructions run in JIT code, 2 interpreter traces,
 /// 3 instructions run by traces, 4 l1 misses (lookup_slow), 5 of them found in the map,
 /// 6 compiles, 7 compiles that gave no block, 8 fallbacks that ended the block, 9 native calls,
-/// 10 compile time (us); 16+k = DYN[k].
+/// 10 compile time (us); 16+k = DYN[k] (k < 32).
 #[cfg(feature = "ophist")]
 #[no_mangle]
 pub extern "C" fn prof_ctr(i: u32) -> f64 {
     unsafe {
         if i >= 16 {
-            DYN[(i as usize - 16) & 15] as f64
+            DYN[(i as usize - 16) & 31] as f64
         } else {
             PC[i as usize & 15] as f64
         }
