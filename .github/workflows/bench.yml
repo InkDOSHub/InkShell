@@ -70,6 +70,22 @@ jobs:
             grep -q '@@T done' out/engine-$n.log || echo "- motor \`$s\`: não terminou (ver engine-$n.log)" | tee -a out/engine-fails.txt
             echo "::endgroup::"
           done
+      - name: A/B in the same run (item 43, stack page cache; measurement only)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          E="tests/bench-engine.mjs out/engine.wasm cpubench=out/cpubench bench.sh=out/bench.sh --"
+          for k in 1 2 3; do
+            for v in 1 0; do
+              r=$(INKSOC_STACK=$v timeout 300 node $E sh /root/bench.sh cpu 2>&1 | cut -f2- | grep -E '^(int|calls|sort|string|float) ' | awk '{printf "%s=%s ", $1, $2}')
+              echo "| stack=$v #$k | $r |" | tee -a out/ab.md
+            done
+          done
+          for v in 1 0; do
+            r=$(INKSOC_STACK=$v timeout 300 node --no-liftoff $E sh /root/bench.sh cpu 2>&1 | cut -f2- | grep -E '^(int|calls|sort|string|float) ' | awk '{printf "%s=%s ", $1, $2}')
+            echo "| no-liftoff stack=$v | $r |" | tee -a out/ab.md
+          done
+          { echo "## A/B pilha (item 43, mesmo run, ms)"; echo; echo "| variante | ms |"; echo "|---|---|"; cat out/ab.md; } | tee -a $GITHUB_STEP_SUMMARY
       - name: Engine, python3 via WASI (the catalog's python.wasm run by the kernel)
         run: |
           echo "::group::engine py (WebAssembly)"
