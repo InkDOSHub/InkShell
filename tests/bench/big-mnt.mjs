@@ -46,13 +46,14 @@ const send = (t) => p.evaluate((t) => send(t), t);
 async function step(name, cmd, re, ms, bytes, expectOk = false, want = null) {
   phase = name; const t0 = Date.now(); await send(cmd + '\r');
   let ok = await until(re, ms); const s = (Date.now() - t0) / 1000; tick();
-  let note = '';
-  if (ok && want) { const all = [...(await text()).matchAll(re)]; const got = all.length ? all[all.length - 1][1] : ''; ok = got === want; note = ok ? 'finished, hash matches' : `hash WRONG (got ${got.slice(0, 12)}...${got === zeros64 ? ' = 64 MiB of zeros' : ''}, want ${want.slice(0, 12)}...)`; }
+  let note = ''; // item 61 bug: a /g regex keeps lastIndex after test(), so matchAll on it found nothing and got was always empty
+  if (ok && want) { const all = [...(await text()).matchAll(new RegExp(re.source, 'g'))]; const got = all.length ? all[all.length - 1][1] : ''; ok = got === want; note = ok ? 'finished, hash matches' : `hash WRONG (got ${got.slice(0, 12)}...${got === zeros64 ? ' = 64 MiB of zeros' : ''}, want ${want.slice(0, 12)}...)`; }
   else if (!ok) note = abort ? 'stopped by RSS guard' : `NOT finished in ${ms / 1000} s (Ctrl+C)`;
   if (!ok) { await send('\x03'); await p.waitForTimeout(2000); }
   const st = stats[name] || { max: 0 };
+  try { await p.evaluate(() => { window.__dbg = null; w.postMessage({ type: 'dbg' }); }); await p.waitForFunction(() => window.__dbg, null, { timeout: 5000 }); const d = await p.evaluate(() => window.__dbg); console.log(`  counters: mdata ${(d.mdata / MB).toFixed(0)} MB in ${d.pieces} pieces, swap written ${(d.swapw / MB).toFixed(0)} MB, read ${(d.swapr / MB).toFixed(0)} MB, swap file ${(d.swapSize / MB).toFixed(0)} MB`); rows.dbg = d; } catch (e) { console.log('  counters: n/a (worker blocked?)'); }
   rows.push({ name, ok, s, mbs: bytes && ok ? bytes / MB / s : null, rss: st.max, rss0: st.first, note });
-  if (expectOk) check(ok, name + (ok ? '' : ' (not finished in ' + ms / 1000 + ' s)'));
+  if (expectOk || want) check(ok, name + (ok ? '' : ' (not finished in ' + ms / 1000 + ' s)'));
   if (ok && !want) rows[rows.length - 1].note = '';
   console.log(`  ${name}: ${s.toFixed(1)} s${bytes && ok ? ', ' + (bytes / MB / s).toFixed(0) + ' MB/s' : ''}, RSS max ${st.max.toFixed(0)} MB`);
   return ok;
@@ -76,12 +77,11 @@ try {
   tick(); rows.push({ name: 'mount (2 files)', ok: true, s: 0, mbs: null, rss: (stats.mount || { max: 0 }).max });
   const mp = (await text()).match(/(\/mnt\/\S+): 2 files/)[1];
   const big = mp + '/big.bin', s1g = mp + '/s1g.bin', bigB = bigMb * MB;
-  const H = '([0-9a-f]{64})  ';
-  await step('dd 256 MB in the middle (x86)', `dd if=${big} bs=1M skip=${Math.floor(bigMb / 3)} count=256 of=/dev/null; echo dd-rc=$?`, /dd-rc=0/, 120000, 256 * MB);
-  for (const [off, sha] of slices) await step(`dd 64 MB at ${off} MB | sha256sum (WASM)`, `dd if=${big} bs=1M skip=${off} count=64 2>/dev/null | ./sha256sum; echo sl${off}-rc=$?`, new RegExp(H + `-\\s+sl${off}-rc=0`, 'g'), 120000, 64 * MB, false, sha);
-  await step('sha256sum 1 GB file (WASM)', `./sha256sum ${s1g}; echo s1-rc=$?`, new RegExp(H + esc(s1g) + '\\s+s1-rc=0', 'g'), 300000, 1024 * MB, false, E.S1G_SHA);
-  await step('sha256sum whole file (WASM)', `./sha256sum ${big}; echo fu-rc=$?`, new RegExp(H + esc(big) + '\\s+fu-rc=0', 'g'), budget, bigB, false, E.FULL_SHA);
-  await step('wc -c, whole file (x86 busybox)', `wc -c ${big}; echo wc-rc=$?`, new RegExp(`${bigB} ${esc(big)}\\s+wc-rc=0`), +(E.WC_BUDGET_S || 600) * 1000, bigB, false);
+    await step('dd 256 MB in the middle (x86)', `dd if=${big} bs=1M skip=${Math.floor(bigMb / 3)} count=256 of=/dev/null; echo dd-rc=$?`, /dd-rc=0/, 120000, 256 * MB);
+  for (const [off, sha] of slices) await step(`dd 64 MB at ${off} MB | sha256sum (WASM)`, `h=$(dd if=${big} bs=1M skip=${off} count=64 2>/dev/null | ./sha256sum); echo "sl${off}=\${h%% *} rc=$?"`, new RegExp(`sl${off}=([0-9a-f]{64}) rc=0`), 120000, 64 * MB, false, sha);
+  await step('sha256sum 1 GB file (WASM)', `h=$(./sha256sum ${s1g}); echo "s1=\${h%% *} rc=$?"`, /s1=([0-9a-f]{64}) rc=0/, 300000, 1024 * MB, false, E.S1G_SHA);
+  if (budget > 0) await step('sha256sum whole file (WASM)', `h=$(./sha256sum ${big}); echo "fu=\${h%% *} rc=$?"`, /fu=([0-9a-f]{64}) rc=0/, budget, bigB, false, E.FULL_SHA);
+  if (budget > 0) await step('wc -c, whole file (x86 busybox)', `wc -c ${big}; echo wc-rc=$?`, new RegExp(`${bigB} ${esc(big)}\\s+wc-rc=0`), +(E.WC_BUDGET_S || 600) * 1000, bigB, false);
   phase = 'after'; await send('echo alive-$((6*7))\r');
   check(await until(/alive-42/, 60000), 'shell still alive after the big reads');
   await p.waitForTimeout(3000); tick();

@@ -2,21 +2,46 @@ name: Big file in /mnt (WebKit)
 # Item 61 (measurement only): a ~10 GB sparse file mounted at /mnt in the real page (index.html), WebKit (iPad engine)
 # and Chromium (reference): wc -c, dd in the middle, sha256sum of a slice, WebAssembly sha256sum of 1 GB and of the
 # whole file. RSS of the browser processes sampled every 1 s. Heavy: runs only by hand or when a PR touches these files.
+# Item 65: `which` = micro (RSS of File reads without the engine, tests/bench/rss-micro.mjs), big (real page) or both;
+# `big_mb` caps the big file (0 = 10 GB or what fits); `skip_full` drops the whole-file steps (growth per GB from 2-3 GB runs).
 on:
   workflow_dispatch:
     inputs:
-      full_budget_s: { description: 'seconds the whole-file WebAssembly sha256sum may take', default: '600' }
-  pull_request:
-    paths:
-      - '.github/workflows/big-mnt.yml'
-      - 'tests/bench/big-mnt.mjs'
+      which: { description: 'micro | big | both', default: 'big' }
+      big_mb: { description: 'size of big.bin in MB (0 = 10240 or what fits)', default: '0' }
+      full_budget_s: { description: 'seconds the whole-file WebAssembly sha256sum may take (0 = skip it and the wc -c)', default: '600' }
+      variants: { description: 'micro: comma list of variants (empty = all)', default: '' }
+      mb: { description: 'micro: MB read per variant', default: '1536' }
 permissions:
   contents: read
 concurrency:
-  group: big-mnt-${{ github.event.pull_request.number || github.ref }}
+  group: big-mnt-${{ github.run_id }}
   cancel-in-progress: true
 jobs:
+  micro:
+    if: ${{ inputs.which == 'micro' || inputs.which == 'both' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Playwright
+        run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit'
+      - name: Sparse file
+        run: truncate -s 4G $RUNNER_TEMP/micro.bin
+      - name: RSS micro benchmark
+        env:
+          FILE: ${{ runner.temp }}/micro.bin
+          MB: ${{ inputs.mb }}
+          VARIANTS: ${{ inputs.variants }}
+          OUT: ${{ runner.temp }}/micro.md
+        run: timeout 1800 node tests/bench/rss-micro.mjs
+      - name: Job summary
+        if: always()
+        run: cat $RUNNER_TEMP/micro.md >> $GITHUB_STEP_SUMMARY || true
   big:
+    if: ${{ inputs.which == 'big' || inputs.which == 'both' || inputs.which == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     strategy:
@@ -41,7 +66,7 @@ jobs:
         run: |
           df -h / "$RUNNER_TEMP" | tee df.txt
           avail=$(df -BM --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc 0-9)
-          BIG_MB=10240; [ $((avail - 3072)) -lt $BIG_MB ] && BIG_MB=$(( (avail - 3072) / 1024 * 1024 ))
+          BIG_MB=10240; [ '${{ inputs.big_mb }}' -gt 0 ] 2>/dev/null && BIG_MB=${{ inputs.big_mb }}; [ $((avail - 3072)) -lt $BIG_MB ] && BIG_MB=$(( (avail - 3072) / 1024 * 1024 ))
           [ "$BIG_MB" -lt 2048 ] && { echo "disk too small: ${avail} MB"; exit 1; }
           D=$RUNNER_TEMP/bigdir; mkdir -p $D
           # big.bin = zeros, except 64 random MB at 1000 MB (below 4 GiB), 5000 MB (above) and BIG-128 MB; s1g.bin = 1 GB of zeros; both sparse
@@ -66,7 +91,7 @@ jobs:
         env:
           BROWSER: ${{ matrix.browser }}
           SW: ${{ matrix.sw }}
-          FULL_BUDGET_S: ${{ github.event_name == 'workflow_dispatch' && inputs.full_budget_s || '600' }}
+          FULL_BUDGET_S: ${{ inputs.full_budget_s }}
           OUT: ${{ runner.temp }}/big-mnt.md
         run: timeout 2300 node tests/bench/big-mnt.mjs
       - name: Job summary

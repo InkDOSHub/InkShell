@@ -1,0 +1,36 @@
+<!doctype html><meta charset=utf-8><input type=file id=f>
+<script>
+// Item 65: how does a browser's RSS behave while a File is read piece by piece (the /mnt read path), without the engine?
+// ?v=<variant>&mb=<MB to read>. Variants (a piece = 4 MB, copied into a WebAssembly.Memory like the engine's put()):
+//   page-ab        page: slice().arrayBuffer(), dropped
+//   page-xfer      page: slice().arrayBuffer() -> postMessage transfer -> worker copy (today's mfetch/mdata)
+//   w-frs-new      worker: new FileReaderSync() per piece (today's wasiServe)
+//   w-frs-reuse    worker: one FileReaderSync
+//   w-stream       worker: slice().stream() reader, chunks copied straight into wasm memory
+//   w-resp         worker: new Response(slice).arrayBuffer()
+//   w-blobpost     page posts slice Blobs, worker FileReaderSync on them
+//   opfs-only      worker writes 4 MB to an OPFS sync handle (the swap), no reads
+// suffix +opfs: after each piece the worker also writes it (from wasm memory) to the OPFS sync handle
+const q = new URLSearchParams(location.search), V = q.get('v') || 'page-ab', MB = +(q.get('mb') || 1536), PIECE = 4 << 20;
+window.__res = null;
+document.getElementById('f').onchange = async (ev) => {
+  const f = ev.target.files[0], t0 = performance.now(), opfs = V.endsWith('+opfs'), base = V.replace('+opfs', '');
+  const total = Math.min(f.size, MB * 1048576);
+  try {
+    if (base === 'page-ab') {
+      for (let a = 0; a < total; a += PIECE) { const d = await f.slice(a, a + PIECE).arrayBuffer(); if (d.byteLength !== Math.min(PIECE, f.size - a)) throw new Error('short'); }
+      window.__res = { ok: true, ms: performance.now() - t0 }; return;
+    }
+    const w = new Worker('rss-micro-worker.js');
+    const ack = () => new Promise((r) => { w.onmessage = (m) => r(m.data); });
+    let p = ack();
+    w.postMessage({ type: 'init', opfs, variant: base, total, file: base.startsWith('w-') && base !== 'w-blobpost' ? f : null });
+    let r = await p; if (r.error) throw new Error(r.error);
+    if (base === 'page-xfer') for (let a = 0; a < total; a += PIECE) { const d = await f.slice(a, a + PIECE).arrayBuffer(); p = ack(); w.postMessage({ type: 'piece', d, a }, [d]); r = await p; if (r.error) throw new Error(r.error); }
+    else if (base === 'w-blobpost') for (let a = 0; a < total; a += PIECE) { p = ack(); w.postMessage({ type: 'blob', b: f.slice(a, Math.min(a + PIECE, total)), a }); r = await p; if (r.error) throw new Error(r.error); }
+    else { p = ack(); w.postMessage({ type: 'run' }); r = await p; }
+    if (r.error) throw new Error(r.error);
+    window.__res = { ok: true, ms: performance.now() - t0, extra: r.extra };
+  } catch (e) { window.__res = { ok: false, err: String((e && e.message) || e) }; }
+};
+</script>

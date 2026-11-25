@@ -16,6 +16,8 @@ function mark(n) { bootT[n] = performance.timeOrigin + performance.now(); postMe
 let x, mem, lx = null, keys = [], net = 'wisp';
 const pendingPuts = []; // files sent before Linux is up (from InkOS or the upload button)
 const enc = new TextEncoder(), dec = new TextDecoder();
+let dbgSwap = null;
+const dbg = { mdata: 0, pieces: 0, swapw: 0, swapr: 0 }; // byte counters (item 65): read by the page's 'dbg' message
 const put = (b) => { const p = x.buffer(b.length); new Uint8Array(mem.buffer, p, b.length).set(b); };
 
 async function opfs() { try { return await navigator.storage.getDirectory(); } catch (e) { return null; } }
@@ -118,20 +120,22 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   mark('run');
   wasiSw = !!sw; wasiOpen(Math.random().toString(36).slice(2));
   if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=14'); } catch (e) { wasiInline = null; } }
-  const swap = await openSwap(), ram = new Map();
+  const swap = await openSwap(), ram = new Map(); dbgSwap = swap;
   const page = (p) => new Uint8Array(mem.buffer, p, 4096);
   const env = {
     host_console: (p, n) => out(dec.decode(new Uint8Array(mem.buffer, p, n).slice(), { stream: true })),
     host_now_ms: () => performance.now(),
     host_epoch_ms: () => Date.now(),
-    host_swap_write: (slot, p) => { if (swap) swap.write(page(p), { at: slot * 4096 }); else ram.set(slot, page(p).slice()); },
+    host_swap_write: (slot, p) => { dbg.swapw += 4096; if (swap) swap.write(page(p), { at: slot * 4096 }); else ram.set(slot, page(p).slice()); },
     host_swap_read: (slot, p) => { if (swap) swap.read(page(p), { at: slot * 4096 }); else page(p).set(ram.get(slot) || new Uint8Array(4096)); },
     // n contiguous slots in one call (64 KB extents of big Linux files); never-written ones read as zeros
     host_swap_writev: (slot, n, p) => {
+      dbg.swapw += n * 4096;
       const b = new Uint8Array(mem.buffer, p, n * 4096);
       if (swap) swap.write(b, { at: slot * 4096 }); else for (let i = 0; i < n; i++) ram.set(slot + i, b.slice(i * 4096, (i + 1) * 4096));
     },
     host_swap_readv: (slot, n, p) => {
+      dbg.swapr += n * 4096;
       const b = new Uint8Array(mem.buffer, p, n * 4096);
       if (swap) { const k = swap.read(b, { at: slot * 4096 }); if (k < b.length) b.fill(0, k); }
       else for (let i = 0; i < n; i++) { const r = ram.get(slot + i); if (r) b.set(r, i * 4096); else b.fill(0, i * 4096, (i + 1) * 4096); }
@@ -191,6 +195,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
     put(name, data) { const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 1 + d.length); b.set(nm); b.set(d, nm.length + 1); put(b); x.linux_put_file(); },
     // a piece of a big mounted file (offset, length asked; the bytes may be fewer)
     mdata(name, off, len, data) {
+      dbg.mdata += data.byteLength; dbg.pieces++;
       const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 17 + d.length), v = new DataView(b.buffer);
       b.set(nm); v.setBigUint64(nm.length + 1, BigInt(off), true); v.setBigUint64(nm.length + 9, BigInt(len), true); b.set(d, nm.length + 17); put(b); x.linux_mount_data();
     },
@@ -331,6 +336,7 @@ onmessage = async (ev) => {
   if (d.type === 'resize') { if (lx) lx.resize(d.rows, d.cols); return; }
   if (d.type === 'put') { if (lx) { lx.put(d.name, d.data); loaded(d.name, d.data.byteLength); } else pendingPuts.push({ name: d.name, data: d.data }); return; }
   if (d.type === 'mdata') { if (lx && x.linux_mount_data) { lx.mdata(d.name, d.off, d.len, d.data); loaded(d.name, (held.get(d.name) || 0) + d.len); } return; }
+  if (d.type === 'dbg') { postMessage({ type: 'dbg', ...dbg, swapSize: dbgSwap ? dbgSwap.getSize() : 0 }); return; }
   if (d.type === 'mfiles') { for (const [p, f] of d.files) { if (f) mfiles.set(p, f); else mfiles.delete(p); } return; }
   if (d.type === 'mount') { if (lx) mount(d); else pendingMounts.push(d); return; }
   if (d.type === 'get') {
