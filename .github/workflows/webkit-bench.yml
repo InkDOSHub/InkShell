@@ -2,8 +2,11 @@ name: WebKit benchmark
 # Item 47 (measurement only): the committed engine.wasm in Chromium (V8) and WebKit (JavaScriptCore, the
 # engine of Safari / the iPad) in the same run, same inputs: x86 cpubench, python3 x86 and WebAssembly start,
 # JIT compile time. Light: no big files. Runs only when started by hand or when a PR touches these files.
+# Item 48: HOTS (comma list) also sweeps the x86 JIT hot threshold (set_jit_hot) in both browsers.
 on:
   workflow_dispatch:
+    inputs:
+      hots: { description: 'JIT hot thresholds to sweep (empty = none)', default: '10,40,100,200,500' }
   pull_request:
     paths:
       - '.github/workflows/webkit-bench.yml'
@@ -16,7 +19,7 @@ concurrency:
 jobs:
   bench:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,4 +43,6 @@ jobs:
       - name: Playwright (Chromium + WebKit)
         run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit'
       - name: Bench in both browsers
-        run: timeout 900 node tests/bench/browser.mjs
+        env:
+          HOTS: ${{ github.event_name == 'workflow_dispatch' && inputs.hots || '10,40,100,200,500' }}
+        run: timeout 1200 node tests/bench/browser.mjs

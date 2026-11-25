@@ -43,7 +43,12 @@ fn chain_on() -> bool {
     CHAIN.load(core::sync::atomic::Ordering::Relaxed)
 }
 
-const HOT: u32 = 40; // visits before a block is compiled
+static HOT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(40);
+/// Visits before a block is compiled (default 40; item 48 sweeps it per browser).
+#[no_mangle]
+pub extern "C" fn set_jit_hot(n: u32) {
+    HOT.store(n.max(1), core::sync::atomic::Ordering::Relaxed);
+}
 const MAX_INS: usize = 80;
 const NONE: u32 = u32::MAX;
 
@@ -106,7 +111,7 @@ impl Jit {
         }
         let h = e.jit.hits.entry(rip).or_insert(0);
         *h += 1;
-        if *h < HOT {
+        if *h < HOT.load(core::sync::atomic::Ordering::Relaxed) {
             return None;
         }
         e.jit.hits.remove(&rip);
