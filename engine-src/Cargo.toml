@@ -22,6 +22,8 @@ prof = []
 ophist = []
 # measurement only (item 46): run-time HOT + the region given to host_jit (exports set_jit_hot, jit_probe*)
 jitprobe = []
+# measurement only (item 53): time marks inside init (export init_prof)
+initprof = []
 # instruction-by-instruction check against a reference CPU (tools/diff)
 diff = []
 ab_tlb = []

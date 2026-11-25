@@ -252,9 +252,9 @@ impl Mmu {
     pub fn new(pool_mb: usize, target_mb: u64) -> Mmu {
         let n = pool_mb * 256;
         let sh = Box::leak(Box::new(MmuShared {
-            pool: vec![0u8; n * PAGE as usize],
-            frames: vec![Frame { vpn: 0, used: false, referenced: false, dirty: false, asid: 0, protect: 4 }; n],
-            free: (0..n as u32).rev().collect(), limbo: Vec::new(),
+            pool: { let p = vec![0u8; n * PAGE as usize]; crate::imark(2); p },
+            frames: { let f = vec![Frame { vpn: 0, used: false, referenced: false, dirty: false, asid: 0, protect: 4 }; n]; crate::imark(3); f },
+            free: { let f = (0..n as u32).rev().collect(); crate::imark(4); f }, limbo: Vec::new(),
             hand: 0,
             table: HashMap::new(),
             regions: Vec::new(), commits: Vec::new(),
@@ -262,7 +262,7 @@ impl Mmu {
             target_bytes: target_mb << 20,
             faults: 0, swap_ins: 0, swap_outs: 0, swap_slots: 0, no_evict: false,
             cur: 0, next_asid: 1, saved: HashMap::new(), free_slots: Vec::new(), free_runs: Vec::new(),
-        }));
+        })); crate::imark(5);
         let m = Mmu { tlb: vec![TlbEntry { tag: u64::MAX, add: 0, writable: false }; TLB_SIZE], core: 0, sh, lk: 0, lk_at: (0, 0, 0), lk_snap: None };
         TLBS[0].store(m.tlb.as_ptr() as u32, Release);
         m

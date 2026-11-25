@@ -1,0 +1,32 @@
+name: Init profile
+# Item 53 (measurement only): x.init split by sub-step (Shared, pool Vec, frames, free list, TLB, Cpu, Jit)
+# in node, Chromium and WebKit, with an engine built with --features initprof (the published engine.wasm
+# is unchanged: the marks compile to nothing without the feature). Small: no rootfs, no boot.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/init-prof.yml'
+      - 'tests/bench/init-prof.mjs'
+permissions:
+  contents: read
+concurrency:
+  group: init-prof-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  init:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Build engine with init marks
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cd engine-src && timeout 600 cargo build --release --target wasm32-unknown-unknown --features initprof
+          mkdir -p ../out && cp target/wasm32-unknown-unknown/release/inksoc.wasm ../out/engine-initprof.wasm
+      - name: Playwright (Chromium + WebKit)
+        run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit'
+      - name: x.init by sub-step (node, Chromium, WebKit)
+        run: timeout 300 node --expose-gc tests/bench/init-prof.mjs out/engine-initprof.wasm engine.wasm
