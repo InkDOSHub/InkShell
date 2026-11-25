@@ -60,7 +60,7 @@ if (hasPy) add('python.wasm', pyBytes);
 // tools from the catalog (test.yml downloads them to tests/NAME.wasm, sha256 checked): [catalog name, file, programs]
 const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagick', 'magick', 'magick,convert,identify'], ['ffmpeg', 'ffmpeg', 'ffmpeg'], ['ffprobe', 'ffprobe', 'ffprobe'],
   ['sqlite', 'sqlite3', 'sqlite3'], ['jq', 'jq', 'jq'], ['lua5.4', 'lua', 'lua5.4,lua'], ['zip', 'zip', 'zip'], ['unzip', 'unzip', 'unzip'], ['ripgrep', 'rg', 'rg'],
-  ['hashtools', 'hashsum', 'sha256sum,sha1sum,sha224sum,sha384sum,sha512sum,md5sum,b2sum']]
+  ['hashtools', 'hashsum', 'sha256sum,sha1sum,sha224sum,sha384sum,sha512sum,md5sum,b2sum'], ['quickjs', 'qjs', 'qjs']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -391,6 +391,12 @@ if (hasWasi) {
     await step('apk del coreutils; echo cu-del-rc=$?\n', /Password/, 'coreutils: apk del asks sudo');
     await step('pw1\n', /\(coreutils\) WebAssembly build removed[\s\S]*cu-del-rc=0/, 'coreutils: apk del removes the links');
     await step('hash -r; command -v sort; ls /usr/local/bin/sort 2>&1 | head -n 1; echo cu-gone\n', /\/bin\/sort\s+ls: \/usr\/local\/bin\/sort: No such file or directory\s+cu-gone/, 'coreutils: busybox sort is back in PATH');
+  }
+  if (hasTool('quickjs')) { // QuickJS-ng (item 57): -e, a script file, qjs:std / qjs:os reading a file of the shell folder, JSON of ~3 MB, errors exit 1
+    await step(`cd /tmp && qjs -e 'print(1+1)'; qjs --version | head -n 1; printf '%s\\n' 'import * as std from "qjs:std";' 'import * as os from "qjs:os";' 'const t = std.loadFile("in.txt");' 'print("qjs-file", t.trim(), os.getcwd()[0], scriptArgs.slice(-2).join(","));' > s.js && echo kjs-in > in.txt && qjs s.js a b; echo qjs-s-done; cd\n`,
+      /^2\s+^\d+\.\d+\.\d+\s+^qjs-file kjs-in \S+ a,b\s+^qjs-s-done/m, 'quickjs: -e, --version, script with qjs:std loadFile and qjs:os getcwd on a relative path (the shell folder)');
+    await step(`cd /tmp && qjs --std -e 'const a = []; for (let i = 0; i < 60000; i++) a.push({ id: i, name: "n" + i, t: [1, 2, 3], ok: i % 2 == 0 }); const f = std.open("big.json", "w"); f.puts(JSON.stringify(a)); f.close()'; busybox wc -c < big.json | busybox awk '{print "big", ($1 > 2000000)}'; printf '%s\\n' '(function () { const t = std.loadFile("big.json"); const a = JSON.parse(t); let n = 0; for (const o of a) n += o.t[2] + (o.ok ? 1 : 0); print("json", a.length, a[59999].name, n); })()' > j.js && qjs --std j.js; qjs -e 'throw new Error("boom")' 2> /dev/null; echo qjs-rc=$?; cd\n`,
+      /^big 1\s+^json 60000 n59999 210000\s+^qjs-rc=1/m, 'quickjs: JSON.stringify/parse of a ~3 MB file written and read in the shell folder, uncaught error exits 1');
   }
   if (hasTool('lua5.4')) { // Lua: script file, pcall/error (setjmp/longjmp), uncaught error exits 1
     await step('printf \'%s\\n\' \'local t = {}\' \'for i = 1, 10 do t[#t + 1] = i * i end\' \'print("lua-ok", #t, t[10], _VERSION, pcall(error, "boom"))\' > /tmp/t.lua && lua /tmp/t.lua; lua5.4 -e "error(\'x\')" 2> /dev/null; echo lua-rc=$?\n',
