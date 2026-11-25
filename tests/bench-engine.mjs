@@ -26,6 +26,20 @@ const WP = process.env.INKSOC_WASI_PROFILE === '1' ? await import('./bench/wasip
 // with a --features jitprobe engine also guest block heads, instructions, translate ms), for tests/bench/jitwarm.mjs.
 // INKSOC_HOT=N (jitprobe engine): visits before a block is compiled (default 40)
 const JL = process.env.JITLOG, jl = [];
+// JITDUMP=DIR (item 63; --features jitprobe engine): every region's wasm as DIR/jrK.wasm, plus DIR/index.json (heads,
+// guest instructions, per-instruction code positions, Cpu/TLB layout). The compiled copy gets a "name" section
+// (module and function "jrK") so a node --cpu-prof profile shows which region ran; the code is the same.
+const JD = process.env.JITDUMP, jd = [];
+if (JD) fs.mkdirSync(JD, { recursive: true });
+function named(b, nm) {
+  const leb = (n) => { const o = []; do { let c = n & 127; n >>>= 7; if (n) c |= 128; o.push(c); } while (n); return o; };
+  const str = (t) => [...leb(t.length), ...enc.encode(t)];
+  const sub = (id, d) => [id, ...leb(d.length), ...d];
+  const pay = [...str('name'), ...sub(0, str(nm)), ...sub(1, [1, 4, ...str(nm)])];
+  const out = new Uint8Array(b.length + pay.length + 6), h = [0, ...leb(pay.length)];
+  out.set(b); out.set(h, b.length); out.set(pay, b.length + h.length);
+  return out.subarray(0, b.length + h.length + pay.length);
+}
 let lastLine = '';
 const snap = () => ({ ctr: Array.from({ length: 48 }, (_, i) => x.prof_ctr(i)), op: Array.from({ length: 512 }, (_, i) => x.ophist(i)) });
 const mb = (b) => (b / 1048576).toFixed(0);
@@ -49,7 +63,15 @@ const env = {
   host_jit: (p, n) => {
     try {
       const t1 = performance.now();
-      const m = new WebAssembly.Module(new Uint8Array(mem.buffer, p, n).slice());
+      let bytes = new Uint8Array(mem.buffer, p, n).slice();
+      if (JD) {
+        const k = jd.length, nm = `jr${k}`, pr = x.jit_probe || (() => 0), mk = x.jit_probe_mark || (() => 0);
+        fs.writeFileSync(`${JD}/${nm}.wasm`, bytes);
+        jd.push({ k, at: lastLine, bytes: n, ins: pr(1), heads: Array.from({ length: pr(0) }, (_, h) => x.jit_probe_head(h)),
+          marks: Array.from({ length: pr(3) }, (_, i) => [mk(i, 0), mk(i, 1), mk(i, 2)]) });
+        bytes = named(bytes, nm);
+      }
+      const m = new WebAssembly.Module(bytes);
       const t2 = performance.now();
       const i = new WebAssembly.Instance(m, { env: { memory: mem, rd: x.jit_rd, wr: x.jit_wr, step: x.jit_step, cond: x.jit_cond } });
       const t = x.__indirect_function_table, k = t.grow(1); t.set(k, i.exports.f);
@@ -64,6 +86,7 @@ mem = x.memory;
 if (process.env.INKSOC_HOT && x.set_jit_hot) x.set_jit_hot(+process.env.INKSOC_HOT);
 if (process.env.INKSOC_CHAIN === '0' && x.set_jit_chain) x.set_jit_chain(0); // A/B: JIT exits not chained
 if (process.env.INKSOC_STACK === '0' && x.set_jit_stack) x.set_jit_stack(0); // A/B: no stack window (item 59)
+if (process.env.INKSOC_AB && x.set_jit_ab) x.set_jit_ab(+process.env.INKSOC_AB); // item 63 A/B (jitprobe engine): parts of the block code emitted twice
 if (process.env.INKSOC_REGION && x.set_jit_region) x.set_jit_region(+process.env.INKSOC_REGION); // blocks per JIT region (item 60)
 // HRMARK=1 (item 60): process.hrtime (us, same clock as node --cpu-prof samples) at t0, to cut a CPU profile by output lines
 if (process.env.HRMARK === '1') console.log(`@@HR0\t${Number(process.hrtime.bigint() / 1000n) - Math.round((performance.now() - t0) * 1000)}`);
@@ -96,6 +119,7 @@ try {
 if (line) emit('\n');
 if (st === 2) console.log(`${(performance.now() - t0).toFixed(1)}\t@@ERR engine stopped: ${dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()))}`);
 if (!done && performance.now() - t0 >= LIMIT) console.log(`${(performance.now() - t0).toFixed(1)}\t@@ERR time limit ${LIMIT} ms`);
+if (JD) fs.writeFileSync(`${JD}/index.json`, JSON.stringify({ layout: x.jit_probe_layout ? Array.from({ length: 23 }, (_, i) => x.jit_probe_layout(i)) : null, regions: jd }));
 if (JL) fs.writeFileSync(JL, JSON.stringify({ jitMs: x.stat(14), regions: jl }));
 if (PROF) fs.writeFileSync(PROF, JSON.stringify(prof));
 if (WP) fs.writeFileSync(process.env.WASI_PROFILE_JSON || 'wasiprof.json', JSON.stringify(WP.data(t0)));
