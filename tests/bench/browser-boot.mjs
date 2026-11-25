@@ -33,7 +33,7 @@ const INIT = () => {
         if (m.type === 'mark') T.marks[m.name] = m.t;
         else if (m.type === 'out') {
           T.text += m.text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
-          hit('user', /New UNIX username/); hit('shell', /tester@inksoc/); hit('ls', /DONE2/);
+          hit('user', /New UNIX username/); hit('pwsent', /Retype new password/); hit('done', /Done\. The same password/); hit('shell', /tester@inksoc/); hit('ls', /DONE2/);
         }
       });
     }
@@ -72,7 +72,7 @@ async function one(type, name) {
     await p.goto(`http://localhost:${PORT}/index.html`, { waitUntil: 'load' });
     const pageload = await p.evaluate(() => performance.timeOrigin + performance.getEntriesByType('navigation')[0].loadEventEnd);
     const c = await visit(p, `${name} cold`, true);
-    const cold = { ...c.t.marks, pageload, navStart: c.t.navStart, user: c.t.hits.user, shell: c.t.hits.shell, sent: c.sent, ls: c.t.hits.ls };
+    const cold = { ...c.t.marks, pageload, navStart: c.t.navStart, user: c.t.hits.user, pwsent: c.t.hits.pwsent, done: c.t.hits.done, shell: c.t.hits.shell, sent: c.sent, ls: c.t.hits.ls };
     await p.evaluate(() => new Promise((ok) => { w.addEventListener('message', (e) => e.data.type === 'saved' && ok()); w.postMessage({ type: 'save' }); setTimeout(ok, 15000); }));
     await p.waitForTimeout(500);
     await p.reload({ waitUntil: 'load' });
@@ -95,7 +95,7 @@ const chunks = (m, cold) => {
     ['kernel start() (x.start)', d('loaded', 'started')], ['kernel boot -> first output', d('started', 'firstout')]);
   c.push([cold ? 'first output -> "New UNIX username" prompt' : 'first output -> shell prompt', d('firstout', cold ? 'user' : 'shell')]);
   c.push(['TOTAL nav -> usable prompt', (cold ? m.user : m.shell) - m.navStart]);
-  if (cold) c.push(['(then create user -> shell prompt)', m.shell - m.user]);
+  if (cold) c.push(['(then create user -> shell prompt)', m.shell - m.user], ['  of which: Retype prompt -> "Done." (adduser + addgroup + 2x chpasswd)', m.done - m.pwsent], ['  of which: "Done." -> shell prompt (motd + su -l)', m.shell - m.done]);
   c.push(['first command `ls /` (send -> output)', m.ls - m.sent]);
   return c;
 };
