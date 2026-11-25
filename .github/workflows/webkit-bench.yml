@@ -1,0 +1,43 @@
+name: WebKit benchmark
+# Item 47 (measurement only): the committed engine.wasm in Chromium (V8) and WebKit (JavaScriptCore, the
+# engine of Safari / the iPad) in the same run, same inputs: x86 cpubench, python3 x86 and WebAssembly start,
+# JIT compile time. Light: no big files. Runs only when started by hand or when a PR touches these files.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/webkit-bench.yml'
+      - 'tests/bench/browser*'
+permissions:
+  contents: read
+concurrency:
+  group: webkit-bench-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Inputs (cpubench, x86 python3, the catalog's python3 WebAssembly)
+        run: |
+          mkdir -p out
+          timeout 300 docker run --rm -v "$PWD":/w -w /w alpine:3.21 sh -c '
+            apk add -q gcc musl-dev &&
+            gcc -O2 -static -o out/cpubench tests/src/cpubench.c &&
+            mkdir /x && apk add -q --root /x --initdb --allow-untrusted --no-scripts \
+              --repositories-file /etc/apk/repositories python3 &&
+            tar -C /x -cf out/zpkgs.tar usr/bin usr/lib lib etc/ssl 2>/dev/null'
+          cp tests/bench/browser.sh out/
+          e=$(awk -F '\t' '$1 == "python3"' overlay/etc/inksoc/wasm-catalog)
+          mkdir -p $RUNNER_TEMP/pw/usr/local/bin
+          timeout 300 curl -fsSL --retry 3 -o $RUNNER_TEMP/pw/usr/local/bin/python3 "$(printf '%s' "$e" | cut -f2)"
+          echo "$(printf '%s' "$e" | cut -f3)  $RUNNER_TEMP/pw/usr/local/bin/python3" | sha256sum -c
+          tar --format=ustar -C $RUNNER_TEMP/pw -cf out/zpywasm.tar usr
+          ls -la out
+      - name: Playwright (Chromium + WebKit)
+        run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit'
+      - name: Bench in both browsers
+        run: timeout 900 node tests/bench/browser.mjs
