@@ -50,6 +50,14 @@ jobs:
             curl -fsSL --retry 3 -o tests/coreutils.wasm "$(printf '%s' "$e" | cut -f2)"
             echo "$(printf '%s' "$e" | cut -f3)  tests/coreutils.wasm" | sha256sum -c
           fi
+      - name: QuickJS-ng from the WebAssembly catalog (URL and sha256 from the catalog; skipped while the catalog has no entry) + small start/loop bench
+        run: |
+          e=$(awk -F '\t' '$1 == "quickjs"' overlay/etc/inksoc/wasm-catalog)
+          if [ -n "$e" ]; then
+            timeout 300 curl -fsSL --retry 3 -o tests/qjs.wasm "$(printf '%s' "$e" | cut -f2)"
+            echo "$(printf '%s' "$e" | cut -f3)  tests/qjs.wasm" | sha256sum -c
+            timeout 120 node --no-warnings tests/bench/qjs-bench.mjs tests/qjs.wasm | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Build the engine
         run: |
           rustup target add wasm32-unknown-unknown
