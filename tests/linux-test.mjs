@@ -362,7 +362,7 @@ if (hasWasi) {
     await step('apk add --no-network coreutils; echo cu-add-rc=$?\n', /Password/, 'coreutils: apk add asks sudo');
     await step('pw1\n', /OK: coreutils installed[\s\S]*cu-add-rc=0/, 'coreutils: apk add installs the multicall program and its links');
     const linked = ['sort', 'wc', 'cut', 'tr', 'uniq', 'paste', 'od', 'seq', 'join'];
-    await step(`hash -r; command -v ${linked.join(' ')}; command -v sh cat; coreutils ls --version | head -n 1; coreutils --help | busybox grep -c ls; echo cu-res\n`,
+    await step(`hash -r; for n in ${linked.join(' ')} sh cat; do command -v $n; done; coreutils ls --version | head -n 1; coreutils --help | busybox grep -c ls; echo cu-res\n`,
       new RegExp(linked.map((n) => '^/usr/local/bin/' + n + '\\s+').join('') + '^/bin/sh\\s+^/bin/cat\\s+ls \\(uutils coreutils\\) 0\\.8\\.0[\\s\\S]*cu-res', 'm'),
       'coreutils: PATH picks the linked WebAssembly programs, sh and cat stay busybox, multicall form "coreutils ls" works');
     await step(`cd /tmp && rm -rf cu && mkdir cu && cd cu && busybox seq 1 3000 | busybox awk '{printf "%d w%d\\n", ($1*7919)%1009, $1%37}' > d.txt && echo made-$(busybox wc -l < d.txt)\n`, /made-3000/, 'coreutils: test data');
