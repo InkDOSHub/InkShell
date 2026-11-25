@@ -147,7 +147,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-24 | 2 | 42: perfil float x86 (pxor+cvtsi2sd = 72% do laço; x87 222x fora do JIT) | #67 | 1 |
 | 2026-11-25 | 2 | 44: x86 JIT idioma zero xmm (float 7,5x → 3,2x, cpu.float 315 → 135 ms) | #68 | 1 |
 | 2026-11-25 | 2 | 43: x86 JIT pilha rápida (travado, queimado: pilha não é gargalo; calls = aquecimento/tier V8) | #69 | 2 |
-| 2026-11-25 | 2 | 45: WASI lê /mnt grande na página sem service worker (FileReaderSync) | #N | 2 |
+| 2026-11-25 | 2 | 45: WASI lê /mnt grande na página sem service worker (FileReaderSync) | #70 | 2 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
