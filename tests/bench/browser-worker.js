@@ -4,7 +4,7 @@
 import { runWasi } from '/wasi.js';
 import { swapStore } from '/tests/swap-store.mjs';
 self.onmessage = async (ev) => {
-  const { files, cmd, pool, hot, region } = ev.data;
+  const { files, cmd, pool, hot, region, stack } = ev.data;
   const dec = new TextDecoder(), enc = new TextEncoder();
   const lines = [], jit = { n: 0, ms: 0, bytes: 0, err: '' };
   let mem, x, line = '', done = false, err = '';
@@ -42,6 +42,7 @@ self.onmessage = async (ev) => {
     mem = x.memory;
     if (hot) { if (!x.set_jit_hot) throw new Error('engine.wasm has no set_jit_hot'); x.set_jit_hot(hot); }
     if (region) { if (!x.set_jit_region) throw new Error('engine.wasm has no set_jit_region'); x.set_jit_region(region); }
+    if (stack === 0) { if (!x.set_jit_stack) throw new Error('engine.wasm has no set_jit_stack'); x.set_jit_stack(0); }
     const put = (b) => { const p = x.buffer(b.length); new Uint8Array(mem.buffer, p, b.length).set(b); };
     const add = (name, data) => { const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 1 + d.length); b.set(nm); b.set(d, nm.length + 1); put(b); x.add_file(); };
     x.init(pool, 8192);

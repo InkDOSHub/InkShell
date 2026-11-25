@@ -43,6 +43,18 @@ fn chain_on() -> bool {
     CHAIN.load(core::sync::atomic::Ordering::Relaxed)
 }
 
+static STACK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+/// Stack window (item 59, on by default; 0 = off, to measure): a block whose accesses at fixed
+/// offsets from its entry rsp (push/pop/call/ret, [rsp+d]) fit in one page checks the TLB once at
+/// its start; those accesses then use the saved host address with no per-access check.
+#[no_mangle]
+pub extern "C" fn set_jit_stack(on: u32) {
+    STACK.store(on != 0, core::sync::atomic::Ordering::Relaxed);
+}
+fn stack_on() -> bool {
+    STACK.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 static HOT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(500);
 /// Visits before a block is compiled (default 500, item 52: best of HOT {40..2000} x region {16,32,64} in Chromium and WebKit). Run-time settable in every build (item 48 sweeps
 /// it in Chromium and WebKit; item 46's jitprobe build uses it too).
@@ -595,12 +607,17 @@ const F_RD: u32 = 0;
 const F_WR: u32 = 1;
 const F_STEP: u32 = 2;
 const F_COND: u32 = 3;
+// in-module helpers (only in a module that uses a stack window): checked access, same signatures as rd/wr
+const F_GRD: u32 = 5;
+const F_GWR: u32 = 6;
 
 // locals: i32 first, then i64
 const L_E: u32 = 0; // TLB entry address
 const L_C: u32 = 1; // i32 scratch (conditions)
 const L_B: u32 = 2; // next block of the region
-const N_I32: u32 = 3;
+const L_GS: u32 = 3; // stack window ok (1) for the current block
+const L_HB: u32 = 4; // host address of the stack window's first byte
+const N_I32: u32 = 5;
 const R0: u32 = N_I32; // 16 guest registers
 const L_A: u32 = R0 + 16; // address of the memory operand
 const L_A2: u32 = R0 + 17; // second address (stack)
@@ -648,6 +665,15 @@ struct G {
     cur: usize,              // index of the block being emitted
     hints: Vec<(usize, u8)>, // branch hints: code position of an `if`, 1 = usually taken, 0 = rarely
     chain: bool,             // exits tail-call the next block found in the dispatcher's cache
+    // stack window (item 59): offsets are from the current block's entry rsp
+    rsp_d: Option<i64>,      // rsp local = entry rsp + this (None = unknown)
+    rsp_next: Option<i64>,   // value rsp_d takes at the next write of the rsp local (tracked updates)
+    rsp_reload: bool,        // the rsp local is being reloaded from Cpu (same value)
+    ea_at: (usize, i64),     // code position right after an ea() of [rsp+d], and its offset
+    off_a: Option<i64>,      // L_A holds entry rsp + this
+    off_a2: Option<i64>,     // L_A2 holds entry rsp + this
+    grp: Option<(i64, i64)>, // window [lo, hi) checked at the block start (L_GS, L_HB)
+    helpers: bool,           // the module needs F_GRD / F_GWR
 }
 
 macro_rules! off {
@@ -691,6 +717,15 @@ impl G {
     }
     /// Local l gets the value on the stack: is it known zero-extended from 32 bits?
     fn track(&mut self, l: u32) {
+        if l == R0 + 4 {
+            if !self.rsp_reload {
+                self.rsp_d = self.rsp_next.take();
+            }
+        } else if l == L_A {
+            self.off_a = if self.ea_at.0 == self.c.len() { Some(self.ea_at.1) } else { None };
+        } else if l == L_A2 {
+            self.off_a2 = None;
+        }
         if self.last_mask == self.c.len() {
             self.z.insert(l);
         } else if !self.z.is_empty() {
@@ -724,6 +759,11 @@ impl G {
     fn call(&mut self, f: u32) {
         self.b(CALL);
         self.u(f as u64);
+        // the engine may evict or remap pages there: the window's host address is stale
+        if self.grp.is_some() && matches!(f, F_RD | F_WR | F_STEP) {
+            self.i32c(0);
+            self.set(L_GS);
+        }
     }
 
     // cpu struct fields (absolute addresses as load/store offsets from 0)
@@ -745,7 +785,9 @@ impl G {
             self.i32c(0);
             let a = self.reg_addr(r);
             self.mem(I64LOAD, 3, a);
+            self.rsp_reload = true;
             self.set(R0 + r as u32);
+            self.rsp_reload = false;
             self.valid |= 1 << r;
         }
     }
@@ -888,6 +930,27 @@ impl G {
     /// Pushes the size-bit value at address local `a`.
     fn load(&mut self, a: u32, size: u32) {
         self.cnt(3);
+        if let Some(off) = self.win_off(a, size) {
+            let (op, al) = match size {
+                8 => (0x31, 0),
+                16 => (0x33, 1),
+                32 => (0x35, 2),
+                _ => (I64LOAD, 3),
+            };
+            self.cnt(11);
+            self.get(L_GS);
+            self.if_hint(T_I64, true);
+            self.get(L_HB);
+            self.mem(op, al, self.pool + off);
+            self.b(ELSE);
+            self.cnt(12);
+            self.get(a);
+            self.i32c(size as i32);
+            self.call(F_GRD);
+            self.b(END);
+            self.helpers = true;
+            return;
+        }
         self.tlb_check(a, size / 8, false);
         #[cfg(feature = "ab_tlb")]
         {
@@ -940,6 +1003,29 @@ impl G {
     /// Stores local v (size bits) at address local `a`.
     fn store(&mut self, a: u32, v: u32, size: u32) {
         self.cnt(4);
+        if let Some(off) = self.win_off(a, size) {
+            let (op, al) = match size {
+                8 => (0x3C, 0),
+                16 => (0x3D, 1),
+                32 => (0x3E, 2),
+                _ => (I64STORE, 3),
+            };
+            self.cnt(11);
+            self.get(L_GS);
+            self.if_hint(VOID, true);
+            self.get(L_HB);
+            self.get(v);
+            self.mem(op, al, self.pool + off);
+            self.b(ELSE);
+            self.cnt(12);
+            self.get(a);
+            self.get(v);
+            self.i32c(size as i32);
+            self.call(F_GWR);
+            self.b(END);
+            self.helpers = true;
+            return;
+        }
         self.tlb_check(a, size / 8, true);
         #[cfg(feature = "ab_tlb")]
         {
@@ -993,6 +1079,41 @@ impl G {
         self.b(END);
     }
 
+    /// Offset in the block's stack window of the access of `size` bits at local `a`, when the
+    /// window covers it (L_A / L_A2 at a known offset from the entry rsp).
+    fn win_off(&self, a: u32, size: u32) -> Option<u32> {
+        let (lo, hi) = self.grp?;
+        let o = match a {
+            L_A => self.off_a?,
+            L_A2 => self.off_a2?,
+            _ => return None,
+        };
+        if o >= lo && o + (size / 8) as i64 <= hi {
+            Some((o - lo) as u32)
+        } else {
+            None
+        }
+    }
+    /// One TLB check (writable) for the window [entry rsp + lo, entry rsp + hi), emitted right
+    /// before the block's first stack access, where the rsp local is entry rsp + d. (At the block
+    /// start it ran on every turn of a loop that leaves the block by a conditional jump before its
+    /// stack accesses: cpubench int, 60M checks, WebKit int +86%.)
+    fn win_start(&mut self, lo: i64, hi: i64, d: i64) {
+        self.cnt(13);
+        self.ensure(4);
+        self.get(R0 + 4);
+        if lo != d {
+            self.i64c(lo.wrapping_sub(d) as u64);
+            self.b(I64ADD);
+        }
+        self.set(L_T);
+        self.tlb_check(L_T, (hi - lo) as u32, true);
+        self.set(L_GS);
+        self.host(L_T);
+        self.set(L_HB);
+        self.grp = Some((lo, hi));
+    }
+
     /// Pushes the effective address of a memory operand (no segment prefix).
     fn ea(&mut self, m: &ModRm, next: u64) {
         if self.m32 {
@@ -1035,6 +1156,9 @@ impl G {
         } else if m.disp != 0 {
             self.i64c(m.disp as u64);
             self.b(I64ADD);
+        }
+        if let (Some(4), None, Some(d)) = (m.base, m.index, self.rsp_d) {
+            self.ea_at = (self.c.len(), d.wrapping_add(m.disp));
         }
     }
 
@@ -1518,6 +1642,10 @@ impl G {
         self.b(END);
         self.valid = 0;
         self.dirty = 0;
+        // the interpreter may have changed rsp or the page tables
+        self.rsp_d = None;
+        self.grp = None;
+        self.ea_at = (usize::MAX, 0);
     }
 
     /// PUSH in 32-bit code: ESP - 4, wrapping at 4 GB.
@@ -1541,8 +1669,11 @@ impl G {
         self.i64c(8);
         self.b(I64SUB);
         self.set(L_A2);
+        let d = self.rsp_d.map(|d| d - 8);
+        self.off_a2 = d;
         self.store(L_A2, v, 64);
         self.get(L_A2);
+        self.rsp_next = d;
         self.set(R0 + 4);
         self.dirty |= 1 << 4;
     }
@@ -1794,12 +1925,14 @@ fn native(g: &mut G, i: &Ins, live: bool, n: u32) -> bool {
             g.ensure(4);
             g.get(R0 + 4);
             g.set(L_A2);
+            g.off_a2 = g.rsp_d;
             let v = g.tmp();
             g.load(L_A2, 64);
             g.set(v);
             g.get(L_A2);
             g.i64c(8);
             g.b(I64ADD);
+            g.rsp_next = g.rsp_d.map(|d| d + 8);
             g.set(R0 + 4);
             g.dirty |= 1 << 4;
             g.wr_reg(r, false, 64, v);
@@ -3683,6 +3816,14 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
         hints: Vec::new(),
         cur: 0,
         chain: chain_on(),
+        rsp_d: None,
+        rsp_next: None,
+        rsp_reload: false,
+        ea_at: (usize::MAX, 0),
+        off_a: None,
+        off_a2: None,
+        grp: None,
+        helpers: false,
     };
     if lic {
         g.cpu_ld64(off!(icount));
@@ -3731,6 +3872,88 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
     finish(g)
 }
 
+/// rsp after `add/sub rsp, imm` or `lea rsp, [rsp+d]` (64-bit), as an offset from the entry rsp.
+fn rsp_update(i: &Ins, d: Option<i64>) -> Option<i64> {
+    let d = d?;
+    let m = i.m?;
+    if i.osz != 64 || i.seg || i.a67 {
+        return None;
+    }
+    match i.op {
+        0x81 | 0x83 if m.md == 3 && m.rm == 4 => {
+            let imm = i.imm as u32 as i32 as i64;
+            match m.reg & 7 {
+                0 => Some(d + imm),
+                5 => Some(d - imm),
+                _ => None,
+            }
+        }
+        0x8D if m.reg == 4 && m.base == Some(4) && m.index.is_none() && !m.riprel => Some(d + m.disp),
+        _ => None,
+    }
+}
+
+/// Estimate of the block's stack accesses at fixed offsets from its entry rsp: the window [lo, hi)
+/// when there are at least two and it is small, and the index of the first one (where the check
+/// goes). Only an estimate: each access is checked against the window when it is emitted (the
+/// others take the usual path).
+fn stack_window(list: &[Ins]) -> Option<(usize, i64, i64)> {
+    let (mut d, mut lo, mut hi, mut n) = (0i64, i64::MAX, i64::MIN, 0);
+    let mut first = 0;
+    let mut acc = |a: i64, b: i64, n: &mut u32| {
+        lo = lo.min(a);
+        hi = hi.max(b);
+        *n += 1;
+    };
+    for (k, i) in list.iter().enumerate() {
+        if i.seg || i.a67 || i.osz == 16 {
+            break;
+        }
+        if n == 0 {
+            first = k;
+        }
+        if let Some(m) = i.m {
+            if m.md != 3 && m.base == Some(4) && m.index.is_none() && !m.riprel {
+                let s = if i.op > 0xFF { 16 } else { 8 };
+                acc(d + m.disp, d + m.disp + s, &mut n);
+            }
+        }
+        match i.op {
+            0x50..=0x57 | 0x68 | 0x6A => {
+                acc(d - 8, d, &mut n);
+                d -= 8;
+            }
+            0x58..=0x5F => {
+                if i.op == 0x5C && i.rex & 1 == 0 {
+                    break;
+                }
+                acc(d, d + 8, &mut n);
+                d += 8;
+            }
+            0xE8 => acc(d - 8, d, &mut n),
+            0xC3 | 0xC2 => acc(d, d + 8, &mut n),
+            0xFF => match i.m.map(|m| m.reg & 7) {
+                Some(2) => acc(d - 8, d, &mut n),
+                Some(6) => {
+                    acc(d - 8, d, &mut n);
+                    d -= 8;
+                }
+                _ => {}
+            },
+            _ => {
+                if let Some(nd) = rsp_update(i, Some(d)) {
+                    d = nd;
+                }
+            }
+        }
+    }
+    if n >= 2 && hi - lo <= 2048 {
+        Some((first, lo, hi))
+    } else {
+        None
+    }
+}
+
 fn emit_block(g: &mut G, b: Block) {
     let Block { list, mut end_rip, pc } = b;
     // flag liveness after each instruction (exits count as reads)
@@ -3751,6 +3974,15 @@ fn emit_block(g: &mut G, b: Block) {
         }
     }
 
+    // stack window (item 59): offsets from the entry rsp, reset per block
+    g.rsp_d = Some(0);
+    g.rsp_next = None;
+    g.ea_at = (usize::MAX, 0);
+    g.off_a = None;
+    g.off_a2 = None;
+    g.grp = None;
+    let win = if opt() && stack_on() && !g.m32 && !crate::mmu::strong() { stack_window(&list) } else { None };
+
     let mut done_all = false;
     let mut cut = false; // out of locals: leave the region (an edge the region's analysis did not see)
     for (k, i) in list.iter().enumerate() {
@@ -3759,6 +3991,12 @@ fn emit_block(g: &mut G, b: Block) {
             end_rip = Some(i.rip);
             cut = true;
             break;
+        }
+        // straight-line code from here on (conditional jumps only leave): the check covers the rest
+        if let (Some((first, lo, hi)), Some(d)) = (win, g.rsp_d) {
+            if k == first {
+                g.win_start(lo, hi, d);
+            }
         }
         match i.op {
             0x70..=0x7F | 0x0F80..=0x0F8F => {
@@ -3792,6 +4030,7 @@ fn emit_block(g: &mut G, b: Block) {
                 g.ensure(4);
                 g.get(R0 + 4);
                 g.set(L_A2);
+                g.off_a2 = g.rsp_d;
                 let t = g.tmp();
                 g.load(L_A2, 64);
                 g.set(t);
@@ -3826,7 +4065,10 @@ fn emit_block(g: &mut G, b: Block) {
             _ => {}
         }
         let snap = (g.c.len(), g.ntmp, g.valid, g.dirty, g.prod);
-        if !native(g, i, live[k], n) {
+        g.rsp_next = rsp_update(i, g.rsp_d);
+        let ok = native(g, i, live[k], n);
+        g.rsp_next = None;
+        if !ok {
             g.c.truncate(snap.0);
             (g.ntmp, g.valid, g.dirty, g.prod) = (snap.1, snap.2, snap.3, snap.4);
             g.fallback(i, n);
@@ -3878,7 +4120,11 @@ fn finish(g: G) -> Option<Vec<u8>> {
     }
 
     section(&mut m, 2, &imp);
-    section(&mut m, 3, &[1, 0]);
+    if g.helpers {
+        section(&mut m, 3, &[3, 0, 1, 2]);
+    } else {
+        section(&mut m, 3, &[1, 0]);
+    }
     section(&mut m, 7, &[1, 1, b'f', 0x00, 4]);
     if !g.hints.is_empty() {
         // custom section "metadata.code.branch_hint" (before the code section): function 4, offsets in its body
@@ -3896,11 +4142,76 @@ fn finish(g: G) -> Option<Vec<u8>> {
         }
         section(&mut m, 0, &h);
     }
-    let mut code = vec![1u8];
+    let mut code = vec![if g.helpers { 3u8 } else { 1 }];
     leb_u(&mut code, body.len() as u64);
     code.extend_from_slice(&body);
+    if g.helpers {
+        for w in [false, true] {
+            let h = helper(g.tlb, g.pool, w);
+            leb_u(&mut code, h.len() as u64);
+            code.extend_from_slice(&h);
+        }
+    }
     section(&mut m, 10, &code);
     Some(m)
+}
+
+/// Body of F_GRD (write = false: (a i64, size i32) -> i64) or F_GWR ((a i64, v i64, size i32)):
+/// the usual inline TLB check and access, else the engine's rd/wr. The slow side of a stack
+/// window access (its check at the block start failed: page crossing, miss, not writable).
+fn helper(tlb: u32, pool: u32, write: bool) -> Vec<u8> {
+    let (pa, pv, ps, e) = if write { (0u8, 1u8, 2u8, 3u8) } else { (0, 0, 1, 2) };
+    let mut c: Vec<u8> = vec![1, 1, 0x7F]; // one i32 local (TLB entry, then host address)
+    let mem = |c: &mut Vec<u8>, op: u8, al: u32, off: u32| {
+        c.push(op);
+        leb_u(c, al as u64);
+        leb_u(c, off as u64);
+    };
+    c.extend_from_slice(&[LGET, pa, I32WRAP, I32C, 12, I32SHRU, I32C]);
+    leb_s(&mut c, crate::mmu::Mmu::TLB_MASK as i64);
+    c.extend_from_slice(&[I32AND, I32C, 4, I32SHL, LTEE, e]);
+    mem(&mut c, I64LOAD, 3, tlb);
+    // last byte's page: a + size / 8 - 1
+    c.extend_from_slice(&[LGET, pa, LGET, ps, I32C, 3, I32SHRU, I64EXTU, I64ADD, I64C, 1, I64SUB, I64C, 12, I64SHRU, I64EQ]);
+    if write {
+        c.extend_from_slice(&[LGET, e]);
+        mem(&mut c, I32LOAD8U, 0, tlb + 12);
+        c.push(I32AND);
+    }
+    c.extend_from_slice(&[IF, if write { VOID } else { T_I64 }, LGET, e]);
+    mem(&mut c, I32LOAD, 2, tlb + 8);
+    c.extend_from_slice(&[LGET, pa, I32WRAP, I32ADD, LSET, e]);
+    let ops: [(u8, u32, u8, u8); 4] = if write {
+        [(64, 3, I64STORE, 0), (32, 2, 0x3E, 0), (16, 1, 0x3D, 0), (8, 0, 0x3C, 0)]
+    } else {
+        [(64, 3, I64LOAD, 0), (32, 2, 0x35, 0), (16, 1, 0x33, 0), (8, 0, 0x31, 0)]
+    };
+    let bt = if write { VOID } else { T_I64 };
+    for (k, &(sz, al, op, _)) in ops.iter().enumerate() {
+        if k < 3 {
+            c.extend_from_slice(&[LGET, ps, I32C]);
+            leb_s(&mut c, sz as i64);
+            c.extend_from_slice(&[0x46, IF, bt]); // i32.eq
+        }
+        c.extend_from_slice(&[LGET, e]);
+        if write {
+            c.extend_from_slice(&[LGET, pv]);
+        }
+        mem(&mut c, op, al, pool);
+        if k < 3 {
+            c.push(ELSE);
+        }
+    }
+    c.extend_from_slice(&[END, END, END]);
+    c.push(ELSE);
+    if write {
+        c.extend_from_slice(&[LGET, pa, LGET, pv, LGET, ps, CALL, F_WR as u8]);
+    } else {
+        c.extend_from_slice(&[LGET, pa, LGET, ps, CALL, F_RD as u8]);
+    }
+    c.push(END); // if
+    c.push(END); // function
+    c
 }
 
 fn section(m: &mut Vec<u8>, id: u8, data: &[u8]) {

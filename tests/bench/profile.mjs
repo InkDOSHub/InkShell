@@ -46,11 +46,11 @@ for (const { name, ms, d } of secs) {
   const tot = d[1] + d[3];
   md += `| ${name} | ${ms.toFixed(0)} | ${M(tot)} | ${pct(d[1], tot)} | ${M(d[0])} | ${r1(d[1], d[0])} | ${M(d[2])} | ${r1(d[3], d[2])} | ${(d[4] / 1e3).toFixed(1)} | ${d[6]} | ${d[7]} | ${(d[10] / 1e3).toFixed(1)} |\n`;
 }
-md += '\n**Saídas dos blocos JIT** (M; % das execuções de bloco) e ações dentro do JIT\n\n| seção | encadeadas (sem dispatcher) | rip fixo | rip calculado (ret/indireto) | laço (orçamento) | fallback parou | fallbacks (instr interp. no JIT) | saltos p/ trás | saltos p/ frente | chamadas cond() | loads | stores |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n';
+md += '\n**Saídas dos blocos JIT** (M; % das execuções de bloco) e ações dentro do JIT\n\n| seção | encadeadas (sem dispatcher) | rip fixo | rip calculado (ret/indireto) | laço (orçamento) | fallback parou | fallbacks (instr interp. no JIT) | saltos p/ trás | saltos p/ frente | chamadas cond() | loads | stores | janela de pilha: acessos (lentos) / checagens |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n';
 for (const { name, d } of secs) {
   // block runs = entered from the dispatcher (d[0]) + entered by a chained exit (DYN[10])
   const n = d[0] + d[26], y = (k) => `${M(d[16 + k])} (${pct(d[16 + k], n)})`;
-  md += `| ${name} | ${y(10)} | ${y(2)} | ${y(8)} | ${y(9)} | ${M(d[8])} (${pct(d[8], n)}) | ${M(d[22])} | ${M(d[17])} | ${M(d[16])} | ${M(d[21])} | ${M(d[19])} | ${M(d[20])} |\n`;
+  md += `| ${name} | ${y(10)} | ${y(2)} | ${y(8)} | ${y(9)} | ${M(d[8])} (${pct(d[8], n)}) | ${M(d[22])} | ${M(d[17])} | ${M(d[16])} | ${M(d[21])} | ${M(d[19])} | ${M(d[20])} | ${M(d[27])} (${M(d[28])}) / ${M(d[29])} |\n`;
 }
 md += '\n**Top opcodes interpretados** (traces + fallbacks; M e % das instruções interpretadas da seção)\n\n| seção | interp. (M) | top 6 |\n|---|---:|---|\n';
 for (const { name, o } of secs) {
