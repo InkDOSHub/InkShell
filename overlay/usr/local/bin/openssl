@@ -1,0 +1,14 @@
+#!/bin/sh
+# InkShell: busybox wget runs "openssl s_client -quiet -connect HOST:PORT -servername NAME" for https
+# (stdin/stdout = its socketpair). busybox's own TLS is refused by some servers (github.com, where the
+# store's files are: alert 80), so this hands the connection to OpenSSL: Alpine's /usr/bin/ssl_client
+# (what apk uses), with certificate checks. The real openssl (apk add openssl) is used when installed.
+[ -x /usr/bin/openssl ] && exec /usr/bin/openssl "$@"
+[ "$1" = s_client ] || { echo "openssl: only 's_client -connect' here (apk add openssl for the full tool)" >&2; exit 1; }
+shift; c= n=
+while [ $# -gt 0 ]; do case $1 in -connect) c=$2; shift ;; -servername) n=$2; shift ;; esac; shift; done
+[ -n "$c" ] || { echo "openssl s_client: -connect HOST:PORT needed" >&2; exit 1; }
+h=${c%:*}; p=${c##*:}
+# nc connects and runs the helper with the socket on 0/1; the caller's stdin/stdout wait on 4/5
+exec 4<&0 5>&1
+INK_SNI=${n:-$h} exec nc "$h" "$p" -e /usr/local/libexec/inksoc-tls
