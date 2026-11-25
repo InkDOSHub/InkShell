@@ -4,12 +4,15 @@
 // (and appends it to $GITHUB_STEP_SUMMARY). Exit 1 when a browser did not finish a run.
 // HOTS=10,40,100 (item 48): also runs the x86 subset once per JIT hot threshold (set_jit_hot) in each
 // browser and adds a sweep table; the main table stays the engine default (no set_jit_hot call).
+// REGIONS=16,32,64 (item 52): the sweep becomes HOTS x REGIONS (set_jit_region = max blocks per region).
 import { chromium, webkit } from 'playwright';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 const PORT = 8124, POOL = +(process.env.POOL_MB || 512);
 const HOTS = (process.env.HOTS || '').split(',').map(Number).filter((n) => n > 0);
+const REGIONS = (process.env.REGIONS || '').split(',').map(Number).filter((n) => n > 0);
+const RS = REGIONS.length ? REGIONS : [0]; // 0 = engine default (no set_jit_region call)
 const types = { '.js': 'text/javascript', '.mjs': 'text/javascript', '.html': 'text/html', '.wasm': 'application/wasm' };
 const srv = http.createServer((q, r) => {
   const u = decodeURIComponent(q.url.split('?')[0]);
@@ -21,7 +24,7 @@ const RUNS = [
   { id: 'x86', files: [['cpubench', '/out/cpubench'], ['zpkgs.tar', '/out/zpkgs.tar'], ['browser.sh', '/out/browser.sh']], cmd: 'sh /root/browser.sh cpu py' },
   { id: 'wasm', files: [['zpywasm.tar', '/out/zpywasm.tar'], ['browser.sh', '/out/browser.sh']], cmd: 'sh /root/browser.sh py' },
 ];
-async function run(type, name, r, hot = 0) {
+async function run(type, name, r, hot = 0, region = 0) {
   const b = await type.launch();
   try {
     const p = await b.newPage();
@@ -29,12 +32,12 @@ async function run(type, name, r, hot = 0) {
     p.on('console', (m) => { if (m.type() === 'error') console.log(`[${name} console]`, m.text()); });
     await p.goto(`http://localhost:${PORT}/bench.html`);
     const ver = b.version();
-    const res = await p.evaluate(({ files, cmd, pool, hot }) => new Promise((ok) => {
+    const res = await p.evaluate(({ files, cmd, pool, hot, region }) => new Promise((ok) => {
       const w = new Worker('/tests/bench/browser-worker.js', { type: 'module' });
       w.onmessage = (e) => ok(e.data);
       w.onerror = (e) => ok({ err: 'worker error: ' + e.message, lines: [], jit: {}, done: false });
-      w.postMessage({ files, cmd, pool, hot });
-    }), { files: r.files, cmd: r.cmd, pool: POOL, hot });
+      w.postMessage({ files, cmd, pool, hot, region });
+    }), { files: r.files, cmd: r.cmd, pool: POOL, hot, region });
     return { ...res, ver };
   } catch (e) {
     return { err: String(e), lines: [], jit: {}, done: false, ver: '?' };
@@ -53,12 +56,12 @@ function parse(lines) {
 }
 const out = {};
 const jobs = [];
-for (const r of RUNS) for (const n of ['chromium', 'webkit']) jobs.push([r, n, 0, `${r.id}/${n}`]);
-for (const h of HOTS) for (const n of ['chromium', 'webkit']) jobs.push([RUNS[0], n, h, `hot${h}/${n}`]);
-for (const [r, n, hot, key] of jobs) {
+for (const r of RUNS) for (const n of ['chromium', 'webkit']) jobs.push([r, n, 0, 0, `${r.id}/${n}`]);
+for (const h of HOTS) for (const g of RS) for (const n of ['chromium', 'webkit']) jobs.push([RUNS[0], n, h, g, `hot${h}r${g}/${n}`]);
+for (const [r, n, hot, region, key] of jobs) {
   const t = n === 'chromium' ? chromium : webkit;
   console.log(`::group::${key}`);
-  const res = await run(t, n, r, hot);
+  const res = await run(t, n, r, hot, region);
   console.log(res.lines.map(([t, l]) => `${t}\t${l}`).join('\n'));
   if (res.err) console.log('ERR: ' + res.err);
   console.log(`done=${res.done} jit=${JSON.stringify(res.jit)} mem=${res.mem}MB version=${res.ver}`);
@@ -81,13 +84,13 @@ const j = (k) => { const v = out[k]?.jit; return v && v.n != null ? `${v.n} modu
 L.push('', '| JIT compile+instantiate (x86 run / WASM run) | Chromium | WebKit |', '|---|---|---|',
   `| host_jit | ${j('x86/chromium')} / ${j('wasm/chromium')} | ${j('x86/webkit')} / ${j('wasm/webkit')} |`);
 if (HOTS.length) {
-  L.push('', '### x86 JIT hot threshold sweep (set_jit_hot; default 40)', '',
-    '| browser | HOT | cpu calls | cpu sort | cpu float | cpu total | py -c pass 1st | py -c pass 2nd | py 1M loop | JIT modules | JIT KB | compile ms |',
-    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|');
-  for (const n of ['chromium', 'webkit']) for (const h of HOTS) {
-    const o = out[`hot${h}/${n}`], m = o?.ms || {}, v = o?.jit || {};
-    const c = ['cpu.calls', 'cpu.sort', 'cpu.float', 'cpu.total', 'py-start-1', 'py-start-2', 'py-loop'].map((k) => f(m[k]));
-    L.push(`| ${n} | ${h} | ${c.join(' | ')} | ${v.n ?? 'n/a'} | ${v.bytes != null ? (v.bytes / 1024).toFixed(0) : 'n/a'} | ${v.ms != null ? v.ms.toFixed(0) : 'n/a'} |`);
+  L.push('', '### x86 JIT sweep: hot threshold (set_jit_hot) x region blocks (set_jit_region)', '',
+    '| browser | HOT | region blocks | cpu calls | cpu sort | cpu float | cpu int | cpu total | py -c pass 1st | py -c pass 2nd | py 1M loop | JIT modules | JIT KB | compile ms |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|');
+  for (const n of ['chromium', 'webkit']) for (const h of HOTS) for (const g of RS) {
+    const o = out[`hot${h}r${g}/${n}`], m = o?.ms || {}, v = o?.jit || {};
+    const c = ['cpu.calls', 'cpu.sort', 'cpu.float', 'cpu.int', 'cpu.total', 'py-start-1', 'py-start-2', 'py-loop'].map((k) => f(m[k]));
+    L.push(`| ${n} | ${h} | ${g || 'default'} | ${c.join(' | ')} | ${v.n ?? 'n/a'} | ${v.bytes != null ? (v.bytes / 1024).toFixed(0) : 'n/a'} | ${v.ms != null ? v.ms.toFixed(0) : 'n/a'} |`);
   }
 }
 const bad = Object.entries(out).filter(([, v]) => !v.done).map(([k, v]) => `${k}: ${v.err || 'did not finish'}`);
