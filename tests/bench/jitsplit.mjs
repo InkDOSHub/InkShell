@@ -31,13 +31,24 @@ async function inPage(type, name, script, msg) {
   try {
     const p = await b.newPage();
     p.on('pageerror', (e) => console.log(`[${name} page error]`, e.message));
-    p.on('console', (m) => { if (m.type() === 'error') console.log(`[${name} console]`, m.text()); });
+    p.on('console', (m) => { if (m.type() === 'error' || m.text().startsWith('[worker]')) console.log(`${new Date().toISOString().slice(11, 19)} [${name} console]`, m.text()); });
     await p.goto(`http://localhost:${PORT}/bench.html`);
+    // replay posts { part, log } as it goes and { res, final } at the end; capture posts its result once.
+    // 120 s without a message = terminate the worker and keep the last part.
     const res = await p.evaluate(({ script, msg }) => new Promise((ok) => {
       const w = new Worker(script, { type: 'module' });
-      w.onmessage = (e) => ok(e.data);
-      w.onerror = (e) => ok({ err: 'worker error: ' + e.message });
+      let last = null, dog;
+      const arm = () => { clearTimeout(dog); dog = setTimeout(() => { w.terminate(); ok({ res: last, err: 'no message for 120 s (partial result)' }); }, 120000); };
+      w.onmessage = (e) => {
+        const d = e.data;
+        if (d.log) console.log('[worker] ' + d.log);
+        if (d.part) last = d.part;
+        if (d.part || (d.log && !d.final)) return arm();
+        clearTimeout(dog); ok(d);
+      };
+      w.onerror = (e) => { clearTimeout(dog); ok({ res: last, err: 'worker error: ' + e.message }); };
       w.postMessage(msg);
+      if (msg.url) arm();
     }), { script, msg });
     return { ...res, ver: b.version() };
   } catch (e) { return { err: String(e), ver: '?' }; } finally { await b.close().catch(() => {}); }
@@ -70,7 +81,7 @@ for (const s of Object.keys(sets)) for (const [n, t] of [['chromium', chromium],
   const r = await inPage(t, n, '/tests/bench/jitsplit-replay.js', { url: `/out/jitset-${s}.bin` });
   console.log(JSON.stringify(r));
   console.log('::endgroup::');
-  if (r.err || !r.res) fail.push(`${s}/${n}: ${r.err}`);
+  if (r.err || !r.res?.reps?.length) fail.push(`${s}/${n}: ${r.err}`);
   R[`${s}/${n}`] = r;
 }
 srv.close();
@@ -78,16 +89,17 @@ const f = (v, d = 0) => (v == null || !isFinite(v) ? 'n/a' : v.toFixed(d));
 const L = ['## Item 55: x86 JIT compile cost, fixed per module vs per KB (Chromium V8 vs WebKit JSC)', '',
   `Chromium ${R['py/chromium']?.ver}, WebKit ${R['py/webkit']?.ver}. Real JIT modules of \`python3 -c pass\` x2 + 1M loop (x86, engine default HOT 500 / region 16), dumped from Chromium, replayed in each browser. ` +
   `Set py2 = modules compiled during the 2nd \`python3 -c pass\`; py = whole run. Capture: ${cap.jit.n} modules, ${f(cap.jit.bytes / 1024)} KB, live compile+instantiate ${f(cap.jit.ms)} ms (Chromium). ` +
-  'Times = 2nd of 2 reps (1st in parentheses), ms for the whole set. sync = `new WebAssembly.Module` one after another (what host_jit does), async = `await WebAssembly.compile` one after another, par = all `compile` at once, inst = `new Instance`, call1 = first call of every function (stub imports, zeroed memory: runs to the first exit/trap; includes lazy tier compile), call2 = second call.', ''];
+  'Times = 2nd of 2 reps (1st in parentheses), ms for the whole set. sync = `new WebAssembly.Module` one after another (what host_jit does), async = `await WebAssembly.compile` one after another, par = all `compile` at once, inst = `new Instance`, call1 = first call of every function (stub imports, 1-page memory: traps at the first cpu-struct access, so = entry + lazy tier compile, no guest code), call2 = second call.', ''];
 for (const s of Object.keys(sets)) {
   const c0 = R[`${s}/chromium`]?.res, w0 = R[`${s}/webkit`]?.res;
   L.push(`### set ${s}: ${c0?.n ?? w0?.n} modules, ${f(c0?.kb ?? w0?.kb)} KB (timer tick Chromium ${f(c0?.tick, 3)} ms, WebKit ${f(w0?.tick, 3)} ms; crossOriginIsolated ${c0?.coi}/${w0?.coi})`, '',
     '| browser | regions/module | modules | sync | async | par | inst | call1 | call2 | sync+inst+call1 | vs N=1 |', '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|');
   for (const n of ['chromium', 'webkit']) {
     const res = R[`${s}/${n}`]?.res; if (!res) continue;
-    const [r1, r2] = res.reps, tot = (o) => o.sync + o.inst + o.call1, base = tot(r2.n1);
+    const r1 = res.reps[0], r2 = res.reps[1]?.n1 ? res.reps[1] : r1, tot = (o) => o.sync + o.inst + o.call1, base = r2.n1 && tot(r2.n1);
     for (const N of [1, 4, 16, 64]) {
-      const o = r2['n' + N], p = r1['n' + N];
+      const o = r2['n' + N], p = r1['n' + N] || {};
+      if (!o) continue;
       const cell = (k) => `${f(o[k])} (${f(p[k])})`;
       L.push(`| ${n} | ${N} | ${o.modules} | ${cell('sync')} | ${cell('async')} | ${cell('asyncPar')} | ${cell('inst')} | ${cell('call1')} | ${cell('call2')} | ${f(tot(o))} (${f(tot(p))}) | ${f((tot(o) / base - 1) * 100)}% |`);
     }
@@ -96,6 +108,7 @@ for (const s of Object.keys(sets)) {
   for (const n of ['chromium', 'webkit']) {
     const res = R[`${s}/${n}`]?.res; if (!res) continue;
     for (const [i, r] of res.reps.entries()) {
+      if (!r.fit) continue;
       const { a, b } = r.fit, A = a * res.n, Bk = b * res.kb;
       L.push(`| ${n} rep ${i + 1} | ${f(a, 4)} | ${f(b, 4)} | ${f(A)} | ${f(Bk)} | ${f(A / (A + Bk) * 100)}% | ${f((r.n1.sync - r.n64.sync) / res.n / (1 - 1 / 64), 4)} |`);
     }

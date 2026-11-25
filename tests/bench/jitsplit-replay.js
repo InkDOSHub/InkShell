@@ -40,6 +40,7 @@ const batches = (ps, n) => { const r = []; for (let i = 0; i < ps.length; i += n
 const now = () => performance.now();
 self.onmessage = async (ev) => {
   try {
+    postMessage({ log: 'start' });
     const buf = new Uint8Array(await (await fetch(ev.data.url)).arrayBuffer());
     const raw = [];
     for (let i = 0; i < buf.length;) { const n = new DataView(buf.buffer, i, 4).getUint32(0, true); raw.push(buf.subarray(i + 4, i + 4 + n)); i += 4 + n; }
@@ -48,18 +49,20 @@ self.onmessage = async (ev) => {
     // timer resolution
     let tick = 1e9; for (let k = 0; k < 20; k++) { const a = now(); let b; while ((b = now()) === a); tick = Math.min(tick, b - a); }
     res.tick = tick;
-    // the engine's imports, with no engine behind them: the function runs on zeroed memory until its first
-    // exit (jit_limit 0 = every back jump exits) or a trap; enough to make a lazy tier compile the function
-    let mem = new WebAssembly.Memory({ initial: 4096 });
+    // the engine's imports, with no engine behind them, and a 1-page memory: the function traps at its first
+    // access to the cpu struct (well above 64 KB in the engine), so a first call = entry + lazy tier compile
+    // (V8 compiles a function on its first call) + trap, and never runs guest code
+    let mem = new WebAssembly.Memory({ initial: 1 });
     const imp = () => ({ env: { memory: mem, rd: () => 0n, wr: () => {}, step: () => 0, cond: () => 0 } });
     try { new WebAssembly.Instance(new WebAssembly.Module(build([ps[0]])), imp()); }
-    catch (e) { mem = new WebAssembly.Memory({ initial: 4096, maximum: 65536, shared: true }); res.shared = true; }
+    catch (e) { mem = new WebAssembly.Memory({ initial: 1, maximum: 65536, shared: true }); res.shared = true; }
     // warm the compilers (not counted)
     for (const b of batches(ps.slice(0, 64), 1)) new WebAssembly.Module(b);
     for (const b of batches(ps.slice(0, 64), 16)) await WebAssembly.compile(b);
     res.reps = [];
     for (let rep = 0; rep < 2; rep++) {
       const r = {};
+      res.reps.push(r);
       for (const N of [1, 4, 16, 64]) {
         const o = {};
         let bs = batches(ps, N);
@@ -74,6 +77,7 @@ self.onmessage = async (ev) => {
         bs = batches(ps, N);
         t = now(); await Promise.all(bs.map((b) => WebAssembly.compile(b))); o.asyncPar = now() - t;
         r['n' + N] = o;
+        postMessage({ part: res, log: `rep ${rep} N ${N} ${JSON.stringify(o)}` });
       }
       // a + b*KB: modules sorted by size, 16 buckets, sync compile of each bucket one module at a time
       const ord = ps.map((p, k) => k).sort((x, y) => raw[x].length - raw[y].length), B = 16, pts = [];
@@ -87,8 +91,8 @@ self.onmessage = async (ev) => {
       for (const [c, kb, ms] of pts) { s11 += c * c; s12 += c * kb; s22 += kb * kb; y1 += c * ms; y2 += kb * ms; }
       const d = s11 * s22 - s12 * s12;
       r.fit = { a: (y1 * s22 - y2 * s12) / d, b: (s11 * y2 - s12 * y1) / d, pts: pts.map((p) => p.map((v) => +v.toFixed(2))) };
-      res.reps.push(r);
+      postMessage({ part: res, log: `rep ${rep} fit ${JSON.stringify(r.fit)}` });
     }
-    postMessage({ res });
+    postMessage({ res, final: true });
   } catch (e) { postMessage({ err: String((e && e.stack) || e) }); }
 };
