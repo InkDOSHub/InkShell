@@ -29,7 +29,7 @@ async function runOurs(type) {
       const w = new Worker('/tests/bench/v86-compare-worker.js', { type: 'module' });
       w.onmessage = (e) => ok(e.data);
       w.onerror = (e) => ok({ err: 'worker error: ' + e.message, lines: [], done: false });
-      w.postMessage({ files: [['cb', '/out/cb64']], cmd: '/root/cb', pool });
+      w.postMessage({ files: [['cb', '/out/cb64']], cmd: 'sh -c /root/cb', pool });
     }), { pool: POOL });
     return { ...res, ver: b.version() };
   } catch (e) { return { err: String(e), lines: [], done: false, ver: '?' }; } finally { await b.close().catch(() => {}); }
@@ -134,7 +134,7 @@ for (const n of ['chromium', 'webkit']) {
     L.push(`| ${k} (ms) | ${f(R.native64.m[k])} | ${f(o.m[k])} | ${x(o.m[k], R.native64.m[k])} | ${f(R.native32.m[k])} | ${f(v.m[k])} | ${x(v.m[k], R.native32.m[k])} | ${x(v.m[k], o.m[k])} |`);
   }
   L.push(`| boot to first user process (ms) | n/a | ${f(o.m.boot)} | | n/a | ${f(v.m.boot)} | | ${x(v.m.boot, o.m.boot)} |`, '',
-    `Finished runs: ours ${o.ok}/${o.n}, v86 ${v.ok}/${v.n}, native64 ${R.native64.ok}/${R.native64.n}, native32 ${R.native32.ok}/${R.native32.n}. v86 first serial byte (kernel start): ${f(v.m.firstbyte)} ms.`, '');
+    `Finished runs: ours ${o.ok}/${o.n}, v86 ${v.ok}/${v.n}, native64 ${R.native64.ok}/${R.native64.n}, native32 ${R.native32.ok}/${R.native32.n}.`, '');
 }
 const sums = new Set(Object.values(R).flatMap((r) => r.sums));
 L.push(`Checksum of the workloads (must be one value on every engine): ${[...sums].join(', ') || 'n/a'} ${sums.size === 1 ? '(equal)' : '(DIFFERENT or missing)'}.`, '',
