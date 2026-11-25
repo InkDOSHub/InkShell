@@ -18,7 +18,7 @@ concurrency:
 jobs:
   big:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -43,25 +43,32 @@ jobs:
           avail=$(df -BM --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc 0-9)
           BIG_MB=10240; [ $((avail - 3072)) -lt $BIG_MB ] && BIG_MB=$(( (avail - 3072) / 1024 * 1024 ))
           [ "$BIG_MB" -lt 2048 ] && { echo "disk too small: ${avail} MB"; exit 1; }
-          SLICE_AT=5000; [ "$BIG_MB" -lt 5200 ] && SLICE_AT=$((BIG_MB / 2))
           D=$RUNNER_TEMP/bigdir; mkdir -p $D
-          # big.bin = zeros, except 64 random MB at SLICE_AT MB; s1g.bin = 1 GB of zeros; both sparse
+          # big.bin = zeros, except 64 random MB at 1000 MB (below 4 GiB), 5000 MB (above) and BIG-128 MB; s1g.bin = 1 GB of zeros; both sparse
           truncate -s ${BIG_MB}M $D/big.bin; truncate -s 1024M $D/s1g.bin
-          timeout 60 dd if=/dev/urandom of=$D/big.bin bs=1M seek=$SLICE_AT count=64 conv=notrunc status=none
+          SLICES=""
+          for off in 1000 5000 $((BIG_MB - 128)); do
+            [ "$off" -gt $((BIG_MB - 64)) ] && continue
+            timeout 60 dd if=/dev/urandom of=$D/big.bin bs=1M seek=$off count=64 conv=notrunc status=none
+          done
+          for off in 1000 5000 $((BIG_MB - 128)); do
+            [ "$off" -gt $((BIG_MB - 64)) ] && continue
+            h=$(timeout 60 dd if=$D/big.bin bs=1M skip=$off count=64 status=none | sha256sum | cut -d' ' -f1)
+            SLICES="$SLICES${SLICES:+,}$off:$h"
+          done
           du -h --apparent-size $D/*; du -h $D/*
-          S=$(timeout 60 dd if=$D/big.bin bs=1M skip=$SLICE_AT count=64 status=none | sha256sum | cut -d' ' -f1)
           F=$(timeout 300 sha256sum $D/big.bin | cut -d' ' -f1)
           G=$(timeout 120 sha256sum $D/s1g.bin | cut -d' ' -f1)
-          { echo "BIG_MB=$BIG_MB"; echo "SLICE_AT=$SLICE_AT"; echo "SLICE_SHA=$S"; echo "FULL_SHA=$F"; echo "S1G_SHA=$G"; echo "DIR=$D"; } >> $GITHUB_ENV
+          { echo "BIG_MB=$BIG_MB"; echo "SLICES=$SLICES"; echo "FULL_SHA=$F"; echo "S1G_SHA=$G"; echo "DIR=$D"; } >> $GITHUB_ENV
           echo "BIG_MB=$BIG_MB (wanted 10240)"
       - name: Browser run
-        timeout-minutes: 22
+        timeout-minutes: 40
         env:
           BROWSER: ${{ matrix.browser }}
           SW: ${{ matrix.sw }}
           FULL_BUDGET_S: ${{ github.event_name == 'workflow_dispatch' && inputs.full_budget_s || '600' }}
           OUT: ${{ runner.temp }}/big-mnt.md
-        run: timeout 1300 node tests/bench/big-mnt.mjs
+        run: timeout 2300 node tests/bench/big-mnt.mjs
       - name: Job summary
         if: always()
         run: |
