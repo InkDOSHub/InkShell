@@ -1,10 +1,10 @@
 // Browser twin of tests/bench-engine.mjs (CI: WebKit vs Chromium, item 47). Runs in a module Worker:
-// the engine and the WASI programs run in this thread, as in node. Receives { files:[[name,url]], cmd, pool, hot },
+// the engine and the WASI programs run in this thread, as in node. Receives { files:[[name,url]], cmd, pool, hot, region },
 // posts { lines:[[ms,text]], jit:{n,ms,bytes}, mem, done, err }.
 import { runWasi } from '/wasi.js';
 import { swapStore } from '/tests/swap-store.mjs';
 self.onmessage = async (ev) => {
-  const { files, cmd, pool, hot } = ev.data;
+  const { files, cmd, pool, hot, region } = ev.data;
   const dec = new TextDecoder(), enc = new TextEncoder();
   const lines = [], jit = { n: 0, ms: 0, bytes: 0, err: '' };
   let mem, x, line = '', done = false, err = '';
@@ -41,6 +41,7 @@ self.onmessage = async (ev) => {
     x = (await WebAssembly.instantiate(await get('/engine.wasm'), { env })).instance.exports;
     mem = x.memory;
     if (hot) { if (!x.set_jit_hot) throw new Error('engine.wasm has no set_jit_hot'); x.set_jit_hot(hot); }
+    if (region) { if (!x.set_jit_region) throw new Error('engine.wasm has no set_jit_region'); x.set_jit_region(region); }
     const put = (b) => { const p = x.buffer(b.length); new Uint8Array(mem.buffer, p, b.length).set(b); };
     const add = (name, data) => { const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 1 + d.length); b.set(nm); b.set(d, nm.length + 1); put(b); x.add_file(); };
     x.init(pool, 8192);
