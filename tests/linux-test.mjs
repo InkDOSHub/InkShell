@@ -194,6 +194,59 @@ results.push(/New UNIX username/.test(out)); console.log((results[0] ? 'PASS' : 
 await step('tester\n', /New password/, 'user name accepted');
 await step('pw1\n', /Retype/, 'password asked twice');
 await step('pw1\n', /tester@inksoc/, 'shell as the new user');
+if (process.env.INK_NET) { // item 62: real network through the wisp tunnels, like worker.js (INK_NET=1; only the wisp-net workflow sets it)
+  const TUN = ['wss://wisp.mercurywork.shop/v86/', 'wss://hub.inkdos.workers.dev/net/wisp/'];
+  let wsUrl = null, ws = null, wsq = [], opened = false; const got = new Set();
+  const packet = (t, id, body) => { const b = Buffer.alloc(5 + body.length); b[0] = t; b.writeUInt32LE(id, 1); Buffer.from(body).copy(b, 5); return b; };
+  const wsSend = (b) => { if (ws && ws.readyState === 1) ws.send(b); else wsq.push(b); };
+  const netIn = (id, kind, d) => { put(d || new Uint8Array(0)); x.linux_net_in(id, kind); };
+  const openWs = () => {
+    wsUrl = wsUrl || TUN[0]; opened = false;
+    const sock = ws = new WebSocket(wsUrl); ws.binaryType = 'arraybuffer';
+    ws.onopen = () => { opened = true; console.log('  [net: tunnel open ' + wsUrl + ']'); for (const b of wsq) ws.send(b); wsq = []; };
+    ws.onmessage = (ev) => {
+      const b = new Uint8Array(ev.data); if (b.length < 5) return;
+      const id = new DataView(b.buffer).getUint32(1, true);
+      if (b[0] === 2) { got.add(id); netIn(id, 1, b.subarray(5)); }
+      else if (b[0] === 4) { console.log('  [net: stream ' + id + ' closed by the tunnel, reason ' + b[5] + ', got data: ' + got.has(id) + ']'); netIn(id, got.has(id) || b[5] === 2 ? 2 : 3); }
+    };
+    const lost = () => { if (ws !== sock) return; ws = null; console.log('  [net: tunnel lost, opened=' + opened + ']'); if (!opened && wsUrl !== TUN[1]) { wsUrl = TUN[1]; openWs(); return; } wsq = []; };
+    ws.onclose = lost; ws.onerror = lost;
+  };
+  const pump = () => {
+    const n = x.linux_net_poll(); if (!n) return;
+    const b = new Uint8Array(mem.buffer, x.out_ptr(), n).slice(), v = new DataView(b.buffer);
+    for (let o = 0; o < n;) {
+      const op = b[o], id = v.getUint32(o + 1, true), len = v.getUint32(o + 5, true), d = b.subarray(o + 9, o + 9 + len); o += 9 + len;
+      if (op === 1) {
+        if (!ws) openWs();
+        const sd = dec.decode(d), k = sd.lastIndexOf(':'), host = enc.encode(sd.slice(0, k)), body = new Uint8Array(3 + host.length);
+        body[0] = 1; new DataView(body.buffer).setUint16(1, +sd.slice(k + 1), true); body.set(host, 3); wsSend(packet(1, id, body));
+      } else if (op === 2) wsSend(packet(2, id, d));
+      else if (op === 3) { got.delete(id); wsSend(packet(4, id, new Uint8Array([2]))); }
+    }
+  };
+  const until = async (re, maxMs, mark) => {
+    const t1 = Date.now(), from = out.length;
+    for (let tick = 0; Date.now() - t1 < maxMs;) {
+      const st = x.run(2000000); pump();
+      if (re.test(out.slice(from))) return out.slice(from);
+      if (st === 2) { console.log('engine stopped'); process.exit(1); }
+      if (st === 3) await new Promise((r) => setTimeout(r, 5)); else if (++tick % 50 === 0) await new Promise((r) => setTimeout(r, 0));
+      if (mark && Date.now() - t1 > mark.at) { mark.at += 30000; console.log('  ... ' + ((Date.now() - t1) / 1000 | 0) + ' s'); }
+    }
+    return null;
+  };
+  const all = [];
+  for (const [name, cmd, ms] of [['hashtools (small, InkShell release)', 'wget -O /dev/null https://github.com/InkDOSHub/InkShell/releases/download/wasm-tools-7/hashsum.wasm 2>&1 | tr "\\r" "\\n" | tail -n 3', 120000],
+      ['python3 (26 MB, vmware release)', 'wget -O /dev/null "$(grep ^python3 /etc/inksoc/wasm-catalog | cut -f2)" 2>&1 | tr "\\r" "\\n" | tail -n 3', 600000]]) {
+    const t1 = Date.now(); send(cmd + '; echo done-$?\n');
+    const got1 = await until(/done-\d/, ms, { at: 30000 });
+    const ok = !!got1 && /saved/.test(got1);
+    all.push(ok); console.log((ok ? 'PASS ' : 'FAIL ') + 'wget through wisp: ' + name + ' in ' + ((Date.now() - t1) / 1000).toFixed(1) + ' s\n' + (got1 || out.slice(-300)).slice(-500));
+  }
+  process.exit(all.every(Boolean) ? 0 : 1);
+}
 await step('id -un; echo $HOME\n', /tester\s+\/home\/tester/, 'id and home');
 await step('sudo id -u\n', /Password/, 'sudo asks the password');
 await step('pw1\n', /^\s*0\s*$/m, 'sudo runs as root');
