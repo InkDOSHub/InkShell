@@ -231,6 +231,27 @@ jobs:
           { echo "## Perfil de calls x86 após #83 (item 60: só medição)"; echo
             node tests/bench/callsprof.mjs native=out/native-fib10.txt $T $P ${CPU:+cpuprof=$CPU cpulog=out/cp-cpuprof.log}; } > out/callsprof60.md
           cat out/callsprof60.md | tee -a $GITHUB_STEP_SUMMARY
+      - name: Cost inside JIT blocks (fib regions' wasm per x86 instruction + A/B; item 63, measurement only)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          [ -f out/engine-probe.wasm ] || (cd engine-src && cargo build -q --release --target wasm32-unknown-unknown --features jitprobe && cp target/wasm32-unknown-unknown/release/inksoc.wasm ../out/engine-probe.wasm)
+          objdump -d --no-show-raw-insn -M intel out/x86fib > out/x86fib.dis || true
+          [ -s out/native-fib10.txt ] || out/x86fib 10 36 > out/native-fib10.txt
+          printf '/root/x86fib 10 30\necho "@@T done"\n' > out/ji.sh
+          printf '/root/x86fib 30 32\necho "@@T done"\n' > out/ji30.sh
+          E=tests/bench-engine.mjs
+          JITDUMP=out/jitdump HRMARK=1 timeout 300 node --cpu-prof --cpu-prof-interval 50 --cpu-prof-dir out/jicpu $E out/engine-probe.wasm x86fib=out/x86fib ji30.sh=out/ji30.sh -- sh /root/ji30.sh > out/ji-dump.log 2>&1 || true
+          T=""
+          for r in 1 2; do for a in 0 1 2 4 8 16 32; do
+            INKSOC_AB=$a timeout 300 node $E out/engine-probe.wasm x86fib=out/x86fib ji.sh=out/ji.sh -- sh /root/ji.sh > out/ji-ab$a-$r.log 2>&1 || true; T="$T t:ab$a=out/ji-ab$a-$r.log"
+          done; done
+          CPU=$(ls out/jicpu/*.cpuprofile 2>/dev/null | head -1)
+          ls out/jitdump | wc -l; cut -f2 out/ji-*.log | grep -E '^x86fib (run 9|long)|@@ERR' | head -40
+          { echo "## Custo dentro do bloco JIT (item 63: só medição)"; echo
+            node tests/bench/jitinsn.mjs dump=out/jitdump dis=out/x86fib.dis native=out/native-fib10.txt $T ${CPU:+cpuprof=$CPU cpulog=out/ji-dump.log}; } > out/jitinsn.md
+          cat out/jitinsn.md | tee -a $GITHUB_STEP_SUMMARY
       - name: Report
         if: always()
         run: |
@@ -258,7 +279,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           cd out
-          { echo '<!-- bench-compare -->'; cat compare.md; echo; echo '<details><summary>Motor vs nativo</summary>'; echo; cat report.md; echo; echo '</details>'; echo; echo '<details><summary>Perfil calls x86 (item 60)</summary>'; echo; cat callsprof60.md 2>/dev/null; echo; echo '</details>'; echo; echo '<details><summary>Perfil x86 (cpubench)</summary>'; echo; cat profile.md 2>/dev/null; echo; echo '</details>'; echo; echo '<details><summary>Perfil abertura python3 WASM</summary>'; echo; cat wasiprof.md 2>/dev/null; echo; echo '</details>'; echo; echo '<details><summary>Ferramentas WASM em arquivo grande</summary>'; echo; cat bigwasm.md 2>/dev/null; echo; echo '</details>'; } > body.md
+          { echo '<!-- bench-compare -->'; cat compare.md; echo; echo '<details><summary>Motor vs nativo</summary>'; echo; cat report.md; echo; echo '</details>'; echo; echo '<details><summary>Perfil calls x86 (item 60)</summary>'; echo; cat callsprof60.md 2>/dev/null; echo; echo '</details>'; echo; echo '<details><summary>Custo dentro do bloco JIT (item 63)</summary>'; echo; cat jitinsn.md 2>/dev/null; echo; echo '</details>'; echo; echo '<details><summary>Perfil x86 (cpubench)</summary>'; echo; cat profile.md 2>/dev/null; echo; echo '</details>'; echo; echo '<details><summary>Perfil abertura python3 WASM</summary>'; echo; cat wasiprof.md 2>/dev/null; echo; echo '</details>'; echo; echo '<details><summary>Ferramentas WASM em arquivo grande</summary>'; echo; cat bigwasm.md 2>/dev/null; echo; echo '</details>'; } > body.md
           cid=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate -q '.[] | select(.body | startswith("<!-- bench-compare -->")) | .id' | tail -1)
           if [ -n "$cid" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$cid" -F body=@body.md >/dev/null
           else gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@body.md >/dev/null; fi
@@ -272,6 +293,8 @@ jobs:
             out/*.md
             out/*.json
             out/*.txt
+            out/*.dis
+            out/jitdump/
   wasi:
     # phase 2 pre-test: what running WASI programs directly (no x86 emulation) would give
     runs-on: ubuntu-latest
