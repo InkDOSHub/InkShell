@@ -44,10 +44,15 @@ fn chain_on() -> bool {
 }
 
 static HOT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(40);
-/// Visits before a block is compiled (default 40; item 48 sweeps it per browser).
+/// Visits before a block is compiled (default 40). Run-time settable in every build (item 48 sweeps
+/// it in Chromium and WebKit; item 46's jitprobe build uses it too).
 #[no_mangle]
 pub extern "C" fn set_jit_hot(n: u32) {
     HOT.store(n.max(1), core::sync::atomic::Ordering::Relaxed);
+}
+#[inline(always)]
+fn hot() -> u32 {
+    HOT.load(core::sync::atomic::Ordering::Relaxed)
 }
 const MAX_INS: usize = 80;
 const NONE: u32 = u32::MAX;
@@ -111,7 +116,7 @@ impl Jit {
         }
         let h = e.jit.hits.entry(rip).or_insert(0);
         *h += 1;
-        if *h < HOT.load(core::sync::atomic::Ordering::Relaxed) {
+        if *h < hot() {
             return None;
         }
         e.jit.hits.remove(&rip);
@@ -119,6 +124,8 @@ impl Jit {
         let t0 = crate::now_ms();
         let f = match compile(e, rip) {
             Some(code) => {
+                #[cfg(feature = "jitprobe")]
+                probe::translated(crate::now_ms() - t0);
                 e.jit.bytes += code.len() as u64;
                 let i = unsafe { host_jit(code.as_ptr(), code.len() as u32) };
                 if i < 0 {
@@ -3627,6 +3634,8 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
         }
         k += 1;
     }
+    #[cfg(feature = "jitprobe")]
+    probe::region(&heads, total);
     let cpu = &e.cpu as *const _ as u32;
     let nb = blocks.len() as u32;
     let lic = opt();
@@ -3924,6 +3933,42 @@ pub extern "C" fn prof_ctr(i: u32) -> f64 {
         } else {
             PC[i as usize & 15] as f64
         }
+    }
+}
+
+/// jitprobe build (measurement only, item 46; HOT via set_jit_hot in any build): the region being handed to
+/// host_jit (block heads, guest instructions, translate time) readable from the host inside host_jit.
+/// JIT code is the same as the default build's.
+#[cfg(feature = "jitprobe")]
+pub mod probe {
+    static mut HEADS: Vec<u64> = Vec::new();
+    static mut INS: u32 = 0;
+    static mut TR_MS: f64 = 0.0;
+    pub fn region(heads: &[u64], ins: usize) {
+        unsafe {
+            let h = &mut *core::ptr::addr_of_mut!(HEADS);
+            h.clear();
+            h.extend_from_slice(heads);
+            INS = ins as u32;
+        }
+    }
+    pub fn translated(ms: f64) {
+        unsafe { TR_MS = ms }
+    }
+    /// 0 = number of heads, 1 = guest instructions, 2 = translate ms (Rust side, before host_jit)
+    #[no_mangle]
+    pub extern "C" fn jit_probe(i: u32) -> f64 {
+        unsafe {
+            match i {
+                0 => (&*core::ptr::addr_of!(HEADS)).len() as f64,
+                1 => INS as f64,
+                _ => TR_MS,
+            }
+        }
+    }
+    #[no_mangle]
+    pub extern "C" fn jit_probe_head(i: u32) -> f64 {
+        unsafe { (&*core::ptr::addr_of!(HEADS)).get(i as usize).copied().unwrap_or(0) as f64 }
     }
 }
 

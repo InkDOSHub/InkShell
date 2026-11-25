@@ -38,6 +38,7 @@ jobs:
             gcc -O2 -static -o out/cpubench tests/src/cpubench.c &&
             gcc -O2 -static -o out/x86calls tests/src/x86calls.c &&
             gcc -O2 -static -o out/x86float tests/src/x86float.c &&
+            gcc -O2 -static -o out/x86fib tests/src/x86fib.c &&
             mkdir /x && apk add -q --root /x --initdb --allow-untrusted --no-scripts \
               --repositories-file /etc/apk/repositories python3 zip unzip &&
             tar -C /x -cf out/zpkgs.tar usr/bin usr/lib lib etc/ssl 2>/dev/null; ls -la out'
@@ -161,6 +162,29 @@ jobs:
           PROFILE_JSON=out/profile.json timeout 1800 node tests/bench-engine.mjs out/engine-ophist.wasm cpubench=out/cpubench bench.sh=out/bench.sh -- sh /root/bench.sh cpu io 16 > out/profile-cpu.log 2>&1 || true
           { echo "## Perfil x86 do cpubench + sha256sum 16 MB (JIT vs interpretador)"; echo; node tests/bench/profile.mjs out/profile.json; echo; cat out/floatprof.md 2>/dev/null; } > out/profile.md
           cat out/profile.md | tee -a $GITHUB_STEP_SUMMARY
+      - name: JIT warm-up vs steady state for calls (tests/src/x86fib.c; item 46, measurement only)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 25
+        run: |
+          out/x86fib 20 42 > out/native-fib.txt; cat out/native-fib.txt
+          printf '/root/x86fib 20 42\necho "@@T done"\n' > out/fib.sh
+          (cd engine-src && cargo build -q --release --target wasm32-unknown-unknown --features jitprobe && cp target/wasm32-unknown-unknown/release/inksoc.wasm ../out/engine-probe.wasm)
+          E=tests/bench-engine.mjs; F="x86fib=out/x86fib fib.sh=out/fib.sh -- sh /root/fib.sh"
+          timeout 300 node $E out/engine.wasm $F > out/fib-default.log 2>&1 || true
+          JITLOG=out/jit-fib.json timeout 300 node $E out/engine-probe.wasm $F > out/fib-probe.log 2>&1 || true
+          for h in 10 200 1000; do INKSOC_HOT=$h JITLOG=out/jit-fib-$h.json timeout 300 node $E out/engine-probe.wasm $F > out/fib-hot$h.log 2>&1 || true; done
+          timeout 300 node --no-liftoff $E out/engine.wasm $F > out/fib-noliftoff.log 2>&1 || true
+          printf '/root/x86fib 10 36\necho "@@T done"\n' > out/fib10.sh
+          [ -f out/engine-ophist.wasm ] && PROFILE_JSON=out/prof-fib.json timeout 300 node $E out/engine-ophist.wasm x86fib=out/x86fib fib.sh=out/fib10.sh -- sh /root/fib.sh > out/fib-ophist.log 2>&1 || true
+          JITLOG=out/jit-py.json timeout 600 node $E out/engine-probe.wasm bench.sh=out/bench.sh pybench.py=out/pybench.py zpkgs.tar=out/zpkgs.tar -- sh /root/bench.sh py > out/py-probe.log 2>&1 || true
+          cut -f2 out/fib-*.log | grep -E '^x86fib|@@ERR' | head -150
+          { echo "## Aquecimento do JIT x86 vs regime estável (calls/fib, item 46)"; echo
+            node tests/bench/jitwarm.mjs native=out/native-fib.txt run:motor=out/fib-default.log "run:motor jitprobe HOT 40=out/fib-probe.log" \
+              "run:HOT 10=out/fib-hot10.log" "run:HOT 200=out/fib-hot200.log" "run:HOT 1000=out/fib-hot1000.log" "run:node --no-liftoff=out/fib-noliftoff.log" \
+              fiblog=out/jit-fib.json fiblogN=out/fib-probe.log hot:10=out/jit-fib-10.json hot:200=out/jit-fib-200.json hot:1000=out/jit-fib-1000.json \
+              prof=out/prof-fib.json pylog=out/jit-py.json pylogN=out/py-probe.log; } > out/jitwarm.md
+          cat out/jitwarm.md | tee -a $GITHUB_STEP_SUMMARY
       - name: Report
         if: always()
         run: |
