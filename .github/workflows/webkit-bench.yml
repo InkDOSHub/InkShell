@@ -46,3 +46,15 @@ jobs:
         env:
           HOTS: ${{ github.event_name == 'workflow_dispatch' && inputs.hots || '10,40,100,200,500' }}
         run: timeout 1200 node tests/bench/browser.mjs
+  boot:
+    # Item 50 (measurement only): the real page boot to the prompt, Chromium vs WebKit (no big inputs).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Playwright (Chromium + WebKit)
+        run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit'
+      - name: Boot to prompt, 3 runs per browser
+        run: timeout 900 node tests/bench/browser-boot.mjs

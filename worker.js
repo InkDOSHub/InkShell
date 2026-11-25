@@ -9,7 +9,10 @@ const NETS = { wisp: 'wss://wisp.mercurywork.shop/v86/', off: null };
 const HUB_WISP = 'wss://hub.inkdos.workers.dev/net/wisp/';
 let wsUrl = null;
 const SAVE = 'alpine-fs.tar';
-const out = (t) => postMessage({ type: 'out', text: t });
+const out = (t) => { if (bootT.started && !bootT.firstout) mark('firstout'); postMessage({ type: 'out', text: t }); };
+// boot marks (item 50): epoch ms of each step, read by tests/bench/browser-boot.mjs; costs nothing
+const bootT = {};
+function mark(n) { bootT[n] = performance.timeOrigin + performance.now(); postMessage({ type: 'mark', name: n, t: bootT[n] }); }
 let x, mem, lx = null, keys = [], net = 'wisp';
 const pendingPuts = []; // files sent before Linux is up (from InkOS or the upload button)
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -112,6 +115,7 @@ function info(bytes) {
 
 async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   if (network in NETS) net = network;
+  mark('run');
   wasiSw = !!sw; wasiOpen(Math.random().toString(36).slice(2));
   if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=13'); } catch (e) { wasiInline = null; } }
   const swap = await openSwap(), ram = new Map();
@@ -149,14 +153,18 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   const [wasm, busybox, overlay, saved] = await Promise.all([
     get('engine.wasm?v=43').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
     get('overlay.tar?v=18').then((r) => r.arrayBuffer()), loadSaved()]);
+  mark('fetched');
   let rootfs = null;
   if (!saved) {
     out('\x1b[2mDownloading Alpine Linux 3.21 (3.5 MB)…\x1b[0m\r\n');
     const r = await get('alpine-rootfs.tar.gz?v=1');
+    mark('rootfs-dl');
     rootfs = await new Response(r.body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
   }
+  mark('rootfs');
   x = (await WebAssembly.instantiate(wasm, { env })).instance.exports;
   mem = x.memory;
+  mark('instantiated');
   const addFile = (name, data) => {
     const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 1 + d.length);
     b.set(nm); b.set(d, nm.length + 1); put(b); x.add_file();
@@ -168,8 +176,10 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
     for (let a = 0; a < saved.size; a += 4 << 20) { put(new Uint8Array(await saved.slice(a, a + (4 << 20)).arrayBuffer())); x.linux_load_chunk(); }
   } else addFile('rootfs.tar', rootfs || await saved.arrayBuffer());
   addFile('zoverlay.tar', overlay);
+  mark('loaded');
   put(enc.encode('busybox\0sh /etc/inksoc/start'));
   if (x.start() !== 0) { postMessage({ type: 'done', error: dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()).slice()) }); return; }
+  mark('started');
   x.linux_winsize(rows || 30, cols || 100);
   x.linux_dirty(); // unpacking is not a change; the first save happens after the first real one
   info(saved ? saved.size : 0);
