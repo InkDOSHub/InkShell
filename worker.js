@@ -170,6 +170,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
     b.set(nm); b.set(d, nm.length + 1); put(b); x.add_file();
   };
   x.init(poolMb || 256, targetMb || 8192);
+  mark('inited');
   addFile('busybox', busybox);
   if (saved && x.linux_load_chunk) { // the saved tar in 4 MB pieces: big files go straight to swap blocks
     x.linux_load_begin();

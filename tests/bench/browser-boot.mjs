@@ -41,11 +41,11 @@ const INIT = () => {
   };
   window.Worker.prototype = W.prototype;
 };
-async function visit(p, tag, newUser) {
+async function visit(p, tag, newUser, ms = 180000) {
   const T = () => p.evaluate(() => window.__T);
-  const until = async (k, ms = 180000) => {
+  const until = async (k, lim = ms) => {
     const t0 = Date.now();
-    for (;;) { const t = await T(); if (k in t.hits) return t; if (Date.now() - t0 > ms) throw new Error(`${tag}: no '${k}'; text: ${t.text.slice(-400)}`); await p.waitForTimeout(50); }
+    for (;;) { const t = await T(); if (k in t.hits) return t; if (Date.now() - t0 > lim) throw new Error(`${tag}: no '${k}'; text: ${t.text.slice(-400)}`); await p.waitForTimeout(50); }
   };
   await p.evaluate(() => { if (!w) start(); });
   if (newUser) {
@@ -70,17 +70,17 @@ async function one(type, name) {
     p.on('pageerror', (e) => console.log(`[${name} page error]`, e.message));
     const t0 = Date.now();
     await p.goto(`http://localhost:${PORT}/index.html`, { waitUntil: 'load' });
-    const loaded = await p.evaluate(() => performance.timeOrigin + performance.getEntriesByType('navigation')[0].loadEventEnd);
+    const pageload = await p.evaluate(() => performance.timeOrigin + performance.getEntriesByType('navigation')[0].loadEventEnd);
     const c = await visit(p, `${name} cold`, true);
-    const cold = { ...c.t.marks, loaded, navStart: c.t.navStart, user: c.t.hits.user, shell: c.t.hits.shell, sent: c.sent, ls: c.t.hits.ls };
+    const cold = { ...c.t.marks, pageload, navStart: c.t.navStart, user: c.t.hits.user, shell: c.t.hits.shell, sent: c.sent, ls: c.t.hits.ls };
     await p.evaluate(() => new Promise((ok) => { w.addEventListener('message', (e) => e.data.type === 'saved' && ok()); w.postMessage({ type: 'save' }); setTimeout(ok, 15000); }));
     await p.waitForTimeout(500);
     await p.reload({ waitUntil: 'load' });
-    const loaded2 = await p.evaluate(() => performance.timeOrigin + performance.getEntriesByType('navigation')[0].loadEventEnd);
+    const pageload2 = await p.evaluate(() => performance.timeOrigin + performance.getEntriesByType('navigation')[0].loadEventEnd);
     let warm = null;
     try {
-      const h = await visit(p, `${name} warm`, false);
-      warm = { ...h.t.marks, loaded: loaded2, navStart: h.t.navStart, shell: h.t.hits.shell, sent: h.sent, ls: h.t.hits.ls };
+      const h = await visit(p, `${name} warm`, false, 30000);
+      warm = { ...h.t.marks, pageload: pageload2, navStart: h.t.navStart, shell: h.t.hits.shell, sent: h.sent, ls: h.t.hits.ls };
     } catch (e) { console.log(String(e)); }
     return { cold, warm, ver: b.version(), wall: Date.now() - t0 };
   } catch (e) { console.log(`[${name}] ERR ${e.stack || e}`); return { err: String(e), ver: '?' }; } finally { await b.close().catch(() => {}); }
@@ -91,7 +91,7 @@ const chunks = (m, cold) => {
   const d = (a, b) => (m[a] != null && m[b] != null ? m[b] - m[a] : null);
   const c = [['page load (nav -> worker created)', m.created - m.navStart], ['worker start (-> run)', d('created', 'run')], ['fetch engine.wasm + busybox + overlay.tar', d('run', 'fetched')]];
   if (cold) c.push(['rootfs download (3.5 MB gz)', d('fetched', 'rootfs-dl')], ['rootfs gunzip', d('rootfs-dl', 'rootfs')]);
-  c.push(['engine.wasm instantiate', d(cold ? 'rootfs' : 'fetched', 'instantiated')], ['init + unpack rootfs/overlay (add_file)', d('instantiated', 'loaded')],
+  c.push(['engine.wasm instantiate', d(cold ? 'rootfs' : 'fetched', 'instantiated')], ['x.init (pool + page table)', d('instantiated', 'inited')], ['add_file: busybox + rootfs.tar + overlay (copy in)', d('inited', 'loaded')],
     ['kernel start() (x.start)', d('loaded', 'started')], ['kernel boot -> first output', d('started', 'firstout')]);
   c.push([cold ? 'first output -> "New UNIX username" prompt' : 'first output -> shell prompt', d('firstout', cold ? 'user' : 'shell')]);
   c.push(['TOTAL nav -> usable prompt', (cold ? m.user : m.shell) - m.navStart]);
