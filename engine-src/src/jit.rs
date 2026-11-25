@@ -1094,13 +1094,16 @@ impl G {
             None
         }
     }
-    /// Block start: one TLB check (writable) for the window [entry rsp + lo, entry rsp + hi).
-    fn win_start(&mut self, lo: i64, hi: i64) {
+    /// One TLB check (writable) for the window [entry rsp + lo, entry rsp + hi), emitted right
+    /// before the block's first stack access, where the rsp local is entry rsp + d. (At the block
+    /// start it ran on every turn of a loop that leaves the block by a conditional jump before its
+    /// stack accesses: cpubench int, 60M checks, WebKit int +86%.)
+    fn win_start(&mut self, lo: i64, hi: i64, d: i64) {
         self.cnt(13);
         self.ensure(4);
         self.get(R0 + 4);
-        if lo != 0 {
-            self.i64c(lo as u64);
+        if lo != d {
+            self.i64c(lo.wrapping_sub(d) as u64);
             self.b(I64ADD);
         }
         self.set(L_T);
@@ -3891,18 +3894,23 @@ fn rsp_update(i: &Ins, d: Option<i64>) -> Option<i64> {
 }
 
 /// Estimate of the block's stack accesses at fixed offsets from its entry rsp: the window [lo, hi)
-/// when there are at least two and it is small. Only an estimate: each access is checked against
-/// the window when it is emitted (the others take the usual path).
-fn stack_window(list: &[Ins]) -> Option<(i64, i64)> {
+/// when there are at least two and it is small, and the index of the first one (where the check
+/// goes). Only an estimate: each access is checked against the window when it is emitted (the
+/// others take the usual path).
+fn stack_window(list: &[Ins]) -> Option<(usize, i64, i64)> {
     let (mut d, mut lo, mut hi, mut n) = (0i64, i64::MAX, i64::MIN, 0);
+    let mut first = 0;
     let mut acc = |a: i64, b: i64, n: &mut u32| {
         lo = lo.min(a);
         hi = hi.max(b);
         *n += 1;
     };
-    for i in list {
+    for (k, i) in list.iter().enumerate() {
         if i.seg || i.a67 || i.osz == 16 {
             break;
+        }
+        if n == 0 {
+            first = k;
         }
         if let Some(m) = i.m {
             if m.md != 3 && m.base == Some(4) && m.index.is_none() && !m.riprel {
@@ -3940,7 +3948,7 @@ fn stack_window(list: &[Ins]) -> Option<(i64, i64)> {
         }
     }
     if n >= 2 && hi - lo <= 2048 {
-        Some((lo, hi))
+        Some((first, lo, hi))
     } else {
         None
     }
@@ -3973,11 +3981,7 @@ fn emit_block(g: &mut G, b: Block) {
     g.off_a = None;
     g.off_a2 = None;
     g.grp = None;
-    if opt() && stack_on() && !g.m32 && !crate::mmu::strong() {
-        if let Some((lo, hi)) = stack_window(&list) {
-            g.win_start(lo, hi);
-        }
-    }
+    let win = if opt() && stack_on() && !g.m32 && !crate::mmu::strong() { stack_window(&list) } else { None };
 
     let mut done_all = false;
     let mut cut = false; // out of locals: leave the region (an edge the region's analysis did not see)
@@ -3987,6 +3991,12 @@ fn emit_block(g: &mut G, b: Block) {
             end_rip = Some(i.rip);
             cut = true;
             break;
+        }
+        // straight-line code from here on (conditional jumps only leave): the check covers the rest
+        if let (Some((first, lo, hi)), Some(d)) = (win, g.rsp_d) {
+            if k == first {
+                g.win_start(lo, hi, d);
+            }
         }
         match i.op {
             0x70..=0x7F | 0x0F80..=0x0F8F => {
