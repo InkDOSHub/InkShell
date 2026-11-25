@@ -21,6 +21,7 @@ mod oleaut;
 mod pe;
 mod sched;
 mod sse;
+mod aes;
 mod winapi;
 mod winefb;
 mod ntsys;
