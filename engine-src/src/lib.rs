@@ -562,6 +562,7 @@ pub extern "C" fn run(budget: u32) -> i32 {
             if let Some(f) = jit::Jit::lookup(e, rip) {
                 let before = e.cpu.icount;
                 e.cpu.jit_limit = before + lim;
+                e.cpu.jit_l1 = e.jit.l1_ptr();
                 jit::call(f);
                 let n = e.cpu.icount - before;
                 jit::pc(0, 1);
