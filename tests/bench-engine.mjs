@@ -13,7 +13,7 @@ const argv = process.argv.slice(2), sep = argv.indexOf('--');
 const wasmPath = argv[0], files = argv.slice(1, sep), cmd = argv.slice(sep + 1).join(' ');
 const POOL = +(process.env.POOL_MB || 512), LIMIT = +(process.env.LIMIT_MS || 1800000);
 const dec = new TextDecoder(), enc = new TextEncoder();
-let mem, x, out = '', line = '';
+let mem, x, out = '', line = '', jitErr = 0;
 const sw = swapStore(() => mem); // the page's OPFS swap file, in memory here
 const t0 = performance.now();
 let peakRss = 0, done = false;
@@ -45,11 +45,12 @@ const env = {
       const m = new WebAssembly.Module(new Uint8Array(mem.buffer, p, n).slice());
       const i = new WebAssembly.Instance(m, { env: { memory: mem, rd: x.jit_rd, wr: x.jit_wr, step: x.jit_step, cond: x.jit_cond } });
       const t = x.__indirect_function_table, k = t.grow(1); t.set(k, i.exports.f); return k;
-    } catch (e) { return -1; }
+    } catch (e) { if (!jitErr) { jitErr = 1; console.error('host_jit: ' + e.message); } return -1; }
   },
 };
 x = (await WebAssembly.instantiate(fs.readFileSync(wasmPath), { env })).instance.exports;
 mem = x.memory;
+if (process.env.INKSOC_CHAIN === '0' && x.set_jit_chain) x.set_jit_chain(0); // A/B: JIT exits not chained
 const put = (b) => { const p = x.buffer(b.length); new Uint8Array(mem.buffer, p, b.length).set(b); };
 const add = (name, data) => { const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 1 + d.length); b.set(nm); b.set(d, nm.length + 1); put(b); x.add_file(); };
 x.init(POOL, 8192);

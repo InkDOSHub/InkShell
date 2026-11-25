@@ -11,7 +11,7 @@ import { report as enosysReport } from './enosys.mjs';
 const wasmPath = process.argv[2] || 'engine.wasm';
 const POOL = 24; // MB of real RAM: small on purpose
 const dec = new TextDecoder(), enc = new TextEncoder();
-let mem, x, out = '';
+let mem, x, out = '', jitErr = 0;
 const sw = swapStore(() => mem), swap = sw.chunks; // 64 KB chunks of swap slots
 const env = {
   host_console: (p, n) => { out += dec.decode(new Uint8Array(mem.buffer, p, n).slice(), { stream: true }); },
@@ -25,7 +25,7 @@ const env = {
       const m = new WebAssembly.Module(new Uint8Array(mem.buffer, p, n).slice());
       const i = new WebAssembly.Instance(m, { env: { memory: mem, rd: x.jit_rd, wr: x.jit_wr, step: x.jit_step, cond: x.jit_cond } });
       const t = x.__indirect_function_table, k = t.grow(1); t.set(k, i.exports.f); return k;
-    } catch (e) { return -1; }
+    } catch (e) { if (!jitErr) { jitErr = 1; console.error('host_jit: ' + e.message); } return -1; }
   },
 };
 x = (await WebAssembly.instantiate(fs.readFileSync(wasmPath), { env })).instance.exports;
@@ -148,7 +148,7 @@ async function bootSaved(tar, script) {
         const m = new WebAssembly.Module(new Uint8Array(m2.buffer, p, n).slice());
         const i = new WebAssembly.Instance(m, { env: { memory: m2, rd: x2.jit_rd, wr: x2.jit_wr, step: x2.jit_step, cond: x2.jit_cond } });
         const t = x2.__indirect_function_table, k = t.grow(1); t.set(k, i.exports.f); return k;
-      } catch (e) { return -1; }
+      } catch (e) { if (!jitErr) { jitErr = 1; console.error('host_jit: ' + e.message); } return -1; }
     },
   };
   x2 = (await WebAssembly.instantiate(fs.readFileSync(wasmPath), { env: env2 })).instance.exports;
