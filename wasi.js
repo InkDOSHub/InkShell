@@ -401,7 +401,11 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
       const s1 = cstr(str(p, n)), s2 = cstr(str(p2, n2)), d = new Uint8Array(4096 + s2.length); d.set(s1); d.set(s2, 4096);
       const { r } = sys(266, [BASE, b, BASE + 4096], d); return r < 0 ? errno(r) : 0;
     },
-    path_link: () => 52,
+    path_link: (fd, fl, p, n, fd2, p2, n2) => { // hard link (cp -l, ln without -s): linkat
+      const a = at(fd, str(p, n)), b = at(fd2, str(p2, n2)); if (a == null || b == null) return 8;
+      const s1 = cstr(str(p, n)), s2 = cstr(str(p2, n2)), d = new Uint8Array(4096 + s2.length); d.set(s1); d.set(s2, 4096);
+      const { r } = sys(265, [a, BASE, b, BASE + 4096, fl & 1 ? 0x400 : 0], d); return r < 0 ? errno(r) : 0;
+    },
     poll_oneoff: (inp, outp, n, np) => {
       const d = dv(); let wait = -1;
       for (let i = 0; i < n; i++) {

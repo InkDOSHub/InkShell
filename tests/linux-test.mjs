@@ -64,6 +64,11 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
+// uutils coreutils (item 56): the catalog's `coreutils` (test.yml downloads it to tests/coreutils.wasm, sha256 checked); the links come from the catalog line
+const cuUrl = new URL('./coreutils.wasm', import.meta.url);
+const cu = hasWasi && fs.existsSync(cuUrl) ? { bytes: fs.readFileSync(cuUrl) } : null;
+if (cu) { add('coreutils.wasm', cu.bytes); cu.files = fs.readFileSync('overlay/etc/inksoc/wasm-catalog', 'utf8').split('\n').find((l) => l.startsWith('coreutils\t')).split('\t')[5];
+  add('cucat.txt', Buffer.from(`coreutils\tfile:///root/coreutils.wasm\t${crypto.createHash('sha256').update(cu.bytes).digest('hex')}\t${cu.bytes.length}\tMIT\t${cu.files}\tcoreutils\n`)); } // the line is too long for the terminal: a file
 // hashtools: an 8 MB file whose digests node computes (and "abc"), to compare with the WebAssembly md5sum, sha*sum, b2sum
 const HASHES = [['md5', 'md5'], ['sha1', 'sha1'], ['sha224', 'sha224'], ['sha256', 'sha256'], ['sha384', 'sha384'], ['sha512', 'sha512'], ['b2', 'blake2b512']];
 const h8 = hasTool('hashtools') ? Buffer.alloc(8 << 20, 0).map((_, i) => (i * 131 + (i >> 9)) & 255) : null;
@@ -349,6 +354,43 @@ if (hasWasi) {
     await step('cd /tmp && sha256sum abc.txt /root/h8.bin > s.sum && sha256sum -c s.sum && b2sum --tag abc.txt | b2sum -c && echo x >> abc.txt && sha256sum -c s.sum; echo c-rc=$?; sha256sum --status -c s.sum; echo st-rc=$?; md5sum nofile; echo nf-rc=$?; cd\n',
       /^abc\.txt: OK\s+^\/root\/h8\.bin: OK\s+^abc\.txt: OK\s+^abc\.txt: FAILED\s+^\/root\/h8\.bin: OK[\s\S]*WARNING: 1 computed checksum did NOT match\s+^c-rc=1\s+^st-rc=1\s+^md5sum: nofile: No such file or directory\s+^nf-rc=1/m,
       'hashtools: sha256sum -c (OK, FAILED, warning, exit 1), --status, b2sum -c of a --tag line, missing file');
+  }
+  if (cu) { // uutils coreutils: install from a local catalog entry (the real links), compare with busybox, then remove
+    const esc = (c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    await step('sudo sh -c "cat /root/cucat.txt >> /etc/inksoc/wasm-catalog.local"\n', /Password/, 'coreutils: local catalog entry (sudo asks)');
+    await step('pw1\n', /tester@inksoc/, 'coreutils: local catalog entry written');
+    await step('apk add --no-network coreutils; echo cu-add-rc=$?\n', /Password/, 'coreutils: apk add asks sudo');
+    await step('pw1\n', /OK: coreutils installed[\s\S]*cu-add-rc=0/, 'coreutils: apk add installs the multicall program and its links');
+    const linked = ['sort', 'wc', 'cut', 'tr', 'uniq', 'paste', 'od', 'seq', 'join'];
+    await step(`hash -r; for n in ${linked.join(' ')} sh cat; do command -v $n; done; coreutils ls --version | head -n 1; coreutils --help | busybox grep -c ls; echo cu-res\n`,
+      new RegExp(linked.map((n) => '^/usr/local/bin/' + n + '\\s+').join('') + '^/bin/sh\\s+^/bin/cat\\s+ls \\(uutils coreutils\\) 0\\.8\\.0[\\s\\S]*cu-res', 'm'),
+      'coreutils: PATH picks the linked WebAssembly programs, sh and cat stay busybox, multicall form "coreutils ls" works');
+    await step(`cd /tmp && rm -rf cu && mkdir cu && cd cu && busybox seq 1 3000 | busybox awk '{printf "%d w%d\\n", ($1*7919)%1009, $1%37}' > d.txt && echo made-$(busybox wc -l < d.txt)\n`, /made-3000/, 'coreutils: test data');
+    // the first ones must match busybox byte for byte; the others only print (formats may differ)
+    const crit = ['sort d.txt', 'sort -n d.txt', 'sort -u d.txt', 'cut -d" " -f2 d.txt', 'tr a-z A-Z < d.txt', 'seq 3 3 30', 'wc -l < d.txt', 'wc -c < d.txt', 'uniq -c d.txt', 'paste d.txt d.txt'];
+    const more = ['sort -k2,2 -s d.txt', 'sort -nr d.txt', 'tr -d 0-4 < d.txt', 'nl d.txt', 'fold -w 3 d.txt', 'expand d.txt', 'comm d.txt d.txt', 'od -c d.txt', 'head -n 7 d.txt', 'tail -n 7 d.txt', 'cat -n d.txt', 'tail -n +2990 d.txt', 'basename /a/b/c.txt .txt', 'dirname /a/b/c.txt', 'wc d.txt'];
+    {
+      const before = out.length;
+      await step(`for c in ${[...crit, ...more].map((c) => `'${c}'`).join(' ')}; do a=$(eval "coreutils $c" | busybox md5sum); b=$(eval "busybox $c" | busybox md5sum); [ "$a" = "$b" ] && echo "same: $c" || echo "DIFF: $c"; done; echo cmp-done\n`,
+        new RegExp(crit.map((c) => '^same: ' + esc(c) + '\\s+').join('') + '[\\s\\S]*cmp-done', 'm'), 'coreutils: sort, sort -n/-u, cut, tr, seq, wc, uniq -c, paste give the same bytes as busybox');
+      console.log(out.slice(before).split('\n').filter((l) => /^(same|DIFF): /.test(l.trim())).map((l) => '  ' + l.trim()).join('\n'));
+    }
+    {
+      const before = out.length;
+      await step('cd /tmp/cu && C=coreutils; $C mkdir -p a/b/c; echo hi > a/f1; $C cp a/f1 a/b/f2; echo cp=$?; $C cp -r a a2; echo cp-r=$?; $C mv a2 a3; echo mv=$?; $C ln -s f1 a/sl; echo ln-s=$?; $C ln a/f1 a/hl; echo ln=$?; $C touch a/new; echo touch=$?; $C ls a | busybox tr "\\n" " "; echo; $C ls -R a3 | busybox tr "\\n" " "; echo; $C ls -l a/f1; $C readlink a/sl; echo info1-done\n', /info1-done/, 'coreutils: file operations by "coreutils NAME" (information only)');
+      console.log('  ' + out.slice(before).split('\n').slice(0, 24).join('\n  '));
+    }
+    {
+      const before = out.length;
+      await step('cd /tmp/cu && C=coreutils; $C rm -r a3; echo rm-r=$?; $C ls a3; $C rmdir a/b/c; echo rmdir=$?; $C truncate -s 5000 a/t; busybox stat -c %s a/t; $C cp -p a/f1 a/p; echo cp-p=$?; $C touch -d 2020-01-02 a/f1; echo touch-d=$?; busybox stat -c %h a/f1; $C ls -la a | busybox head -n 5; echo info2-done\n', /info2-done/, 'coreutils: more file operations (information only)');
+      console.log('  ' + out.slice(before).split('\n').slice(0, 24).join('\n  '));
+    }
+    await step(`cd /tmp/cu && busybox seq 1 300000 > big.txt && wc -l < big.txt && sort -nr big.txt | busybox head -n 2 | busybox tr '\\n' ' '; echo; [ "$(sort big.txt | busybox md5sum)" = "$(busybox sort big.txt | busybox md5sum)" ] && echo sort-same; printf 'b\\na\\nb\\n' | sort | uniq -c; sort /nonexistent; echo rc=$?; wc /nonexistent; echo rc=$?; cd\n`,
+      /^300000\s+300000 299999 \s+sort-same\s+^\s*1 a\s+^\s*2 b\s+sort: .*nonexistent.*No such file or directory\s+rc=2\s+wc: .*nonexistent.*No such file or directory\s+rc=1/m,
+      'coreutils: 300000 lines (sort -nr, sort vs busybox byte for byte), stdin pipe, error messages and exit codes');
+    await step('apk del coreutils; echo cu-del-rc=$?\n', /Password/, 'coreutils: apk del asks sudo');
+    await step('pw1\n', /\(coreutils\) WebAssembly build removed[\s\S]*cu-del-rc=0/, 'coreutils: apk del removes the links');
+    await step('hash -r; command -v sort; ls /usr/local/bin/sort 2>&1 | head -n 1; echo cu-gone\n', /\/bin\/sort\s+ls: \/usr\/local\/bin\/sort: No such file or directory\s+cu-gone/, 'coreutils: busybox sort is back in PATH');
   }
   if (hasTool('lua5.4')) { // Lua: script file, pcall/error (setjmp/longjmp), uncaught error exits 1
     await step('printf \'%s\\n\' \'local t = {}\' \'for i = 1, 10 do t[#t + 1] = i * i end\' \'print("lua-ok", #t, t[10], _VERSION, pcall(error, "boom"))\' > /tmp/t.lua && lua /tmp/t.lua; lua5.4 -e "error(\'x\')" 2> /dev/null; echo lua-rc=$?\n',

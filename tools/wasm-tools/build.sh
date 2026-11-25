@@ -1,11 +1,11 @@
 #!/bin/sh
 # Builds WebAssembly (WASI preview1) command-line tools for the catalog (apk add) from upstream sources.
-# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum
+# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils
 # env: WASI_SDK (wasi-sdk-33 or later: C++ exceptions), WORK (sources, build dirs), OUT (the .wasm files)
 # CI: .github/workflows/wasm-tools.yml builds them and publishes a GitHub release; the catalog points at it.
 # No GPL: ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
 # 7-Zip without the unRAR code (LGPL-2.1+ and BSD-3-Clause), qpdf (Apache-2.0), ImageMagick (its own Apache-style license),
-# SQLite (public domain), jq (MIT), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense), hashsum (InkShell's own code, MIT).
+# SQLite (public domain), jq (MIT), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense), hashsum (InkShell's own code, MIT), uutils coreutils (MIT).
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 : "${WASI_SDK:=/opt/wasi-sdk}" "${WORK:=$PWD/wasm-tools-work}" "${OUT:=$PWD/wasm-tools-out}"
@@ -26,7 +26,7 @@ CWDL="-Wl,--undefined=chdir"
 STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
-SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1
+SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0
 
 fetch() { # github repo, tag, dir name: shallow clone once into $WORK/dir; a source tarball goes next to the binaries (LGPL)
   [ -d "$WORK/$3" ] && return 0
@@ -190,6 +190,15 @@ b_hashsum() { # md5sum, sha1sum, sha224/256/384/512sum, b2sum: one small C progr
   $CC -O3 -Wall "$here/hashsum/hashsum.c" -o "$OUT/hashsum.wasm" $CWDL
 }
 
+b_coreutils() { # uutils coreutils 0.8.0 (Rust, wasm32-wasip1), multicall "coreutils": the utilities upstream builds for WASI (feat_wasm), picked by argv[0] (ls, cat, cp, sort...)
+  fetch uutils/coreutils $UUTILS uutils
+  rustup target add wasm32-wasip1
+  (cd "$WORK/uutils" && env -u CC -u CXX -u AR -u RANLIB -u NM -u STRIP CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=true \
+    CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS="-C link-arg=--undefined=chdir" \
+    cargo build --release --locked --target wasm32-wasip1 --no-default-features --features feat_wasm)
+  cp "$WORK/uutils/target/wasm32-wasip1/release/coreutils.wasm" "$OUT/coreutils.wasm"
+}
+
 # b_ prefix: functions named zip, unzip... would hide those commands
-for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
+for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
 ls -l "$OUT"
