@@ -3534,8 +3534,13 @@ fn popcnt(g: &mut G, i: &Ins, live: bool) -> bool {
     true
 }
 
-const MAX_BLOCKS: usize = 16; // blocks per region
-const MAX_REGION_INS: usize = 320;
+static REGION: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(16);
+/// Blocks per region (default 16; the instruction cap scales with it, 20 per block). Run-time settable
+/// in every build (item 52 sweeps it with set_jit_hot in Chromium and WebKit).
+#[no_mangle]
+pub extern "C" fn set_jit_region(max_blocks: u32) {
+    REGION.store(max_blocks.clamp(1, 256), core::sync::atomic::Ordering::Relaxed);
+}
 
 struct Block {
     list: Vec<Ins>,
@@ -3618,9 +3623,11 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
     let mut heads = vec![rip];
     let mut blocks = vec![first];
     let mut k = 0;
-    while k < blocks.len() && blocks.len() < MAX_BLOCKS && total < MAX_REGION_INS {
+    let max_blocks = REGION.load(core::sync::atomic::Ordering::Relaxed) as usize;
+    let max_ins = max_blocks * 20;
+    while k < blocks.len() && blocks.len() < max_blocks && total < max_ins {
         for t in targets(&blocks[k]) {
-            if blocks.len() >= MAX_BLOCKS || total >= MAX_REGION_INS {
+            if blocks.len() >= max_blocks || total >= max_ins {
                 break;
             }
             if heads.contains(&t) {
