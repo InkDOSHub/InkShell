@@ -43,8 +43,8 @@ fn chain_on() -> bool {
     CHAIN.load(core::sync::atomic::Ordering::Relaxed)
 }
 
-static HOT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(40);
-/// Visits before a block is compiled (default 40). Run-time settable in every build (item 48 sweeps
+static HOT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(500);
+/// Visits before a block is compiled (default 500, item 52: best of HOT {40..2000} x region {16,32,64} in Chromium and WebKit). Run-time settable in every build (item 48 sweeps
 /// it in Chromium and WebKit; item 46's jitprobe build uses it too).
 #[no_mangle]
 pub extern "C" fn set_jit_hot(n: u32) {
