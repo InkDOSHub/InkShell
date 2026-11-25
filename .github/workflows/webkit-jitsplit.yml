@@ -1,0 +1,36 @@
+name: WebKit JIT compile split
+# Item 55 (measurement only): x86 JIT module compile cost in Chromium (V8) vs WebKit (JSC), fixed per module
+# vs per KB, and the gain of merging N JIT regions into one WebAssembly module (option C). Real modules of
+# python3 x86 start, dumped once and replayed in both browsers (tests/bench/jitsplit*). Light: no big files.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/webkit-jitsplit.yml'
+      - 'tests/bench/jitsplit*'
+permissions:
+  contents: read
+concurrency:
+  group: webkit-jitsplit-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  split:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Inputs (x86 python3)
+        run: |
+          mkdir -p out
+          timeout 300 docker run --rm -v "$PWD":/w -w /w alpine:3.21 sh -c '
+            mkdir /x && apk add -q --root /x --initdb --allow-untrusted --no-scripts \
+              --repositories-file /etc/apk/repositories python3 &&
+            tar -C /x -cf out/zpkgs.tar usr/bin usr/lib lib etc/ssl 2>/dev/null'
+          cp tests/bench/browser.sh out/
+          ls -la out
+      - name: Playwright (Chromium + WebKit)
+        run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit'
+      - name: Dump JIT modules, replay in both browsers
+        run: timeout 900 node tests/bench/jitsplit.mjs
