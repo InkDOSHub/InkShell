@@ -1,0 +1,21 @@
+name: Store download over wisp
+# Item 62: downloads catalog entries through the real wisp tunnels (public, then the Hub relay), like the
+# terminal's wget does, and checks sha256 + size. Real network: runs only when the store/tunnel files change
+# or by hand; not part of every PR.
+on:
+  push:
+    branches: ['claude/**']
+    paths: ['tests/wisp-download.mjs', '.github/workflows/wisp-net.yml', 'overlay/etc/inksoc/wasm-catalog']
+  workflow_dispatch:
+    inputs:
+      names: { description: 'catalog names', default: 'python3 ruby hashtools', required: false }
+jobs:
+  wisp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Download through wisp (python3 is the big one, 26 MB; hashtools a small InkShell asset)
+        run: timeout 600 node tests/wisp-download.mjs ${{ github.event.inputs.names || 'python3 hashtools' }}

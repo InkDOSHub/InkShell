@@ -257,6 +257,11 @@ if (hasWasi) {
   await step('hello-wasm X < /dev/null; echo rc=$?\n', /wasi argc=2 arg1=X in=\(eof\)[\s\S]*rc=3/, 'catalog: installed program runs from PATH');
   await step('apk del hello-wasm; test -e /usr/local/bin/hello-wasm || echo gone\n', /Password/, 'catalog: apk del asks sudo');
   await step('pw1\n', /WebAssembly build removed[\s\S]*gone/, 'catalog: apk del removes it');
+  // item 62: a download that fails is retried (resume) and shows wget's own message, not just "download failed"
+  await step(`sudo sh -c "printf 'bad-wasm\\thttp://127.0.0.1:9/bad.wasm\\t${hsum}\\t10\\tMIT\\t/usr/local/bin/bad-wasm\\tunreachable\\n' >> /etc/inksoc/wasm-catalog.local"\n`, /Password/, 'catalog: unreachable entry (sudo asks)');
+  await step('pw1\n', /tester@inksoc/, 'catalog: unreachable entry written');
+  await step('apk add --no-network bad-wasm; echo bad-rc=$?\n', /Password/, 'catalog: failing download asks sudo');
+  await step('pw1\n', /continuing \(3\/3\)[\s\S]*ERROR: bad-wasm: download failed: http:\/\/127\.0\.0\.1:9\/bad\.wasm\s+\S*wget[^\n]*(refused|connect)[\s\S]*bad-rc=1/i, 'catalog: failed download retries 3 times and shows the wget message');
   if (hasPy) { // python3 from the catalog (local file:// mirror), run in the terminal
     const psum = crypto.createHash('sha256').update(pyBytes).digest('hex');
     await step(`sudo sh -c "printf 'python3\\tfile:///root/python.wasm\\t${psum}\\t${pyBytes.length}\\tPSF-2.0\\t/usr/local/bin/python3,/usr/local/bin/python\\tPython\\n' >> /etc/inksoc/wasm-catalog.local"\n`, /Password/, 'python3: local catalog entry (sudo asks)');
