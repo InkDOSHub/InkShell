@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds WebAssembly (WASI preview1) command-line tools for the catalog (apk add) from upstream sources.
-# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | bzip2 | zstd | bc | file | less | grep
+# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | bzip2 | zstd | bc | file | less | grep | nano
 # env: WASI_SDK (wasi-sdk-33 or later: C++ exceptions), WORK (sources, build dirs), OUT (the .wasm files)
 # CI: .github/workflows/wasm-tools.yml builds them and publishes a GitHub release; the catalog points at it.
 # No GPL except GNU grep (GPL-3.0-or-later, item 80, a separate catalog program with its source release and these changes published; see THIRD_PARTY_LICENSES.md): ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
@@ -26,7 +26,7 @@ CWDL="-Wl,--undefined=chdir"
 STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
-SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12
+SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12 NANO=8.3 NCURSES=6.5
 
 fetch() { # github repo, tag, dir name: shallow clone once into $WORK/dir; a source tarball goes next to the binaries (LGPL)
   [ -d "$WORK/$3" ] && return 0
@@ -357,6 +357,28 @@ b_grep() { # GNU grep 3.12 (GPL-3.0-or-later; a separate catalog program, source
     make -j"$J" -C lib GL_CFLAG_GNULIB_WARNINGS= >/dev/null && make -j"$J" -C src grep GL_CFLAG_GNULIB_WARNINGS= && cp src/grep "$OUT/grep.wasm")
 }
 
+b_nano() { # GNU nano 8.3 (GPL-3.0-or-later; a separate catalog program, source release in the GitHub release) over ncurses 6.5 (MIT-style license; terminal database = the built-in xterm-256color entry); termios/ioctl size over host calls (nano/tty.c); ASCII (no UTF-8), no spell checker, no ^T execute (no fork/pipe), no libmagic/mouse/browser
+  compat; dl "https://ftp.gnu.org/gnu/ncurses/ncurses-$NCURSES.tar.gz" ncurses; dl "https://ftp.gnu.org/gnu/nano/nano-$NANO.tar.xz" nano
+  tc=$WORK/nano-tc; mkdir -p "$tc/include" "$tc/lib"; cp "$here/nano/termios.h" "$here/nano/ink_nano.h" "$here/nano/ink_lib.h" "$tc/include/"
+  $CC -O2 $EMU -include "$tc/include/ink_nano.h" -I"$tc/include" -c "$here/nano/tty.c" -o "$tc/tty.o" && $AR rcs "$tc/lib/libinktty.a" "$tc/tty.o"
+  # ncurses: static, no widec, no database (the xterm-256color entry is compiled in, by the build host's tic/infocmp)
+  rm -rf "$WORK/ncurses/b" && mkdir -p "$WORK/ncurses/b" && (cd "$WORK/ncurses/b" && CFLAGS="-O2 $EMU -include $tc/include/ink_nano.h -I$tc/include" LDFLAGS="-L$tc/lib" LIBS="-linktty $EMUL" CC_FOR_BUILD=cc \
+    ../configure --host=$T --prefix="$tc/ncp" --without-progs --without-tests --without-manpages --without-cxx --without-cxx-binding --without-ada --disable-database --with-fallbacks=xterm-256color \
+      --with-tic-path=/usr/bin/tic --with-infocmp-path=/usr/bin/infocmp --without-shared --without-debug --without-gpm --without-sysmouse --disable-widec --disable-home-terminfo --disable-leaks \
+      --without-pthread --disable-stripping --disable-rpath --enable-pc-files=no --without-dlsym --disable-echo >/dev/null &&
+    make -j"$J" -C include >/dev/null && make -j"$J" -C ncurses >/dev/null && make -C include install >/dev/null && make -C ncurses install >/dev/null)
+  # gnulib (nano's lib/): no config.h-less system headers before config.h; what WASI lacks is stubbed (nano/tty.c) or cached as present; three gnulib files replaced by stubs (no rlimit, no sigaction struct of its own)
+  printf '#include <config.h>\n#include <unistd.h>\nint getdtablesize (void) { return 1024; }\n' > "$WORK/nano/lib/getdtablesize.c"
+  printf '#include <config.h>\n' > "$WORK/nano/lib/sig-handler.c"; printf '#include <config.h>\n' > "$WORK/nano/lib/sigaction.c"
+  rm -rf "$WORK/nano/b" && mkdir -p "$WORK/nano/b" && (cd "$WORK/nano/b" && CFLAGS="-O2 $EMU -include $tc/include/ink_lib.h -I$P/compat -I$tc/include" CPPFLAGS="-I$tc/ncp/include -I$tc/ncp/include/ncurses" LDFLAGS="-L$tc/lib -L$tc/ncp/lib -L$P/lib $STACK" LIBS="-linktty -lcompat $EMUL" \
+    NCURSES_CFLAGS="-I$tc/ncp/include/ncurses" NCURSES_LIBS="-L$tc/ncp/lib -lncurses" \
+    gl_cv_func_fcntl_f_dupfd_cloexec=yes gl_cv_func_fcntl_f_dupfd_works=yes gl_cv_func_getdtablesize_works=yes ac_cv_func_sigaction=yes ac_cv_func_sigprocmask=yes ac_cv_func_dup2=yes gl_cv_func_dup2_works=yes ac_cv_func_pipe=yes ac_cv_func_fchdir=yes ac_cv_func_getdtablesize=yes \
+    ../configure --host=$T --disable-nls --disable-utf8 --disable-libmagic --disable-speller --disable-browser --disable-threads --disable-mouse >/dev/null &&
+    make -j"$J" -C lib GL_CFLAG_GNULIB_WARNINGS= >/dev/null &&
+    printf '#include <compat.h>\n#include <ink_nano.h>\n' >> config.h && # after gnulib's config.h part: the system headers it wants first
+    make -j"$J" -C src nano GL_CFLAG_GNULIB_WARNINGS= CFLAGS="-O2 $EMU -I$P/compat -I$tc/include" >/dev/null && cp src/nano "$OUT/nano.wasm")
+}
+
 # b_ prefix: functions named zip, unzip... would hide those commands
-for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd|bc|file|less|grep) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
+for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd|bc|file|less|grep|nano) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
 ls -l "$OUT"

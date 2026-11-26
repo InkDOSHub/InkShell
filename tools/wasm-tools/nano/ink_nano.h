@@ -5,10 +5,13 @@
 #include <signal.h>
 #include <sys/types.h>
 #ifndef SA_RESTART
-struct sigaction { union { void (*sa_handler)(int); void (*sa_sigaction)(int, void *, void *); } __h; unsigned long sa_flags; sigset_t sa_mask; };
-#define sa_handler __h.sa_handler
+struct sigaction { void (*sa_handler)(int); unsigned long sa_flags; sigset_t sa_mask; };
 #define SA_RESTART 0x10000000
 #define SA_NOCLDSTOP 1
+#define SA_RESETHAND 0x80000000
+#define SIG_BLOCK 0
+#define SIG_UNBLOCK 1
+#define SIG_SETMASK 2
 #define SA_SIGINFO 4
 #endif
 #ifndef SIGWINCH
@@ -41,6 +44,10 @@ int kill(pid_t, int);
 #define P_tmpdir "/tmp"
 #endif
 int mkstemps(char *, int);
+int pipe(int[2]);
+int dup(int);
+int dup2(int, int);
+int execl(const char *, const char *, ...);
 struct passwd *getpwent(void);
 void endpwent(void);
 #endif

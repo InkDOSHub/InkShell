@@ -52,6 +52,12 @@ int sigismember(const sigset_t *s, int n) { return (*s >> (n & 7)) & 1; }
 int sigprocmask(int how, const sigset_t *s, sigset_t *old) { (void)how; (void)s; if (old) *old = 0; return 0; }
 struct passwd *getpwent(void) { return NULL; } /* nano's ~user completion: no user database */
 void endpwent(void) {}
+char *getlogin(void) { return NULL; }
+/* execute-command (^T) needs fork/pipe: not here, nano reports the error */
+int pipe(int p[2]) { (void)p; errno = ENOSYS; return -1; }
+int dup(int f) { (void)f; errno = ENOSYS; return -1; }
+int dup2(int f, int g) { (void)f; (void)g; errno = ENOSYS; return -1; }
+int execl(const char *p, const char *a, ...) { (void)p; (void)a; errno = ENOSYS; return -1; }
 int mkstemps(char *t, int suf) { /* ...XXXXXX<suffix>: created with O_EXCL (WASI libc has none) */
   static const char a[] = "abcdefghijklmnopqrstuvwxyz0123456789"; static unsigned long n;
   size_t l = strlen(t); char *x;
