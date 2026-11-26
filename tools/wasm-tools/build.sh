@@ -1,11 +1,11 @@
 #!/bin/sh
 # Builds WebAssembly (WASI preview1) command-line tools for the catalog (apk add) from upstream sources.
-# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip
+# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | bzip2 | zstd
 # env: WASI_SDK (wasi-sdk-33 or later: C++ exceptions), WORK (sources, build dirs), OUT (the .wasm files)
 # CI: .github/workflows/wasm-tools.yml builds them and publishes a GitHub release; the catalog points at it.
 # No GPL: ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
 # 7-Zip without the unRAR code (LGPL-2.1+ and BSD-3-Clause), qpdf (Apache-2.0), ImageMagick (its own Apache-style license),
-# SQLite (public domain), jq (MIT), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense), hashsum (InkShell's own code, MIT), uutils coreutils (MIT), QuickJS-ng (MIT), uutils sed (MIT), uutils findutils find (MIT; oniguruma BSD-2-Clause inside), one-true-awk (MIT-style Bell Labs license), xz 5.8 (0BSD; liblzma public domain/0BSD), libarchive bsdtar (BSD-2-Clause, BSD-3-Clause; zlib license for zlib, 0BSD for liblzma), gzip (InkShell's own code on zlib, MIT).
+# SQLite (public domain), jq (MIT), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense), hashsum (InkShell's own code, MIT), uutils coreutils (MIT), QuickJS-ng (MIT), uutils sed (MIT), uutils findutils find (MIT; oniguruma BSD-2-Clause inside), one-true-awk (MIT-style Bell Labs license), xz 5.8 (0BSD; liblzma public domain/0BSD), libarchive bsdtar (BSD-2-Clause, BSD-3-Clause; zlib license for zlib, 0BSD for liblzma), gzip (InkShell's own code on zlib, MIT), bzip2 1.0.8 (bzip2 license, BSD-style), zstd 1.5.7 (BSD-3-Clause option of its dual license).
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 : "${WASI_SDK:=/opt/wasi-sdk}" "${WORK:=$PWD/wasm-tools-work}" "${OUT:=$PWD/wasm-tools-out}"
@@ -26,7 +26,7 @@ CWDL="-Wl,--undefined=chdir"
 STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
-SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1
+SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7
 
 fetch() { # github repo, tag, dir name: shallow clone once into $WORK/dir; a source tarball goes next to the binaries (LGPL)
   [ -d "$WORK/$3" ] && return 0
@@ -281,6 +281,19 @@ b_gzip() { # gzip, gunzip, zcat: InkShell's own program (gzip/gzip.c, MIT) over 
   $CC -O2 -Wall -I"$P/include" "$here/gzip/gzip.c" -o "$OUT/gzip.wasm" -L"$P/lib" -lz $CWDL
 }
 
+b_bzip2() { # bzip2 1.0.8 (bzip2 license, BSD-style): bzip2, bunzip2, bzcat by argv[0] (the program looks for "unzip"/"zcat" in its name); no signals needed beyond the emulated ones
+  compat; dl "https://sourceware.org/pub/bzip2/bzip2-$BZIP2.tar.gz" bzip2
+  (cd "$WORK/bzip2" && $CC -O2 -Wall -Winline -D_FILE_OFFSET_BITS=64 -DCOMPAT_CHMOD_OK $EMU -I"$P/compat" -include compat.h \
+    blocksort.c huffman.c crctable.c randtable.c compress.c decompress.c bzlib.c bzip2.c -o "$OUT/bzip2.wasm" -L"$P/lib" -lcompat $EMUL $STACK)
+}
+
+b_zstd() { # zstd 1.5.7 (BSD-3-Clause; the GPL-2.0 option of its dual license is not used): zstd, unzstd, zstdcat by argv[0]; one thread (no ZSTD_MULTITHREAD), no zlib/lzma/lz4 formats, no asm
+  compat; dl "https://github.com/facebook/zstd/releases/download/v$ZSTD/zstd-$ZSTD.tar.gz" zstd
+  (cd "$WORK/zstd" && $CC -O2 -DZSTD_LEGACY_SUPPORT=0 -DDYNAMIC_BMI2=0 -DZSTD_DISABLE_ASM=1 -DCOMPAT_CHMOD_OK $EMU -I"$P/compat" -include compat.h \
+    -Ilib -Ilib/common -Ilib/compress -Ilib/decompress -Ilib/dictBuilder -Iprograms \
+    lib/common/*.c lib/compress/*.c lib/decompress/*.c lib/dictBuilder/*.c programs/*.c -o "$OUT/zstd.wasm" -L"$P/lib" -lcompat $EMUL $STACK)
+}
+
 # b_ prefix: functions named zip, unzip... would hide those commands
-for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
+for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
 ls -l "$OUT"
