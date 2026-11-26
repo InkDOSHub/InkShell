@@ -407,23 +407,48 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
       const { r } = sys(265, [a, BASE, b, BASE + 4096, fl & 1 ? 0x400 : 0], d); return r < 0 ? errno(r) : 0;
     },
     poll_oneoff: (inp, outp, n, np) => {
-      const d = dv(); let wait = -1;
+      const d = dv(); let wait = -1; const fdsub = [];
       for (let i = 0; i < n; i++) {
         const s = inp + 48 * i, o = outp + 32 * i, tag = d.getUint8(s + 8);
         d.setBigUint64(o, d.getBigUint64(s, true), true); d.setUint16(o + 8, 0, true); d.setUint8(o + 10, tag);
         if (tag === 0) { let t = Number(d.getBigUint64(s + 24, true)); if (d.getUint16(s + 40, true) & 1) t = Math.max(0, t - (Date.now() * 1e6)); wait = wait < 0 ? t : Math.min(wait, t); }
+        else { const lfd = L(d.getUint32(s + 16, true)); if (lfd != null) fdsub.push({ i, tag, lfd }); }
+      }
+      if (fdsub.length) { // fd_read / fd_write subscriptions (Vim waiting for a key): Linux poll(), with the clock subscription as timeout
+        const pf = new Uint8Array(8 * fdsub.length), pv = new DataView(pf.buffer);
+        fdsub.forEach((f, k) => { pv.setInt32(8 * k, f.lfd, true); pv.setInt16(8 * k + 4, f.tag === 1 ? 1 : 4, true); });
+        const ms = wait < 0 ? 0x7fffffff : Math.min(0x7fffffff, Math.ceil(wait / 1e6));
+        const { r, out } = sys(7, [BASE, fdsub.length, ms], pf, pf.length);
+        if (r >= 0 && out) {
+          const ov = new DataView(out.buffer, out.byteOffset, out.byteLength); let m = 0;
+          const put = (i) => { const s = inp + 48 * i, o = outp + 32 * m++; d.setBigUint64(o, d.getBigUint64(s, true), true); d.setUint16(o + 8, 0, true); d.setUint8(o + 10, d.getUint8(s + 8)); d.setBigUint64(o + 16, 0n, true); d.setUint16(o + 24, 0, true); };
+          fdsub.forEach((f, k) => { if (ov.getInt16(8 * k + 6, true)) put(f.i); });
+          if (!m) for (let i = 0; i < n; i++) if (d.getUint8(inp + 48 * i + 8) === 0) { put(i); break; }
+          d.setUint32(np, m, true); return 0;
+        }
       }
       if (wait > 0) { const ts = new Uint8Array(16), tv = new DataView(ts.buffer); tv.setBigUint64(0, BigInt(Math.floor(wait / 1e9)), true); tv.setBigUint64(8, BigInt(wait % 1e9), true); sys(35, [BASE, 0], ts); }
       d.setUint32(np, n, true); return 0;
     },
     sock_accept: () => 52, sock_recv: () => 52, sock_send: () => 52, sock_shutdown: () => 52,
   };
+  // host imports of programs that need a real terminal (Vim: termios, window size): the kernel's TCGETS / TCSETS / TIOCGWINSZ; 0 = done, else an errno
+  const tty = (fd, req, len, data) => {
+    const lfd = L(fd); if (lfd == null) return 9;
+    const { r, out } = sys(16, [lfd, req, BASE], data, data ? 0 : len); if (r < 0) return -r;
+    if (!data && out) u8().set(out.subarray(0, len), tty.p); return 0;
+  };
+  const inkshell = {
+    tty_get: (fd, p) => { tty.p = p; return tty(fd, 0x5401, 36); },
+    tty_set: (fd, act, p) => tty(fd, 0x5402 + (act === 1 ? 1 : act === 2 ? 2 : 0), 0, u8().slice(p, p + 36)),
+    tty_size: (fd, p) => { tty.p = p; return tty(fd, 0x5413, 8); },
+  };
   let code = 0;
   try {
     let mod = module || (key && mods.get(key));
     if (!mod) { mod = new WebAssembly.Module(bytes); if (key) { cacheModule(mods, key, mod); if (onModule) onModule(key, mod); } }
     else if (key) cacheModule(mods, key, mod);
-    const imports = { wasi_snapshot_preview1: w, wasi_unstable: w };
+    const imports = { wasi_snapshot_preview1: w, wasi_unstable: w, inkshell };
     for (const i of WebAssembly.Module.imports(mod)) if (!imports[i.module]) imports[i.module] = {};
     inst = new WebAssembly.Instance(mod, imports);
     mem = inst.exports.memory;
