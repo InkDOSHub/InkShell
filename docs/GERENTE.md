@@ -96,7 +96,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; até 2 it
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
-- 2026-11-26 | #fila | fila por uso | ordem do Paulo: vim, grep, nano, curl, git, pip, diff, clang, Pillow | 80 grep
+- 2026-11-26 | #115 | fila por uso | ordem do Paulo: vim, grep, nano, curl, git, pip, diff, clang, Pillow | 80 grep
 - 2026-11-26 | #106 | 73 less em WASM | merge com aval do Paulo ("autorizo quebrar a regra teto de rodadas no 73"), 3ª rodada verde; less 692 completo, teclas sem Enter, janela; sem ganho de velocidade (4 → 32 ms) | 74 vim
 - 2026-11-26 | #114 | fazer completo, testar 1x no fim | WIP com [skip ci], teste tolerante | —
 - 2026-11-26 | #112 | 79 qjs com ponte de processos | wasm-tools-22 só com qjs; std.popen e os.exec (bloqueante) pela ponte, filho WASM direto; teste leve procs.sh | semana 4
