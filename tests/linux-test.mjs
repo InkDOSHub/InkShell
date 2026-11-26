@@ -70,7 +70,7 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
   ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat'],
   ['bzip2', 'bzip2', 'bzip2,bunzip2,bzcat'], ['zstd', 'zstd', 'zstd,unzstd,zstdcat'],
-  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['nano', 'nano', 'nano'], ['curl', 'curl', 'curl']]
+  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['nano', 'nano', 'nano'], ['curl', 'curl', 'curl'], ['git', 'git', 'git']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -369,6 +369,13 @@ if (process.env.INK_SPAWN) { // item 78: processes from WebAssembly programs (ho
     }
     console.log('tool processes in ' + ((Date.now() - t2) / 1000).toFixed(1) + ' s\n' + got2.slice(-1500));
   }
+  if (hasTool('git')) { // item 75 (information only): git stash starts git children (update-index, diff-tree...) through /dev/inksoc
+    const t3 = Date.now(), f3 = out.length;
+    send(`mkdir -p /tmp/gb && busybox cp /root/git.wasm /tmp/gb/git && busybox chmod +x /tmp/gb/git && cd /tmp && rm -rf gs && mkdir gs && cd gs && PATH=/tmp/gb:$PATH; git init -q && git config user.name T && git config user.email t@example.com && echo a > a && git add a && git commit -q -m one && echo b >> a && git stash -q; echo st1=$?; git status --short | busybox wc -l | busybox sed 's/^/st-dirty=/'; git stash pop -q; echo st2=$?; busybox wc -l < a | busybox sed 's/^/st-lines=/'; cd; echo done-git-$((1+1))\n`);
+    while (!/done-git-2/.test(out.slice(f3)) && Date.now() - t3 < 120000) await settle(5000);
+    const got3 = out.slice(f3);
+    console.log('INFO git stash through the bridge: ' + (/st1=0[\s\S]*st-dirty=0[\s\S]*st2=0[\s\S]*st-lines=2/.test(got3) ? 'works' : 'does not work') + ` (${((Date.now() - t3) / 1000).toFixed(1)} s)\n` + got3.slice(-1500));
+  }
   process.exit(ok ? 0 : 1);
 }
 await step('id -un; echo $HOME\n', /tester\s+\/home\/tester/, 'id and home');
@@ -592,6 +599,13 @@ if (hasWasi) {
   }
   if (hasTool('curl')) { // item 82: apk add curl puts the WebAssembly curl in /usr/local/bin (network checks: INK_CURL, INK_NET_PY)
     await step(`hash -r; command -v curl; curl -V | busybox head -n 1 | busybox cut -c1-6; curl; echo curl-rc=$?\n`, /\/usr\/local\/bin\/curl\s+curl 8[\s\S]*no URL specified[\s\S]*curl-rc=2/, 'curl: in /usr/local/bin, -V, no URL = exit 2');
+  }
+  if (hasTool('git')) { // item 75: git 2.47 in WebAssembly ahead of an x86 git; local work in one process (no editor: -m; pager cat), tolerant matching
+    await step(`cd /tmp && rm -rf gt && mkdir gt && cd gt && hash -r && command -v git && git --version && git init -q && git config user.name Tester && git config user.email t@example.com && echo one > a.txt && git add a.txt && git commit -q -m first; echo c1=$?; git log --oneline | busybox wc -l | busybox sed 's/^/n1=/'; git switch -q -c feat && echo two > b.txt && git add b.txt && git commit -q -m second && git switch -q master && git merge -q feat; echo ff=$?; git switch -q -c side && echo s >> a.txt && git commit -q -am side && git switch -q master && echo m > c.txt && git add c.txt && git commit -q -m main && git merge -q -m merged side; echo m3=$?; git log --oneline | busybox wc -l | busybox sed 's/^/n2=/'; git status --short | busybox wc -l | busybox sed 's/^/dirty=/'; git log -1 --format=%s; cd; echo git-back\n`,
+      /\/usr\/local\/bin\/git\s+git version 2\.4\d[\s\S]*c1=0[\s\S]*n1=1[\s\S]*ff=0[\s\S]*m3=0[\s\S]*n2=5[\s\S]*dirty=0\s+merged\s+git-back/, 'git: in /usr/local/bin, init, config, add, commit -m, log --oneline, branch + commit, fast-forward and 3-way merge, status clean, shell answers again');
+    const tg = Date.now();
+    await step(`cd /tmp/gt && busybox seq 1 500 | while read i; do echo $i > f$i.txt; done; git add . && git commit -q -m many; echo many=$?; git status --short | busybox wc -l | busybox sed 's/^/left=/'; cd\n`, /many=0\s+left=0/, 'git: add + commit of 500 small files');
+    console.log(`  [git add + commit of 500 files (with making them in sh): ${Date.now() - tg} ms]`);
   }
   if (hasTool('file')) { // item 72: file/libmagic, the compiled magic database is inside the program
     const E = (l) => l.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
