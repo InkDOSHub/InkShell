@@ -8,6 +8,7 @@
 # a stream. OP = tcp|tls now; a new op (e.g. spawn, item 78) is a new case below, wasi.js stays the same.
 if [ -n "$INK_NET_MODE" ]; then
   exec 2>/dev/null
+  : > "$INK_NET_TMP.ok"
   printf 'OK\n' >&5
   if [ "$INK_NET_MODE" = tls ]; then
     exec 3<&0 0<&4 1>&5 4<&- 5>&-
@@ -24,5 +25,10 @@ case $mode in tcp|tls) ;; *) echo "bad request (tcp|tls HOST PORT SECONDS)"; exi
 case $host in ''|-*|*[!A-Za-z0-9.:_-]*) echo "bad host name"; exit 0 ;; esac
 case $port in ''|*[!0-9]*) echo "bad port"; exit 0 ;; esac
 case $t in ''|0|*[!0-9]*) t=30 ;; esac
-exec 4<&0 5>&1 2>&1
-INK_NET_MODE=$mode INK_NET_HOST=$host exec nc -w "$t" "$host" "$port" -e /usr/local/libexec/inksoc-net
+# nc's errors go to a file, not to the socket: the kernel's socket(AF_INET) looks at fd 2 (a0) and fails
+# when fd 2 is a local socket; they become the answer line when the relay did not start
+e=$(mktemp) || exit 0
+exec 4<&0 5>&1
+INK_NET_MODE=$mode INK_NET_HOST=$host INK_NET_TMP=$e nc -w "$t" "$host" "$port" -e /usr/local/libexec/inksoc-net 2>"$e"
+[ -e "$e.ok" ] || { m=$(head -c 300 "$e" | tr '\n' ' '); echo "${m:-no connection}"; }
+rm -f "$e" "$e.ok"
