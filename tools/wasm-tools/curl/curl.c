@@ -623,6 +623,10 @@ int main(int argc, char **argv) {
   const char *urls[64], *outs[64];
   int nurls = 0, nouts = 0, nremote = 0;
   t_start = now();
+  /* reading the environment makes wasi.js hand the shell's folder to wasi-libc as its cwd (environ_get writes PWD,
+     see wasi.js cwdSlot); chdir to it too, so -o/-O/-T/-D relative names follow the shell's folder */
+  const char *pwd = getenv("PWD");
+  if (pwd && pwd[0] == '/') chdir(pwd);
   /* long options -> short letters (0 = flag handled inline) */
   static const struct { const char *l; char s; int arg; } L[] = {
     {"data", 'd', 1}, {"data-ascii", 'd', 1}, {"data-raw", 1, 1}, {"data-binary", 2, 1}, {"data-urlencode", 3, 1},
