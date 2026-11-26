@@ -69,7 +69,7 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
   ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat'],
   ['bzip2', 'bzip2', 'bzip2,bunzip2,bzcat'], ['zstd', 'zstd', 'zstd,unzstd,zstdcat'],
-  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep']]
+  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -570,6 +570,13 @@ if (hasWasi) {
     await step(`command -v file; cd /tmp && rm -rf fl1 && mkdir fl1 && cd fl1 && printf 'hello text\\n' > t.txt && printf '\\211PNG\\r\\n\\032\\n\\0\\0\\0\\rIHDR\\0\\0\\0\\020\\0\\0\\0\\020\\010\\002\\0\\0\\0' > p.png && busybox gzip -c t.txt > g.gz && busybox cp /bin/busybox elf && printf '#!/bin/sh\\necho hi\\n' > s.sh; file -b t.txt; file -b p.png; file -b g.gz | busybox cut -d, -f1; file -b elf | busybox cut -c1-3; file -bi t.txt; file -b s.sh | busybox cut -d, -f1; file -b - < t.txt; file t.txt p.png | busybox tr '\\n' '|'; echo; file nonexist.x 2>&1 | busybox cut -c1-24; echo file-done\n`,
       lines('/usr/local/bin/file', 'ASCII text', 'PNG image data, 16 x 16, 8-bit/color RGB, non-interlaced', 'gzip compressed data', 'ELF', 'text/plain; charset=us-ascii', 'POSIX shell script', 'ASCII text', 't.txt: ASCII text|p.png: PNG image data, 16 x 16, 8-bit/color RGB, non-interlaced|', 'nonexist.x: cannot open ', 'file-done'),
       'file: a text file, PNG, gzip, ELF, shell script, -b, -i (MIME), stdin, several files, a missing file (magic database built in)');
+  }
+  if (hasTool('vim')) { // item 74: Vim 9.1 in WebAssembly on the kernel terminal (termios and window size through the host's "inksoc" imports); one editing session, tolerant matching (escape sequences stripped)
+    const T = (re) => ({ test: (g) => re.test(g.replace(/\x1b\[[0-9;?>]*[A-Za-z]/g, '').replace(/\r/g, '')) });
+    await step(`cd /tmp && printf 'one\\ntwo\\n' > v1.txt && command -v vim; vim --version | busybox head -1 | busybox cut -c1-12\n`, T(/\/usr\/local\/bin\/vim\s+VIM - Vi IMp/), 'vim: in /usr/local/bin, --version');
+    // ex mode (-es): the test engine runs the program in its own thread, so nothing can be typed while it waits (the full screen is tried in the page)
+    await step(`vim -es -c 'normal Gothree' -c wq v1.txt </dev/null; echo vim-rc=$?\n`, T(/vim-rc=0/), 'vim: opens a file, normal mode G o three, :wq (ex mode)');
+    await step(`cat v1.txt; echo vim-done\n`, T(/one\s+two\s+three\s+vim-done/), 'vim: the file has the inserted line');
   }
   if (hasTool('hashtools')) { // md5sum, sha1sum, sha224/256/384/512sum, b2sum (one WebAssembly program, picked by its name)
     const abc = Buffer.from('abc');
