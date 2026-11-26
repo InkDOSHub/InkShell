@@ -82,7 +82,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; até 2 it
   1. ~~74 vim (2)~~ feito (#113)
   2. ~~80 grep GNU em WASM~~ feito (#116)
   3. 81 nano em WASM (2; hoje só x86) — rodando em paralelo
-  4. ~~82 curl em WASM pela ponte de rede~~ feito (#PR)
+  4. ~~82 curl em WASM pela ponte de rede~~ feito (#118)
   5. 75 git oficial em WASM (3,5; hoje só x86, lento) — próximo
   6. 83 pip no python WASM (2; pip usa socket, a ponte do 76 só cobre urllib)
   7. 71 retomada diff/patch com GNU diffutils (2)
@@ -96,7 +96,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; até 2 it
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
-- 2026-11-26 | #PR | 82 curl em WASM | wasm-tools-26 só com curl.wasm (cliente próprio compatível com curl, MIT, 367 KB) pela ponte de rede do 76 (/dev/tcp + inksoc-net, TLS no ssl_client); -o -O -L -s -I -i -H -X -d -f -w...; códigos de saída do curl; teste Linux leve (busybox httpd local + https example.com); sem FTP/-F/proxy/HTTP2 | 75 git
+- 2026-11-26 | #118 | 82 curl em WASM | wasm-tools-26 só com curl.wasm (cliente próprio compatível com curl, MIT, 367 KB) pela ponte de rede do 76 (/dev/tcp + inksoc-net, TLS no ssl_client); -o -O -L -s -I -i -H -X -d -f -w...; códigos de saída do curl; teste Linux leve (busybox httpd local + https example.com); sem FTP/-F/proxy/HTTP2 | 75 git
 - 2026-11-26 | #113 | 74 vim em WASM | wasm-tools-24 só com vim (Vim 9.1.1400, licença Vim, 3,7 MB), `apk add vim` = vim/vi/view; build de 1ª, teste Linux leve (abrir, G o texto Esc :wq); :! ainda sem fork (reporta falha); tty pelos imports `inksoc` do 73 | 73 less (#106), 75 git
 - 2026-11-26 | #116 | 80 grep GNU em WASM | wasm-tools-23 só com grep 3.12 + fonte (GPL-3.0 como programa separado, catálogo aceita GPL só p/ grep); grep/egrep/fgrep antes do busybox; 10,9 MB: 216–400x vs busybox x86 (Chromium); 2 rodadas de CI | 81 nano
 - 2026-11-26 | #115 | fila por uso | ordem do Paulo: vim, grep, nano, curl, git, pip, diff, clang, Pillow | 80 grep
