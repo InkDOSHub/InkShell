@@ -70,7 +70,7 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
   ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat'],
   ['bzip2', 'bzip2', 'bzip2,bunzip2,bzcat'], ['zstd', 'zstd', 'zstd,unzstd,zstdcat'],
-  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['curl', 'curl', 'curl']]
+  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['nano', 'nano', 'nano'], ['curl', 'curl', 'curl']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -606,6 +606,14 @@ if (hasWasi) {
     // ex mode (-es): the test engine runs the program in its own thread, so nothing can be typed while it waits (the full screen is tried in the page)
     await step(`vim -es -c 'normal Gothree' -c wq v1.txt </dev/null; echo vim-rc=$?\n`, T(/vim-rc=0/), 'vim: opens a file, normal mode G o three, :wq (ex mode)');
     await step(`cat v1.txt; echo vim-done\n`, T(/one\s+two\s+three\s+vim-done/), 'vim: the file has the inserted line');
+  }
+  if (hasTool('nano')) { // item 81: GNU nano 8.3 over ncurses in WebAssembly; keys go in with the command (as for less), tolerant matching (escape sequences stripped)
+    const T = (re) => ({ test: (g) => re.test(g.replace(/\x1b\[[0-9;?>]*[A-Za-z]/g, '').replace(/\r/g, '')) });
+    await step(`command -v nano; nano --version | busybox head -1\n`, T(/\/usr\/local\/bin\/nano\s+GNU nano, version 8/), 'nano: in /usr/local/bin, --version');
+    // Enter must arrive as CR: the terminal's CR-to-NL translation is off for this step (nano turns it off itself, but the keys are typed before it starts)
+    await step(`stty -icrnl; printf 'one\\ntwo\\n' > /tmp/n1.txt; echo stty-ok\n`, /stty-ok/, 'nano: terminal ready');
+    await step('nano /tmp/n1.txt\nXYZ\x0f\r\x18', /\x1b\[\?1049h[\s\S]*\x1b\[\?1049l/, 'nano: full screen on the alternate screen, type XYZ, Ctrl-O Enter saves, Ctrl-X leaves, all without Enter-terminated lines (raw mode)');
+    await step(`stty icrnl; echo nano-back $?; cat /tmp/n1.txt; echo nano-done\n`, T(/nano-back 0\s+XYZone\s+two\s+nano-done/), 'nano: the file has the typed text and the shell works again (cooked mode restored)');
   }
   if (hasTool('hashtools')) { // md5sum, sha1sum, sha224/256/384/512sum, b2sum (one WebAssembly program, picked by its name)
     const abc = Buffer.from('abc');

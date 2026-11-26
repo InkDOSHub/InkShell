@@ -53,7 +53,7 @@ $('calib').onclick = async () => {
   $('calib').disabled = true;
   await stop(true);
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=84');
+  const c = new Worker('worker.js?v=85');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -78,7 +78,7 @@ showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
   stop(false).then(() => {
-    const r = new Worker('worker.js?v=84');
+    const r = new Worker('worker.js?v=85');
     r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
     r.postMessage({ type: 'reset' });
   });
@@ -137,7 +137,7 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=84');
+  w = new Worker('worker.js?v=85');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;
