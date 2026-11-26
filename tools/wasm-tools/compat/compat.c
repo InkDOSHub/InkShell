@@ -108,6 +108,34 @@ static pid_t ink_spawn(const char *cmd, int io, int *fd)
   if (fd) *fd = (int)ink_num(ans, io == 'r' ? "stdout" : "stdin", -1);
   return (pid_t)ink_num(ans, "pid", -1);
 }
+/* starts argv (no shell) with this environment and folder; io[i] for stdin/stdout/stderr: COMPAT_INHERIT, COMPAT_NULL,
+ * COMPAT_PIPE (then io[i] = this side's end) or a descriptor of this program (git's run-command, item 75) */
+pid_t compat_spawn(char *const argv[], char *const env[], const char *cwd, int io[3])
+{
+  ink_buf q = {0}; char ans[512], dir[1024], t[32];
+  static const char *const k[3] = { "stdin", "stdout", "stderr" };
+  ink_puts(&q, "{\"op\":\"spawn\",\"argv\":[");
+  for (int i = 0; argv[i]; i++) { if (i) ink_puts(&q, ","); ink_str(&q, argv[i]); }
+  ink_puts(&q, "]");
+  if (!cwd && getcwd(dir, sizeof dir) && strcmp(dir, "/")) cwd = dir;
+  if (cwd) { ink_puts(&q, ",\"cwd\":"); ink_str(&q, cwd); }
+  if (!env) env = environ;
+  if (env) { ink_puts(&q, ",\"env\":["); for (char *const *e = env; *e; e++) { if (e != env) ink_puts(&q, ","); ink_str(&q, *e); } ink_puts(&q, "]"); }
+  for (int i = 0; i < 3; i++) {
+    if (io[i] == COMPAT_INHERIT) continue;
+    if (io[i] == COMPAT_PIPE) snprintf(t, sizeof t, ",\"%s\":\"pipe\"", k[i]);
+    else if (io[i] == COMPAT_NULL) snprintf(t, sizeof t, ",\"%s\":\"null\"", k[i]);
+    else snprintf(t, sizeof t, ",\"%s\":%d", k[i], io[i]);
+    ink_puts(&q, t);
+  }
+  ink_puts(&q, "}");
+  fflush(NULL);
+  int r = ink_ask(&q, ans, sizeof ans);
+  free(q.b);
+  if (r < 0) return -1;
+  for (int i = 0; i < 3; i++) if (io[i] == COMPAT_PIPE) io[i] = (int)ink_num(ans, k[i], -1);
+  return (pid_t)ink_num(ans, "pid", -1);
+}
 pid_t waitpid(pid_t p, int *s, int o)
 {
   ink_buf q = {0}; char ans[256], t[64];

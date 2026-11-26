@@ -19,7 +19,11 @@ uid_t getuid(void); /* one user: root (uid 0, gid 0) */
 uid_t geteuid(void);
 gid_t getgid(void);
 gid_t getegid(void);
-int mkstemp(char *); /* compat.c: WASI libc declares it only in some modes and has none */
+int mkstemp(char *);
+#define COMPAT_INHERIT (-1) /* compat_spawn io[]: what the child's stdin/stdout/stderr is (or a descriptor) */
+#define COMPAT_NULL (-2)
+#define COMPAT_PIPE (-3)
+pid_t compat_spawn(char *const argv[], char *const env[], const char *cwd, int io[3]); /* compat.c: WASI libc declares it only in some modes and has none */
 #ifndef TIOCGWINSZ /* terminal size: ioctl fails, programs keep their default width */
 #define TIOCGWINSZ 0x5413
 struct winsize { unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel; };

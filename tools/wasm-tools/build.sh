@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds WebAssembly (WASI preview1) command-line tools for the catalog (apk add) from upstream sources.
-# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | bzip2 | zstd | bc | file | less | grep | vim | nano | curl
+# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | bzip2 | zstd | bc | file | less | grep | vim | nano | curl | git
 # env: WASI_SDK (wasi-sdk-33 or later: C++ exceptions), WORK (sources, build dirs), OUT (the .wasm files)
 # CI: .github/workflows/wasm-tools.yml builds them and publishes a GitHub release; the catalog points at it.
 # No GPL except GNU grep (GPL-3.0-or-later, item 80, a separate catalog program with its source release and these changes published; see THIRD_PARTY_LICENSES.md): ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
@@ -26,7 +26,7 @@ CWDL="-Wl,--undefined=chdir"
 STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
-SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12 VIM=9.1.1400 NANO=8.3 NCURSES=6.5
+SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12 VIM=9.1.1400 NANO=8.3 NCURSES=6.5 GIT=2.47.1
 
 fetch() { # github repo, tag, dir name: shallow clone once into $WORK/dir; a source tarball goes next to the binaries (LGPL)
   [ -d "$WORK/$3" ] && return 0
@@ -383,6 +383,68 @@ b_nano() { # GNU nano 8.3 (GPL-3.0-or-later; a separate catalog program, source 
     make -j"$J" -C src nano GL_CFLAG_GNULIB_WARNINGS= CFLAGS="-O2 $EMU -I$P/compat -I$tc/include" >/dev/null && cp src/nano "$OUT/nano.wasm")
 }
 
+b_git() { # git 2.47 (GPL-2.0-only; a separate catalog program, source release in the GitHub release): every builtin in one program; no threads, no curl/https (clone/fetch/push over https: apk add --x86 git), no perl/python/tcl commands, no gettext/iconv; child processes (pager, editor, hooks, git maintenance) through the host channel (git/ink_git.c: start_command over compat_spawn); pager off by default (cat), core.filemode false (WASI has no permission bits)
+  compat; zlib; dl "https://mirrors.edge.kernel.org/pub/software/scm/git/git-$GIT.tar.xz" git
+  g=$WORK/git; cp "$here/git/ink_git.c" "$g/compat/ink_git.c"
+  # start_command: the host starts the child and makes its pipes (WASI has no fork/pipe): ink_start_command in compat/ink_git.c
+  grep -q ink_start_command "$g/run-command.c" || sed -i '/^int start_command(struct child_process \*cmd)$/,/^\tconst char \*str;$/ s/^\tconst char \*str;$/&\n#ifdef __wasi__\n\treturn ink_start_command(cmd);\n#endif/' "$g/run-command.c"
+  grep -q ink_start_command "$g/run-command.c"
+  # no "git maintenance run --auto" after commit/merge unless maintenance.auto is set (each run is one more WebAssembly process)
+  sed -i 's/^\tif (!git_config_get_bool("maintenance.auto", &enabled) &&$/\tif (git_config_get_bool("maintenance.auto", \&enabled))\n\t\tenabled = 0;\n\tif (!enabled \&\&/' "$g/run-command.c"
+  grep -q '^		enabled = 0;$' "$g/run-command.c"
+  # merge: "git stash create" (a child process) only when there are local changes to keep; with none it makes no stash anyway
+  sed -i 's/^\tif (save_state(&stash))$/\tif ((has_unstaged_changes(the_repository, 1) || has_uncommitted_changes(the_repository, 1)) \&\& save_state(\&stash))/' "$g/builtin/merge.c"
+  grep -q 'has_unstaged_changes(the_repository, 1) ||' "$g/builtin/merge.c"
+  # init: no warning when the templates folder is missing (the catalog installs the program only)
+  sed -i 's/^\t\twarning(_("templates not found in %s"), template_dir);$/\t\tif (errno != ENOENT)\n&/' "$g/setup.c"
+  # 2.47's NO_UNIX_SOCKETS stand-in for credential-cache lacks the repository argument every builtin got
+  sed -i 's/^int cmd_credential_cache(int argc, const char \*\*argv, const char \*prefix)$/int cmd_credential_cache(int argc, const char **argv, const char *prefix, struct repository *repo UNUSED)/' "$g/builtin/credential-cache.c"
+  cat > "$g/config.mak" <<EOF
+CC = $CC
+AR = $AR
+CFLAGS = -O2 $EMU -DCOMPAT_CHMOD_OK -I$here/git/include -I$P/compat -I$here/compat/termios -I$P/include -include $here/git/ink_git.h
+LDFLAGS = -L$P/lib $STACK
+EXTLIBS = -lcompat $EMUL
+ZLIB_PATH = $P
+prefix = /usr/local
+sysconfdir = /etc
+NO_PTHREADS = YesPlease
+NO_MMAP = YesPlease
+NO_OPENSSL = YesPlease
+NO_CURL = YesPlease
+NO_EXPAT = YesPlease
+NO_GETTEXT = YesPlease
+NO_ICONV = YesPlease
+NO_PERL = YesPlease
+NO_PYTHON = YesPlease
+NO_TCLTK = YesPlease
+NO_UNIX_SOCKETS = YesPlease
+NO_IPV6 = YesPlease
+NO_SETITIMER = YesPlease
+NO_STRUCT_ITIMERVAL = YesPlease
+NO_TRUSTABLE_FILEMODE = YesPlease
+NO_SYMLINK_HEAD = YesPlease
+NO_INSTALL_HARDLINKS = YesPlease
+NO_POSIX_GOODIES = UnfortunatelyYes
+NO_INITGROUPS = YesPlease
+NO_MKDTEMP = YesPlease
+NO_STRCASESTR = YesPlease
+NO_REGEX = YesPlease
+NO_GECOS_IN_PWENT = YesPlease
+HAVE_CLOCK_GETTIME = YesPlease
+HAVE_CLOCK_MONOTONIC = YesPlease
+HAVE_GETDELIM = YesPlease
+HAVE_ALLOCA_H = YesPlease
+CSPRNG_METHOD = getentropy
+OBJECT_CREATION_MODE = 1
+DEFAULT_PAGER = cat
+SHELL_PATH = /bin/sh
+COMPAT_OBJS += compat/ink_git.o
+EOF
+  (cd "$g" && make -k -j"$J" uname_S=WASI uname_M=wasm32 uname_O=WASI uname_R=1 uname_P=wasm32 uname_V=1 V=1 git >"$WORK/git-make.log" 2>&1 || { grep -n "error" "$WORK/git-make.log" | head -40; tail -5 "$WORK/git-make.log"; exit 1; }
+    cp git "$OUT/git.wasm")
+}
+
 b_vim() { # Vim 9.1 (Vim license: charityware, GPL-compatible; a separate catalog program): normal features, no GUI/X11/channels/jobs/terminal/scripting languages; builtin terminal entries (no termcap library); raw keys and window size through the host's "inksoc" imports (vim/ink_term.c); no fork: :! and :shell report failure; no runtime files (VIMINIT in the program turns nocompatible on)
   compat
   fetch vim/vim v$VIM vim
@@ -416,5 +478,5 @@ b_vim() { # Vim 9.1 (Vim license: charityware, GPL-compatible; a separate catalo
 }
 
 # b_ prefix: functions named zip, unzip... would hide those commands
-for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd|bc|file|less|grep|vim|nano|curl) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
+for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd|bc|file|less|grep|vim|nano|curl|git) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
 ls -l "$OUT"
