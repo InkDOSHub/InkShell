@@ -1,5 +1,5 @@
 diff --git a/quickjs-libc.c b/quickjs-libc.c
-index 42d7f03..2a1218e 100644
+index 42d7f03..1f196bb 100644
 --- a/quickjs-libc.c
 +++ b/quickjs-libc.c
 @@ -1216,9 +1216,7 @@ static void safe_close(FILE *f, bool is_popen)
@@ -51,12 +51,13 @@ index 42d7f03..2a1218e 100644
      JS_CFUNC_DEF("tmpfile", 0, js_std_tmpfile ),
  #endif
      JS_CFUNC_DEF("fdopen", 2, js_std_fdopen ),
-@@ -3420,6 +3414,142 @@ static JSValue js_os_realpath(JSContext *ctx, JSValueConst this_val,
+@@ -3420,6 +3414,143 @@ static JSValue js_os_realpath(JSContext *ctx, JSValueConst this_val,
  }
  #endif
  
 +#if defined(__wasi__)
 +#include <ctype.h>
++#include <sys/wait.h> /* compat's wait status macros */
 +/* InkShell: exec(args[, options]) -> exitcode, blocking only. WASI has no fork: the command goes through compat.c system()
 +   (the /dev/inksoc channel), words quoted for sh. */
 +static JSValue js_os_exec(JSContext *ctx, JSValueConst this_val,
@@ -194,7 +195,7 @@ index 42d7f03..2a1218e 100644
  #if !defined(_WIN32) && !defined(__wasi__) && !(defined(__APPLE__) && (TARGET_OS_TV || TARGET_OS_WATCH))
  static JSValue js_os_symlink(JSContext *ctx, JSValueConst this_val,
                                int argc, JSValueConst *argv)
-@@ -4497,6 +4627,9 @@ static const JSCFunctionListEntry js_os_funcs[] = {
+@@ -4497,6 +4628,9 @@ static const JSCFunctionListEntry js_os_funcs[] = {
      JS_CFUNC_MAGIC_DEF("stat", 1, js_os_stat, 0 ),
      JS_CFUNC_DEF("utimes", 3, js_os_utimes ),
      JS_CFUNC_DEF("sleep", 1, js_os_sleep ),
