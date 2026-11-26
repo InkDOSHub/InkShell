@@ -48,12 +48,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { browser: webkit, sw: allow, rd: 256 }
           - { browser: webkit, sw: allow, rd: 1024 }
-          - { browser: webkit, sw: block, rd: 256 }
-          - { browser: chromium, sw: allow, rd: 256 }
+          - { browser: webkit, sw: block, rd: 1024 }
           - { browser: chromium, sw: allow, rd: 1024 }
-          - { browser: chromium, sw: block, rd: 256 }
           - { browser: chromium, sw: block, rd: 1024 }
     steps:
       - uses: actions/checkout@v4

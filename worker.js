@@ -122,24 +122,27 @@ async function run({ rows, cols, network, poolMb, targetMb, sw, rd }) {
   wasiSw = !!sw; wasiOpen(Math.random().toString(36).slice(2));
   if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=15'); } catch (e) { wasiInline = null; } }
   const swap = await openSwap(), ram = new Map(); dbgSwap = swap;
+  // no OPFS (private window, Playwright WebKit): the swap is RAM, in chunks of 256 slots (1 MB) written in place. One small
+  // array per 4 KB slot (the old way) left garbage that WebKit never gave back: 2.5 GB of RSS per GB of swap writes (item 65)
+  const rch = (s) => { let c = ram.get(s >> 8); if (!c) ram.set(s >> 8, c = new Uint8Array(256 * 4096)); return c; };
   const page = (p) => new Uint8Array(mem.buffer, p, 4096);
   const env = {
     host_console: (p, n) => out(dec.decode(new Uint8Array(mem.buffer, p, n).slice(), { stream: true })),
     host_now_ms: () => performance.now(),
     host_epoch_ms: () => Date.now(),
-    host_swap_write: (slot, p) => { dbg.swapw += 4096; if (swap) swap.write(page(p), { at: slot * 4096 }); else ram.set(slot, page(p).slice()); },
-    host_swap_read: (slot, p) => { if (swap) swap.read(page(p), { at: slot * 4096 }); else page(p).set(ram.get(slot) || new Uint8Array(4096)); },
+    host_swap_write: (slot, p) => { dbg.swapw += 4096; if (swap) swap.write(page(p), { at: slot * 4096 }); else rch(slot).set(page(p), (slot & 255) * 4096); },
+    host_swap_read: (slot, p) => { if (swap) swap.read(page(p), { at: slot * 4096 }); else { const c = ram.get(slot >> 8), o = (slot & 255) * 4096; if (c) page(p).set(c.subarray(o, o + 4096)); else page(p).fill(0); } },
     // n contiguous slots in one call (64 KB extents of big Linux files); never-written ones read as zeros
     host_swap_writev: (slot, n, p) => {
       dbg.swapw += n * 4096;
       const b = new Uint8Array(mem.buffer, p, n * 4096);
-      if (swap) swap.write(b, { at: slot * 4096 }); else for (let i = 0; i < n; i++) ram.set(slot + i, b.slice(i * 4096, (i + 1) * 4096));
+      if (swap) swap.write(b, { at: slot * 4096 }); else for (let i = 0, k; i < n; i += k) { k = Math.min(n - i, 256 - ((slot + i) & 255)); rch(slot + i).set(b.subarray(i * 4096, (i + k) * 4096), ((slot + i) & 255) * 4096); }
     },
     host_swap_readv: (slot, n, p) => {
       dbg.swapr += n * 4096;
       const b = new Uint8Array(mem.buffer, p, n * 4096);
       if (swap) { const k = swap.read(b, { at: slot * 4096 }); if (k < b.length) b.fill(0, k); }
-      else for (let i = 0; i < n; i++) { const r = ram.get(slot + i); if (r) b.set(r, i * 4096); else b.fill(0, i * 4096, (i + 1) * 4096); }
+      else for (let i = 0, k; i < n; i += k) { k = Math.min(n - i, 256 - ((slot + i) & 255)); const c = ram.get((slot + i) >> 8), o = ((slot + i) & 255) * 4096; if (c) b.set(c.subarray(o, o + k * 4096), i * 4096); else b.fill(0, i * 4096, (i + k) * 4096); }
     },
     wine_call: () => 0,
     host_random: (p, n) => { const b = new Uint8Array(n); crypto.getRandomValues(b); new Uint8Array(mem.buffer, p, n).set(b); },
@@ -485,10 +488,10 @@ async function readAll(path) { // a big file as a Blob, read piece by piece (the
   return new Blob(parts);
 }
 /* Big mounted files are read from the device in pieces of at most CH bytes. WebKit never gives back the memory of ArrayBuffers
-   bigger than ~512 KB (item 65: reading 4 MB pieces grew the web process by 1.4 GB per GB read, 256 KB pieces by 0.08 GB),
+   of 4 MB or more (item 65: reading 4 MB pieces grew the web process by 1.4 GB per GB read; 2 MB and smaller by 0.07 GB),
    so the kernel's requests (up to 4 MB) are cut here into CH-aligned pieces. `asked` holds the pieces the page was asked for and
    has not answered yet, so the kernel asking again while they arrive does not read them twice. */
-let CH = 256 << 10; // also the largest WebAssembly read/write per call (rd=KB in the page URL changes it: tests)
+let CH = 1 << 20; // also the largest WebAssembly read/write per call (rd=KB in the page URL changes it: tests)
 const asked = new Set();
 function chunkReqs(lines) {
   const out = [];
