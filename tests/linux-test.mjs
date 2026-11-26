@@ -62,7 +62,8 @@ if (hasPy) add('python.wasm', pyBytes);
 const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagick', 'magick', 'magick,convert,identify'], ['ffmpeg', 'ffmpeg', 'ffmpeg'], ['ffprobe', 'ffprobe', 'ffprobe'],
   ['sqlite', 'sqlite3', 'sqlite3'], ['jq', 'jq', 'jq'], ['lua5.4', 'lua', 'lua5.4,lua'], ['zip', 'zip', 'zip'], ['unzip', 'unzip', 'unzip'], ['ripgrep', 'rg', 'rg'],
   ['hashtools', 'hashsum', 'sha256sum,sha1sum,sha224sum,sha384sum,sha512sum,md5sum,b2sum'], ['quickjs', 'qjs', 'qjs'],
-  ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk']]
+  ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
+  ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -415,6 +416,29 @@ if (hasWasi) {
       /^6 2 5 AB\s+^b 3\s+^ 3\.14\|12\s+^awk-rc=3\s+^awk-done/m, 'awk: -F, sums and arrays on a relative file, length, fields, printf, exit status');
     await step(`cd /tmp && rm -rf ft && mkdir -p ft/a/b ft/c && touch ft/a/one.txt ft/a/b/two.txt ft/c/three.log && find ft -name '*.txt' | sort | busybox tr '\\n' ' '; echo; find ft -type d | sort | busybox tr '\\n' ' '; echo; find ft -type f | busybox wc -l; find /tmp/ft -name 'three*' ; cd ft && find . -name '*.log'; cd; echo find-done\n`,
       /^ft\/a\/b\/two\.txt ft\/a\/one\.txt\s+^ft ft\/a ft\/a\/b ft\/c\s+^3\s+^\/tmp\/ft\/c\/three\.log\s+^\.\/c\/three\.log\s+^find-done/m, 'find: -name, -type d/f, relative and absolute paths, from inside a folder');
+  }
+  if (hasTool('tar') && hasTool('gzip') && hasTool('xz')) { // item 68: bsdtar (libarchive), gzip (zlib) and xz (liblzma), WebAssembly, ahead of busybox in PATH; busybox is the other side of every round trip
+    const seq = (n) => { let t = ''; for (let i = 1; i <= n; i++) t += i + '\n'; return t; };
+    const md5 = (t) => crypto.createHash('md5').update(t).digest('hex');
+    const E = (l) => (l instanceof RegExp ? l.source : l.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&'));
+    const lines = (...ls) => new RegExp(ls.map(E).join('\\s+^'), 'm'); // consecutive output lines, literal text or a RegExp
+    await step(`for c in gzip gunzip zcat tar xz unxz xzcat; do command -v $c; done | busybox tr '\\n' ' '; echo; cd /tmp && rm -rf gz1 && mkdir gz1 && cd gz1 && busybox seq 1 50000 > a.txt && busybox cp a.txt b.txt && gzip a.txt && busybox ls a.txt* | busybox tr '\\n' ' '; echo; gzip -t a.txt.gz && echo t-ok; gunzip -c a.txt.gz | busybox md5sum | busybox cut -c1-32; gzip -k b.txt && busybox ls b.txt* | busybox tr '\\n' ' '; echo; gzip -l b.txt.gz | busybox tail -1 | busybox awk '{print $2}'; echo gz-done\n`,
+      lines('/usr/local/bin/gzip /usr/local/bin/gunzip /usr/local/bin/zcat /usr/local/bin/tar /usr/local/bin/xz /usr/local/bin/unxz /usr/local/bin/xzcat ', 'a.txt.gz ', 't-ok', md5(seq(50000)), 'b.txt b.txt.gz ', String(seq(50000).length), 'gz-done'),
+      'gzip: gzip a.txt (file removed), -t, gunzip -c, -k, -l; the links are in /usr/local/bin before busybox');
+    await step(`cd /tmp/gz1 && printf 'x\\n' | timeout 20 gzip -c | busybox gunzip -c; echo gz-pipe1-rc=$?\n`, lines('x', 'gz-pipe1-rc=0'), 'gzip: stdin to stdout, read back by busybox');
+    await step(`cd /tmp/gz1 && printf 'y\\n' | busybox gzip -c | timeout 20 gunzip -c; echo gz-pipe2-rc=$?\n`, lines('y', 'gz-pipe2-rc=0'), 'gunzip: busybox gzip from a pipe');
+    await step(`cd /tmp/gz1 && busybox gzip -c b.txt > m1.gz; timeout 20 gzip -c b.txt > m2.gz; busybox cat m1.gz m2.gz | timeout 20 zcat | busybox wc -l; echo notgz > n.gz; timeout 20 gunzip n.gz; echo gz-bad-rc=$?; busybox head -c 100 b.txt.gz > t.gz; timeout 20 gzip -t t.gz; echo gz-trunc-rc=$?\n`,
+      lines('100000', /.*not in gzip format/, 'gz-bad-rc=1', /.*unexpected end of file/, 'gz-trunc-rc=1'), 'gzip: two members, not-gzip and truncated input fail with exit 1');
+    await step(`cd /tmp/gz1 && timeout 20 gzip -9 -c b.txt | busybox gunzip | busybox wc -l; cd /tmp; timeout 20 gzip -c gz1/b.txt | busybox gunzip | busybox wc -l; echo gz2-done\n`, lines('50000', '50000', 'gz2-done'), 'gzip: -9, relative path from /tmp');
+    await step(`cd /tmp && rm -rf xz1 && mkdir xz1 && cd xz1 && busybox seq 1 100000 > a.txt && busybox cp a.txt b.txt && xz -k a.txt && busybox ls a.txt* | busybox tr '\\n' ' '; echo; xz -t a.txt.xz && echo xt-ok; busybox xz -dc a.txt.xz | busybox md5sum | busybox cut -c1-32; unxz -c a.txt.xz | busybox wc -l; xzcat a.txt.xz | busybox head -2 | busybox tr '\\n' ,; echo; xz --format=lzma -c b.txt | busybox unlzma | busybox wc -l; xz -c b.txt | xz -dc | busybox md5sum | busybox cut -c1-32; busybox cp b.txt c.txt && xz c.txt && unxz c.txt.xz && busybox cmp b.txt c.txt && echo unxz-same; echo junk > j.xz; xz -t j.xz; echo xz-bad-rc=$?; xz -dc nofile-xz; echo xz-nofile-rc=$?; echo xz-done\n`,
+      lines('a.txt a.txt.xz ', 'xt-ok', md5(seq(100000)), '100000', '1,2,', '100000', md5(seq(100000)), 'unxz-same', /.*j\.xz.*/, 'xz-bad-rc=1', /.*nofile-xz.*/, 'xz-nofile-rc=1', 'xz-done'),
+      'xz: compress -k, -t, busybox reads our .xz, unxz, xzcat, .lzma, pipe round trip, bad and missing input exit 1');
+    await step(`cd /tmp && rm -rf tr1 && mkdir -p tr1/src/a/b tr1/src/c && cd tr1 && printf 'hello\\n' > src/a/one.txt && busybox seq 1 3000 > src/a/b/two.txt && printf 'x\\n' > src/c/three.log && ln -s a/one.txt src/sl && tar -cf t.tar src && busybox tar -tf t.tar | busybox grep -v '/$' | busybox sort | busybox tr '\\n' ' '; echo; busybox tar -cf b.tar src && tar -tf b.tar | busybox grep -v '/$' | busybox sort | busybox tr '\\n' ' '; echo; busybox mkdir x1 x2 && tar -xf t.tar -C x1 && tar -xf b.tar -C x2 && busybox diff -r src x1/src && echo same1; busybox diff -r src x2/src && echo same2; busybox readlink x1/src/sl; busybox readlink x2/src/sl; echo tar-done\n`,
+      lines('src/a/b/two.txt src/a/one.txt src/c/three.log src/sl ', 'src/a/b/two.txt src/a/one.txt src/c/three.log src/sl ', 'same1', 'same2', 'a/one.txt', 'a/one.txt', 'tar-done'),
+      'tar: create a tree (relative paths), busybox lists it; busybox creates, tar lists and extracts both; folders, files and a symlink are identical');
+    await step(`cd /tmp/tr1 && tar -czf t.tgz src && busybox tar -tzf t.tgz | busybox wc -l; tar -cJf t.txz src && tar -tJf t.txz | busybox wc -l; busybox mkdir y1 y2 y3 y4 && tar -xzf t.tgz -C y1 && busybox diff -r src y1/src && echo same-z; tar -xJf t.txz -C y2 && busybox diff -r src y2/src && echo same-J; busybox cat t.tar | tar -xf - -C y3 && busybox diff -r src y3/src && echo same-stdin; tar -cf - -C src a | busybox tar -xf - -C y4 && busybox cat y4/a/one.txt; tar -xf t.tar -C y4 --strip-components=1 src/c; busybox ls y4 | busybox tr '\\n' ' '; echo; tar -tf nofile-tar >/dev/null 2>&1; echo tar-rc=$?; echo junk > j.tar; tar -tf j.tar >/dev/null 2>&1; echo tar-bad-rc=$?; echo tar2-done\n`,
+      lines('8', '8', 'same-z', 'same-J', 'same-stdin', 'hello', 'a c ', 'tar-rc=1', 'tar-bad-rc=1', 'tar2-done'),
+      'tar: -z and -J in the process, busybox reads them back, stdin and stdout, -C, --strip-components, a missing or non-tar file exits 1');
   }
   if (hasTool('hashtools')) { // md5sum, sha1sum, sha224/256/384/512sum, b2sum (one WebAssembly program, picked by its name)
     const abc = Buffer.from('abc');

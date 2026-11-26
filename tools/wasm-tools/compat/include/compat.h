@@ -15,6 +15,10 @@ mode_t umask(mode_t);
 int chown(const char *, uid_t, gid_t);
 int lchown(const char *, uid_t, gid_t);
 int fchown(int, uid_t, gid_t);
+uid_t getuid(void); /* one user: root (uid 0, gid 0) */
+uid_t geteuid(void);
+gid_t getgid(void);
+gid_t getegid(void);
 int mkstemp(char *); /* compat.c: WASI libc declares it only in some modes and has none */
 #ifndef TIOCGWINSZ /* terminal size: ioctl fails, programs keep their default width */
 #define TIOCGWINSZ 0x5413

@@ -32,6 +32,19 @@ self.onmessage = async (ev) => {
       for (let i = 0; i < MB / 2; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; b[i] = s & 255; }
       return b;
     }
+    if (kind === 'text') { // unique prose-like text (no 1 MB repeat, so a dictionary coder cannot cheat): words of 2-10 random letters picked from a 20000-word vocabulary, 6-14 words per line
+      let s = 0x2545f491;
+      const rnd = () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return s >>> 0; };
+      const voc = [];
+      for (let i = 0; i < 20000; i++) { const w = new Uint8Array(2 + rnd() % 9); for (let k = 0; k < w.length; k++) w[k] = 97 + rnd() % 26; voc.push(w); }
+      const out = new Uint8Array(SIZE); let o = 0;
+      while (o < SIZE) {
+        for (let n = 6 + rnd() % 9; n > 0 && o < SIZE; n--) { const w = voc[rnd() % 20000]; const k = Math.min(w.length, SIZE - o); out.set(w.subarray(0, k), o); o += k; if (o < SIZE) out[o++] = 32; }
+        if (o < SIZE) out[o - 1] = 10;
+      }
+      out[SIZE - 1] = 10;
+      return out;
+    }
     const L = []; let n = 0;
     for (let i = 0; n < MB - 64; i++) { const l = kind === 'csv' ? `${i},word${i % 1000},${(i * 7) % 1000}\n` : `{"id":${i},"v":"word${i % 1000}","n":${i % 1000}}\n`; L.push(l); n += l.length; }
     return enc.encode(L.join(''));

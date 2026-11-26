@@ -23,6 +23,10 @@ struct passwd *getpwuid(uid_t u) { (void)u; return NULL; }
 struct passwd *getpwnam(const char *n) { (void)n; return NULL; }
 int getpwnam_r(const char *n, struct passwd *p, char *b, size_t l, struct passwd **r) { (void)n; (void)p; (void)b; (void)l; *r = NULL; return 0; }
 int getpwuid_r(uid_t u, struct passwd *p, char *b, size_t l, struct passwd **r) { (void)u; (void)p; (void)b; (void)l; *r = NULL; return 0; }
+uid_t getuid(void) { return 0; }
+uid_t geteuid(void) { return 0; }
+gid_t getgid(void) { return 0; }
+gid_t getegid(void) { return 0; }
 pid_t getppid(void) { return 1; }
 mode_t umask(mode_t m) { (void)m; return 022; }
 int chown(const char *p, uid_t u, gid_t g) { (void)p; (void)u; (void)g; return 0; } /* one user: owners are not kept */

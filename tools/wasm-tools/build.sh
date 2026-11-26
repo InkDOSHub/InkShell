@@ -1,11 +1,11 @@
 #!/bin/sh
 # Builds WebAssembly (WASI preview1) command-line tools for the catalog (apk add) from upstream sources.
-# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk
+# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip
 # env: WASI_SDK (wasi-sdk-33 or later: C++ exceptions), WORK (sources, build dirs), OUT (the .wasm files)
 # CI: .github/workflows/wasm-tools.yml builds them and publishes a GitHub release; the catalog points at it.
 # No GPL: ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
 # 7-Zip without the unRAR code (LGPL-2.1+ and BSD-3-Clause), qpdf (Apache-2.0), ImageMagick (its own Apache-style license),
-# SQLite (public domain), jq (MIT), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense), hashsum (InkShell's own code, MIT), uutils coreutils (MIT), QuickJS-ng (MIT), uutils sed (MIT), uutils findutils find (MIT; oniguruma BSD-2-Clause inside), one-true-awk (MIT-style Bell Labs license).
+# SQLite (public domain), jq (MIT), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense), hashsum (InkShell's own code, MIT), uutils coreutils (MIT), QuickJS-ng (MIT), uutils sed (MIT), uutils findutils find (MIT; oniguruma BSD-2-Clause inside), one-true-awk (MIT-style Bell Labs license), xz 5.8 (0BSD; liblzma public domain/0BSD), libarchive bsdtar (BSD-2-Clause, BSD-3-Clause; zlib license for zlib, 0BSD for liblzma), gzip (InkShell's own code on zlib, MIT).
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 : "${WASI_SDK:=/opt/wasi-sdk}" "${WORK:=$PWD/wasm-tools-work}" "${OUT:=$PWD/wasm-tools-out}"
@@ -26,7 +26,7 @@ CWDL="-Wl,--undefined=chdir"
 STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
-SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16
+SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1
 
 fetch() { # github repo, tag, dir name: shallow clone once into $WORK/dir; a source tarball goes next to the binaries (LGPL)
   [ -d "$WORK/$3" ] && return 0
@@ -235,6 +235,52 @@ b_awk() { # one-true-awk (Bell Labs, MIT-style license, C): the parser comes fro
     awkgram.tab.c b.c lex.c lib.c main.c parse.c proctab.c run.c tran.c -o "$OUT/awk.wasm" -L"$P/lib" -lcompat -lsetjmp $EMUL $STACK -lm)
 }
 
+liblzma() { # xz-utils 5.8 (release tarball: configure included): liblzma + the xz program, one thread (WASI has none), no scripts (GPL), no docs/translations
+  [ -f "$P/lib/liblzma.a" ] && return 0; compat
+  dl "https://github.com/tukaani-project/xz/releases/download/v$XZ/xz-$XZ.tar.gz" xz
+  # WASI has no signals (sigaction), pipes or geteuid: the xz program only used them to stop cleanly on Ctrl-C and to warn about chown
+  if [ ! -f "$WORK/xz/.patched" ]; then
+    printf '%s\n' '#include "private.h"' 'volatile sig_atomic_t user_abort = 0;' 'void signals_init(void) {}' 'void signals_block(void) {}' \
+      'void signals_unblock(void) {}' 'void signals_exit(void) {}' > "$WORK/xz/src/xz/signals.c"
+    sed -i 's/if (pipe(user_abort_pipe))/if (0)/; s/for (unsigned i = 0; i < 2; ++i) {/for (unsigned i = 0; i < 0; ++i) {/; s/warn_fchown = geteuid() == 0;/warn_fchown = false;/; s/\bO_NONBLOCK\b/0/g' "$WORK/xz/src/xz/file_io.c"
+    sed -i '0,/#include "private.h"/s//#include "private.h"\n#undef SIGALRM \/\/ no alarm(): upstream polls the clock then/' "$WORK/xz/src/xz/message.c"
+    touch "$WORK/xz/.patched"
+  fi
+  (cd "$WORK/xz" && CFLAGS="-O2 -DCOMPAT_CHMOD_OK $EMU -I$P/compat -include compat.h" LDFLAGS="-L$P/lib $STACK" LIBS="-lcompat $EMUL" \
+    ./configure --host=$T --prefix="$P" --disable-shared --enable-static --disable-threads --disable-nls --disable-scripts --disable-doc \
+    --disable-lzmainfo --disable-lzmadec --disable-xzdec --disable-sandbox --disable-dependency-tracking 2>&1 | tail -5 &&
+    make -j"$J" -C src/liblzma && make -C src/liblzma install >/dev/null && make -j"$J" -C src/xz xz)
+}
+
+b_xz() { # xz 5.8.1 (0BSD; xz, unxz, xzcat, lzma: by argv[0])
+  liblzma
+  cp "$WORK/xz/src/xz/xz" "$OUT/xz.wasm"
+}
+
+b_tar() { # libarchive 3.8 bsdtar (BSD-2/3-Clause): tar -c -x -t, -z (zlib) -J (liblzma) in the process, also zip/7z/cpio/ar formats; no openssl, xml, iconv, acl, xattr, bzip2, zstd, lz4
+  zlib; liblzma; compat
+  dl "https://github.com/libarchive/libarchive/releases/download/v$LIBARCHIVE/libarchive-$LIBARCHIVE.tar.gz" libarchive
+  # patches/libarchive/wasi.patch: the directory walker (tar -c) needs fchdir() and dup(), which WASI lacks, and the external-program filters need fork() (BSD-2-Clause, same license as the file)
+  if [ ! -f "$WORK/libarchive/.patched" ]; then
+    patch -p1 -s -d "$WORK/libarchive" < "$here/patches/libarchive/wasi.patch" && touch "$WORK/libarchive/.patched"
+  fi
+  cmake -S "$WORK/libarchive" -B "$WORK/libarchive/b" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$WASI_SDK/share/cmake/wasi-sdk-p1.cmake" \
+    -DWASI_SDK_PREFIX="$WASI_SDK" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$P" -DCMAKE_FIND_ROOT_PATH="$P" \
+    -DENABLE_TEST=OFF -DENABLE_INSTALL=OFF -DENABLE_CPIO=OFF -DENABLE_CAT=OFF -DENABLE_UNZIP=OFF -DENABLE_TAR=ON \
+    -DENABLE_OPENSSL=OFF -DENABLE_LIBXML2=OFF -DENABLE_EXPAT=OFF -DENABLE_ICONV=OFF -DENABLE_ACL=OFF -DENABLE_XATTR=OFF \
+    -DENABLE_BZip2=OFF -DENABLE_ZSTD=OFF -DENABLE_LZ4=OFF -DENABLE_LZO=OFF -DENABLE_LIBB2=OFF -DENABLE_MBEDTLS=OFF -DENABLE_NETTLE=OFF \
+    -DREGEX_INCLUDE_DIR="$S/include" -DHAVE_REGCOMP_LIBC=1 -DHAVE_CHOWN=1 -DHAVE_FCHOWN=1 -DHAVE_LCHOWN=1 -DHAVE_FCHMOD=1 -DHAVE_STATVFS=0 -DHAVE_FSTATVFS=0 -DHAVE_STATFS=0 -DHAVE_FSTATFS=0 -DENABLE_CNG=OFF -DENABLE_PCREPOSIX=OFF -DENABLE_PCRE2POSIX=OFF -DENABLE_LIBGCC=OFF -DENABLE_ZLIB=ON -DENABLE_LZMA=ON \
+    -DZLIB_ROOT="$P" -DLIBLZMA_INCLUDE_DIR="$P/include" -DLIBLZMA_LIBRARY="$P/lib/liblzma.a" -DLZMA_INCLUDE_DIR="$P/include" -DLZMA_LIBRARY="$P/lib/liblzma.a" \
+    -DCMAKE_C_FLAGS="-O2 -DCOMPAT_CHMOD_OK $EMU -I$P/compat -include compat.h" -DCMAKE_EXE_LINKER_FLAGS="-L$P/lib -lcompat $EMUL $STACK"
+  cmake --build "$WORK/libarchive/b" -j"$J" --target bsdtar
+  cp "$WORK/libarchive/b/bin/bsdtar" "$OUT/bsdtar.wasm"
+}
+
+b_gzip() { # gzip, gunzip, zcat: InkShell's own program (gzip/gzip.c, MIT) over zlib (zlib license), by argv[0]
+  zlib
+  $CC -O2 -Wall -I"$P/include" "$here/gzip/gzip.c" -o "$OUT/gzip.wasm" -L"$P/lib" -lz $CWDL
+}
+
 # b_ prefix: functions named zip, unzip... would hide those commands
-for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
+for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
 ls -l "$OUT"

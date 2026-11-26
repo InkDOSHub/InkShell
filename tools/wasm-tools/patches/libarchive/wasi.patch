@@ -1,0 +1,188 @@
+--- a/libarchive/archive_read_disk_posix.c
++++ b/libarchive/archive_read_disk_posix.c
+@@ -97,9 +97,7 @@
+ #include "archive_private.h"
+ #include "archive_read_disk_private.h"
+ 
+-#ifndef HAVE_FCHDIR
+-#error fchdir function required.
+-#endif
++/* InkShell/WASI: no fchdir() and no dup(): directories are re-entered with chdir() on a path, and tree_dup() reopens "." relative to the fd */
+ #ifndef O_BINARY
+ #define O_BINARY	0
+ #endif
+@@ -225,6 +223,7 @@
+ 	int			 maxOpenCount;
+ 	int			 initial_dir_fd;
+ 	int			 working_dir_fd;
++	char			*initial_cwd; /* WASI: cwd at tree_open(), the base for chdir() */
+ 
+ 	struct stat		 lst;
+ 	struct stat		 st;
+@@ -1022,6 +1021,9 @@
+ 	}
+ 
+ 	archive_entry_copy_stat(entry, st);
++	/* InkShell/WASI: stat has no permission bits (st_mode is the file type only): 0755 folders, 0777 links, 0644 files */
++	if ((archive_entry_mode(entry) & 07777) == 0)
++		archive_entry_set_perm(entry, S_ISDIR(st->st_mode) ? 0755 : S_ISLNK(st->st_mode) ? 0777 : 0644);
+ 
+ 	/* Save the times to be restored. This must be in before
+ 	 * calling archive_read_disk_descend() or any chance of it,
+@@ -2097,21 +2099,8 @@
+ static int
+ tree_dup(int fd)
+ {
+-	int new_fd;
+-#ifdef F_DUPFD_CLOEXEC
+-	static volatile int can_dupfd_cloexec = 1;
+-
+-	if (can_dupfd_cloexec) {
+-		new_fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+-		if (new_fd != -1)
+-			return (new_fd);
+-		/* Linux 2.6.18 - 2.6.23 declare F_DUPFD_CLOEXEC,
+-		 * but it cannot be used. So we have to try dup(). */
+-		/* We won't try F_DUPFD_CLOEXEC. */
+-		can_dupfd_cloexec = 0;
+-	}
+-#endif /* F_DUPFD_CLOEXEC */
+-	new_fd = dup(fd);
++	/* WASI has no dup(): openat(fd, ".") gives a new descriptor for the same directory */
++	int new_fd = openat(fd, ".", O_RDONLY | O_CLOEXEC | O_DIRECTORY);
+ 	__archive_ensure_cloexec_flag(new_fd);
+ 	return (new_fd);
+ }
+@@ -2228,6 +2217,7 @@
+ 	t->stack->flags = needsFirstVisit;
+ 	t->maxOpenCount = t->openCount = 1;
+ 	t->initial_dir_fd = open(".", O_RDONLY | O_CLOEXEC);
++	t->initial_cwd = getcwd(NULL, 0);
+ #if defined(O_PATH) || defined(O_SEARCH) || \
+  (defined(__FreeBSD__) && defined(O_EXEC))
+ 	/*
+@@ -2261,7 +2251,7 @@
+ 	} else {
+ 		t->depth++;
+ 		/* If it is a link, set up fd for the ascent. */
+-		if (t->stack->flags & isDirLink) {
++		if (1) {
+ 			t->stack->symlink_parent_fd = t->working_dir_fd;
+ 			t->openCount++;
+ 			if (t->openCount > t->maxOpenCount)
+@@ -2286,7 +2276,7 @@
+ 
+ 	te = t->stack;
+ 	prev_dir_fd = t->working_dir_fd;
+-	if (te->flags & isDirLink)
++	if (1)
+ 		new_fd = te->symlink_parent_fd;
+ 	else {
+ 		new_fd = open_on_current_dir(t, "..", O_RDONLY | O_CLOEXEC);
+@@ -2302,7 +2292,7 @@
+ 		/* Current directory has been changed, we should
+ 		 * close an fd of previous working directory. */
+ 		close_and_restore_time(prev_dir_fd, t, &te->restore_time);
+-		if (te->flags & isDirLink) {
++		if (1) {
+ 			t->openCount--;
+ 			te->symlink_parent_fd = -1;
+ 		}
+@@ -2320,7 +2310,7 @@
+ 	int r = 0;
+ 
+ 	if ((t->flags & onInitialDir) == 0) {
+-		r = fchdir(t->initial_dir_fd);
++		r = t->initial_cwd != NULL ? chdir(t->initial_cwd) : -1;
+ 		if (r == 0) {
+ 			t->flags &= ~onWorkingDir;
+ 			t->flags |= onInitialDir;
+@@ -2343,7 +2333,23 @@
+ 	 * descent.
+ 	 */
+ 	if (t->depth > 0 && (t->flags & onWorkingDir) == 0) {
+-		r = fchdir(t->working_dir_fd);
++		/* the working directory is the first dirname_length characters of the path (relative to the cwd of tree_open) */
++		size_t n = t->dirname_length, base = t->initial_cwd != NULL ? strlen(t->initial_cwd) : 0;
++		char *abs = malloc(base + n + 2);
++		if (abs == NULL || t->initial_cwd == NULL) {
++			free(abs);
++			return (-1);
++		}
++		if (t->path.s[0] == '/')
++			base = 0;
++		else {
++			memcpy(abs, t->initial_cwd, base);
++			abs[base++] = '/';
++		}
++		memcpy(abs + base, t->path.s, n);
++		abs[base + n] = '\0';
++		r = chdir(abs);
++		free(abs);
+ 		if (r == 0) {
+ 			t->flags &= ~onInitialDir;
+ 			t->flags |= onWorkingDir;
+@@ -2722,7 +2728,7 @@
+ 	}
+ 	/* Release anything remaining in the stack. */
+ 	while (t->stack != NULL) {
+-		if (t->stack->flags & isDirLink)
++		if (t->stack->symlink_parent_fd >= 0)
+ 			close(t->stack->symlink_parent_fd);
+ 		tree_pop(t);
+ 	}
+@@ -2734,6 +2740,8 @@
+ 		close(t->initial_dir_fd);
+ 		t->initial_dir_fd = -1;
+ 	}
++	free(t->initial_cwd);
++	t->initial_cwd = NULL;
+ }
+ 
+ /*
+--- a/libarchive/filter_fork_posix.c
++++ b/libarchive/filter_fork_posix.c
+@@ -235,4 +235,22 @@
+ #endif
+ }
+ 
++#else /* InkShell/WASI: no processes; "-z program" style external filters report failure (ARCHIVE_FAILED) */
++
++#include <sys/types.h>
++#include "filter_fork.h"
++
++int
++__archive_create_child(const char *cmd, int *child_stdin, int *child_stdout, pid_t *out_child)
++{
++	(void)cmd; (void)child_stdin; (void)child_stdout; (void)out_child;
++	return (-25);
++}
++
++void
++__archive_check_child(int in, int out)
++{
++	(void)in; (void)out;
++}
++
+ #endif /* defined(HAVE_PIPE) && defined(HAVE_VFORK) && defined(HAVE_FCNTL) */
+--- a/libarchive/archive_read_disk_entry_from_file.c
++++ b/libarchive/archive_read_disk_entry_from_file.c
+@@ -202,6 +202,9 @@
+ 			st = &s;
+ 		}
+ 		archive_entry_copy_stat(entry, st);
++		/* InkShell/WASI: stat has no permission bits (st_mode is the file type only): 0755 folders, 0777 links, 0644 files */
++		if ((archive_entry_mode(entry) & 07777) == 0)
++			archive_entry_set_perm(entry, S_ISDIR(st->st_mode) ? 0755 : S_ISLNK(st->st_mode) ? 0777 : 0644);
+ 	}
+ 
+ 	/* Lookup uname/gname */
+@@ -252,7 +255,7 @@
+ 
+ #if defined(HAVE_READLINK) || defined(HAVE_READLINKAT)
+ 	if (S_ISLNK(st->st_mode)) {
+-		size_t linkbuffer_len = st->st_size;
++		size_t linkbuffer_len = st->st_size < 4096 ? 4096 : st->st_size; /* InkShell/WASI: st_size may be the target's size */
+ 		char *linkbuffer;
+ 		int lnklen;
+ 

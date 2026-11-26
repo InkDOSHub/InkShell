@@ -61,3 +61,6 @@ Separate `.wasm` files downloaded on demand; each can be replaced (`/etc/inksoc/
 2. ~~Wine Tahoma bitmap~~: resolved, excluded from the terminal build (feature `tahoma` off).
 3. **GPL-2.0 source for Alpine and BusyBox**: links to upstream now; mirror the source tarballs in a release if the owner wants the safer form.
 4. Binary notices: BSD/MIT/Apache/Info-ZIP notices for the catalog tools live in the `src-*` files of the release and in this file; nothing is installed under `/usr/share/licenses` by `apk add`.
+| bsdtar (`tar`) | libarchive 3.8.1 | wasm-tools-14 `bsdtar.wasm`, `src-libarchive-3.8.1.tar.gz`, WASI patch `tools/wasm-tools/patches/libarchive/wasi.patch` | BSD-2-Clause and BSD-3-Clause ([COPYING](https://github.com/libarchive/libarchive/blob/v3.8.1/COPYING)); some files public domain; bundled BLAKE2 (CC0/Apache-2.0); linked with zlib (Zlib) and liblzma (0BSD). No GPL | keep notices | OK |
+| gzip (`gzip`, `gunzip`, `zcat`) | own, zlib 1.3.1 | wasm-tools-14 `gzip.wasm`; `tools/wasm-tools/gzip/gzip.c` | MIT (own code) over zlib (Zlib license) | keep notices | OK |
+| xz (`xz`, `unxz`, `xzcat`, `lzma`) | 5.8.1 | wasm-tools-14 `xz.wasm`, `src-xz-5.8.1.tar.gz` | 0BSD (xz and liblzma; scripts with GPL not built: `--disable-scripts`) | none | OK |
