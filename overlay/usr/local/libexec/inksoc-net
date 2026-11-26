@@ -4,6 +4,8 @@
 # (INK_NET_MODE set): the server's socket on 0/1, the program's on 4/5. It says "OK" first, then
 # tls: Alpine's ssl_client (certificate checks, SNI) between both; tcp: two cats.
 # An error before "OK" (nc: bad address, connection refused...) goes to the program as its answer line.
+# The channel is general (WASM -> x86 Linux): first line "OP ARGS...", answer "OK" or an error text, then
+# a stream. OP = tcp|tls now; a new op (e.g. spawn, item 78) is a new case below, wasi.js stays the same.
 if [ -n "$INK_NET_MODE" ]; then
   exec 2>/dev/null
   printf 'OK\n' >&5

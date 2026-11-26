@@ -278,7 +278,7 @@ if (process.env.INK_NET) { // item 62: real network through the wisp tunnels, li
     if (!hasPy) { console.log('FAIL INK_NET_PY: no tests/python.wasm'); process.exit(1); }
     const t1 = Date.now(); send('/root/python.wasm /root/pynet.py; echo done-$?\n');
     const got1 = await until(/done-\d/, 240000, { at: 30000 }) || out.slice(-1500);
-    const checks = [[/py-path \['\/usr\/local\/lib\/inksoc-python'\]/, 'PYTHONPATH from /etc/profile.d has the helper folder'],
+    const checks = [[/py-path \['\/etc\/inksoc\/python'\]/, 'PYTHONPATH from /etc/profile.d has the helper folder'],
       [/py http 200 \d+ b'<!doctype html/i, 'urlopen http:// (example.com) 200 + body'],
       [/py https 200 \d+ b'<!doctype html/i, 'urlopen https:// (example.com, TLS by ssl_client) 200 + body'],
       [/py hub (\d{3}|HTTPError \d{3})/, 'urlopen https://hub.inkdos.workers.dev/ answers (status or HTTPError)'],

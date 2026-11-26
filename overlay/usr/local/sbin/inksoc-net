@@ -1,5 +1,5 @@
 #!/bin/sh
-# Network helper for WebAssembly programs (python3's urllib: /usr/local/lib/inksoc-python/inksoc_net.py).
+# Network helper for WebAssembly programs (python3's urllib: /etc/inksoc/python/inksoc_net.py).
 # WASI has no sockets, so a WebAssembly program opens "/dev/tcp/127.0.0.1/9417" (wasi.js makes it a TCP
 # socket), sends "tcp|tls HOST PORT SECONDS" and gets "OK" + the stream from here: x86 Linux has the
 # network (the page's wisp tunnel, no CORS) and TLS (Alpine's ssl_client, as wget/apk use).

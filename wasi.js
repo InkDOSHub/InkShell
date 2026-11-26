@@ -19,7 +19,7 @@
 // a read that waits longer fails with ETIMEDOUT) connects a TCP socket of the stub instead (127.x is a local
 // server, e.g. /usr/local/sbin/inksoc-net; other IPs go through the page's wisp tunnel); reads and writes
 // on that fd are the socket's (writes with MSG_NOSIGNAL: a closed peer is EPIPE, not a killed program).
-// Python's urllib uses it through /usr/local/lib/inksoc-python (inksoc_net.py). Remote hosts need the program in
+// Python's urllib uses it through /etc/inksoc/python (inksoc_net.py). Remote hosts need the program in
 // its own Worker (service worker path): inline runWasi blocks the engine's thread, so its WebSocket too.
 import { main as inkvideo } from './inkvideo.js?v=2';
 const E = { 101: 40, 103: 13, 104: 15, 107: 53, 110: 73, 111: 14, 113: 23, 1: 63, 2: 44, 4: 27, 5: 29, 9: 8, 11: 6, 12: 48, 13: 2, 17: 20, 18: 75, 20: 54, 21: 31, 22: 28, 24: 33, 28: 51, 29: 70, 30: 69, 32: 64, 36: 37, 38: 52, 39: 55, 40: 32, 95: 58 };

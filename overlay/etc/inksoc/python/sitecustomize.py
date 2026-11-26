@@ -2,6 +2,7 @@
 # this folder first, so site imports this file at start. It only adds an import hook: when http.client or
 # urllib.request is imported, inksoc_net.py gives them connections through the terminal's network
 # helper (http:// and https://; see inksoc_net.py). Nothing else is imported here, so start stays fast.
+# Not under /usr: the VMware python3 has its own /usr (standard library inside), which hides the real one.
 import sys
 
 
