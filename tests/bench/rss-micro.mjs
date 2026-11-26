@@ -16,6 +16,9 @@ const rssNow = () => {
   return sum / 1024;
 };
 const rows = [];
+
+const mdOf = () => [`### RSS reading ${mb} MB of a File in 4 MB pieces (no engine)`, '', '| Browser | Variant | Result | Time | MB/s | RSS start | RSS max | RSS end | RSS +4 s | growth per GB read | processes at max (MB) |', '|---|---|---|---|---|---|---|---|---|---|---|',
+  ...rows.map((r) => `| ${r.br} | ${r.v} | ${r.ok ? 'ok' : r.note} | ${r.s.toFixed(1)} s | ${(mb / r.s).toFixed(0)} | ${r.r0.toFixed(0)} | ${r.max.toFixed(0)} | ${r.rEnd.toFixed(0)} | ${r.rAfter.toFixed(0)} | ${((r.max - r.r0) / (mb / 1024)).toFixed(0)} MB | ${r.procMax} |`), ''].join('\n');
 for (const br of browsers) for (const v of variants) {
   const browser = await (br === 'chromium' ? chromium : webkit).launch();
   const page = await (await browser.newContext()).newPage();
@@ -26,7 +29,7 @@ for (const br of browsers) for (const v of variants) {
   const t0 = Date.now();
   await page.setInputFiles('#f', E.FILE);
   let res = null;
-  for (let i = 0; i < 600 && !res; i++) { res = await page.evaluate(() => window.__res).catch(() => null); if (!res) await new Promise((r) => setTimeout(r, 500)); }
+  for (let i = 0; i < 240 && !res; i++) { res = await page.evaluate(() => window.__res).catch(() => null); if (!res) await new Promise((r) => setTimeout(r, 500)); }
   const s = (Date.now() - t0) / 1000, rEnd = rssNow();
   await new Promise((r) => setTimeout(r, 4000)); const rAfter = rssNow();
   clearInterval(samp);
@@ -35,8 +38,8 @@ for (const br of browsers) for (const v of variants) {
   console.log(`  procs at max: ${procMax}`);
   console.log(`${br} ${v}: ${row.ok ? 'ok' : 'FAIL ' + row.note} ${s.toFixed(1)} s, ${(mb / s).toFixed(0)} MB/s, RSS ${r0.toFixed(0)} -> max ${max.toFixed(0)} -> end ${rEnd.toFixed(0)} -> +4s ${rAfter.toFixed(0)} MB`);
   await browser.close().catch(() => {});
+  if (E.OUT) fs.writeFileSync(E.OUT, mdOf());
 }
 srv.kill();
-const md = [`### RSS reading ${mb} MB of a File in 4 MB pieces (no engine)`, '', '| Browser | Variant | Result | Time | MB/s | RSS start | RSS max | RSS end | RSS +4 s | growth per GB read | processes at max (MB) |', '|---|---|---|---|---|---|---|---|---|---|---|',
-  ...rows.map((r) => `| ${r.br} | ${r.v} | ${r.ok ? 'ok' : r.note} | ${r.s.toFixed(1)} s | ${(mb / r.s).toFixed(0)} | ${r.r0.toFixed(0)} | ${r.max.toFixed(0)} | ${r.rEnd.toFixed(0)} | ${r.rAfter.toFixed(0)} | ${((r.max - r.r0) / (mb / 1024)).toFixed(0)} MB | ${r.procMax} |`), ''].join('\n');
-console.log(md); if (E.OUT) fs.writeFileSync(E.OUT, md);
+console.log(mdOf());
+process.exit(0);

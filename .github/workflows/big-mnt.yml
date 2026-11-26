@@ -29,14 +29,14 @@ jobs:
       - name: Playwright
         run: for i in 1 2 3; do timeout 240 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit' && break; done
       - name: Sparse file
-        run: truncate -s 10G $RUNNER_TEMP/micro.bin
+        run: truncate -s 5G $RUNNER_TEMP/micro.bin
       - name: RSS micro benchmark
         env:
           FILE: ${{ runner.temp }}/micro.bin
           MB: ${{ inputs.mb }}
           VARIANTS: ${{ inputs.variants }}
           OUT: ${{ runner.temp }}/micro.md
-        run: timeout 1800 node tests/bench/rss-micro.mjs
+        run: timeout 1200 node tests/bench/rss-micro.mjs
       - name: Job summary
         if: always()
         run: cat $RUNNER_TEMP/micro.md >> $GITHUB_STEP_SUMMARY || true
