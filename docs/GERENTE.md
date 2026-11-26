@@ -77,15 +77,26 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; até 2 it
 
 ## 9. Estado atual (atualizar a cada merge)
 - **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73 feitos; 62, 65, 66, 71 travados.
-- **Rodando**: —
-- **Fila desta semana**: vazia (79 feito); próxima: fila da semana 4 (ver ROADMAP).
+- **Rodando**: 74 vim (WASM).
+- **Fila por uso (Paulo 26/11: "siga essa ordem"; apps mais usados no terminal Linux que ainda estão incompletos aqui)**:
+  1. 74 vim (2) — rodando
+  2. 80 grep GNU em WASM (2; hoje só busybox x86 e rg)
+  3. 81 nano em WASM (2; hoje só x86)
+  4. 82 curl em WASM pela ponte de rede (2; hoje só x86)
+  5. 75 git oficial em WASM (3,5; hoje só x86, lento)
+  6. 83 pip no python WASM (2; pip usa socket, a ponte do 76 só cobre urllib)
+  7. 71 retomada diff/patch com GNU diffutils (2)
+  8. 77 clang + make (3,5)
+  9. 84 Pillow no python WASM (2; imagens do inkmedia/inkfinder)
+  Já completos (só velocidade x86): ls/cp/mv/rm/mkdir/cat, ps/top, tar/gzip, python3, ssh (x86, não medido). Fora: node (sem WASM viável; qjs no lugar), tmux (precisa pty).
 - **Fora**: teste do ruby (Paulo: não fazer).
-- **Semana que vem**: 74 vim (2, se não sair nesta), 75 git oficial GPL (3,5), 77 clang (3,5), retomada do 71 diff (GNU diffutils ou uutils mais novo + pilha maior).
+- **Semana que vem**: continuar a fila acima de onde parar.
 - **PRs abertos de propósito**: #80 (não dar merge), #38 (teste iPad).
 - **Contorno para o usuário**: comando WASM sem uma função → chamar a versão x86 pelo caminho completo (`busybox find ...`, `/usr/bin/python3` após `apk add --x86 python3`).
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
+- 2026-11-26 | #fila | fila por uso | ordem do Paulo: vim, grep, nano, curl, git, pip, diff, clang, Pillow | 80 grep
 - 2026-11-26 | #106 | 73 less em WASM | merge com aval do Paulo ("autorizo quebrar a regra teto de rodadas no 73"), 3ª rodada verde; less 692 completo, teclas sem Enter, janela; sem ganho de velocidade (4 → 32 ms) | 74 vim
 - 2026-11-26 | #114 | fazer completo, testar 1x no fim | WIP com [skip ci], teste tolerante | —
 - 2026-11-26 | #112 | 79 qjs com ponte de processos | wasm-tools-22 só com qjs; std.popen e os.exec (bloqueante) pela ponte, filho WASM direto; teste leve procs.sh | semana 4
