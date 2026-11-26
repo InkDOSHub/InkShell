@@ -68,6 +68,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; até 2 it
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
+- 2026-11-26 | #110 | regra troca de agente | qualquer agente/conta continua: push a cada passo, PR com "Estado p/ continuar" | —
 - 2026-11-26 | #108 | manual do gerente | este arquivo criado | 78 rodando, depois 79
 - 2026-11-26 | #107 | 76 rede no python WASM | urllib http/https via ajudante x86 | 78 no mesmo worker
 - 2026-11-26 | #105 | regra | até 2 itens simples em paralelo | —
