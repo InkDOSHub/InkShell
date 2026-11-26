@@ -61,7 +61,7 @@ InkShell = terminal Alpine Linux no navegador (WebKit do iPad/XeOS primeiro, iPh
 
 ## 6. Catálogo WASM (como se adiciona programa)
 - `overlay/etc/inksoc/wasm-catalog`, separado por TAB: nome, url, sha256, tamanho, licença, arquivos, descrição.
-- Cada item publica sua própria release `wasm-tools-N` só com os seus arquivos (usados: 15 bzip2/zstd, 16 diffutils sem uso, 17 bc/file, 18 less, 19 sem uso, 20 awk/lua/find (item 78), 22 qjs (item 79), 23 grep (item 80), 24 vim (item 74), 25 nano (item 81), 27 curl (item 82), 28 git (item 75); 21 era um vim antigo sem uso; 26 = 1º build do curl, sem uso).
+- Cada item publica sua própria release `wasm-tools-N` só com os seus arquivos (usados: 15 bzip2/zstd, 16 diffutils sem uso, 17 bc/file, 18 less, 19 sem uso, 20 awk/lua/find (item 78), 22 qjs (item 79), 23 grep (item 80), 24 vim (item 74), 25 nano (item 81), 27 curl (item 82), 29 git (item 75); 21 era um vim antigo sem uso; 26 = 1º build do curl, sem uso; 28 = 1º build do git, sem uso: abria o $PAGER less).
 - Build: `tools/wasm-tools/build.sh` (funções `b_<nome>`), `.github/workflows/wasm-tools.yml` (TAG/PREV, matriz), licença em `THIRD_PARTY_LICENSES.md`.
 - GPL: nunca no motor/página/worker; permitido só como programa separado do catálogo, com fonte publicado (Paulo autorizou 26/11).
 - `apk add NOME` instala a versão WASM; `apk add --x86 NOME` instala a do Alpine.
@@ -96,7 +96,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; até 2 it
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
-- 2026-11-26 | #119 | 75 git em WASM | wasm-tools-28 só com git 2.47.1 (4,1 MB, GPL-2.0 como programa separado, fonte na release); start_command pela ponte /dev/inksoc (compat_spawn); init/add/commit/status/log/diff/branch/switch/merge ff e 3-way/tag/mv/rm/show/reset num processo; stash por filhos; sem clone https (`apk add --x86 git`); GITLOG | 83 pip
+- 2026-11-26 | #119 | 75 git em WASM | wasm-tools-29 só com git (28 = 1º build sem uso) 2.47.1 (4,1 MB, GPL-2.0 como programa separado, fonte na release); start_command pela ponte /dev/inksoc (compat_spawn); init/add/commit/status/log/diff/branch/switch/merge ff e 3-way/tag/mv/rm/show/reset num processo; stash por filhos; sem clone https (`apk add --x86 git`); GITLOG | 83 pip
 - 2026-11-26 | #118 | 82 curl em WASM | wasm-tools-27 só com curl.wasm (cliente próprio compatível com curl, MIT, 374 KB; 26 = 1º build sem uso) pela ponte de rede do 76 (/dev/tcp + inksoc-net, TLS no ssl_client); -o -O -L -s -I -i -H -X -d -f -w...; códigos de saída do curl; teste Linux leve (busybox httpd local + https example.com); sem FTP/-F/proxy/HTTP2 | 75 git
 - 2026-11-26 | #117 | 81 nano em WASM | wasm-tools-25 só com nano 8.3 (1,0 MB, GPL-3.0 como programa separado; fontes de nano e ncurses na release); ncurses 6.5 estático com xterm-256color embutido, termios/tamanho pelos imports `inksoc`; ASCII, sem corretor, sem `^T`; teste Linux leve (digitar, Ctrl-O Enter, Ctrl-X); 3 rodadas de CI | 82 curl
 - 2026-11-26 | #113 | 74 vim em WASM | wasm-tools-24 só com vim (Vim 9.1.1400, licença Vim, 3,7 MB), `apk add vim` = vim/vi/view; build de 1ª, teste Linux leve (abrir, G o texto Esc :wq); :! ainda sem fork (reporta falha); tty pelos imports `inksoc` do 73 | 73 less (#106), 75 git
