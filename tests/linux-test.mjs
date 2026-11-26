@@ -62,6 +62,7 @@ if (hasPy) add('python.wasm', pyBytes);
 if (hasPy) add('pynet.py', fs.readFileSync(new URL('./src/pynet.py', import.meta.url))); // item 76 (INK_NET_PY)
 if (hasPy) add('pyproc.py', fs.readFileSync(new URL('./src/pyproc.py', import.meta.url))); // item 78 (INK_SPAWN)
 add('procs.sh', fs.readFileSync(new URL('./src/procs.sh', import.meta.url))); // item 78 (INK_SPAWN): awk, lua, find
+add('curl-e.cgi', enc.encode('#!/bin/sh\nprintf \'Content-Type: text/plain\\r\\n\\r\\n\'\necho "m=$REQUEST_METHOD ua=$HTTP_USER_AGENT"\nhead -c "${CONTENT_LENGTH:-0}"\necho\n')); // item 82 (INK_CURL): a CGI of busybox httpd that echoes a POST
 // tools from the catalog (test.yml downloads them to tests/NAME.wasm, sha256 checked): [catalog name, file, programs]
 const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagick', 'magick', 'magick,convert,identify'], ['ffmpeg', 'ffmpeg', 'ffmpeg'], ['ffprobe', 'ffprobe', 'ffprobe'],
   ['sqlite', 'sqlite3', 'sqlite3'], ['jq', 'jq', 'jq'], ['lua5.4', 'lua', 'lua5.4,lua'], ['zip', 'zip', 'zip'], ['unzip', 'unzip', 'unzip'], ['ripgrep', 'rg', 'rg'],
@@ -69,7 +70,7 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
   ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat'],
   ['bzip2', 'bzip2', 'bzip2,bunzip2,bzcat'], ['zstd', 'zstd', 'zstd,unzstd,zstdcat'],
-  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['nano', 'nano', 'nano']]
+  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['nano', 'nano', 'nano'], ['curl', 'curl', 'curl']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -294,6 +295,12 @@ if (process.env.INK_NET) { // item 62: real network through the wisp tunnels, li
     let ok = true;
     for (const [re, name] of checks) { const k = re.test(got1); ok = ok && k; console.log((k ? 'PASS ' : 'FAIL ') + 'python3 urllib: ' + name); }
     console.log('python3 urllib in ' + ((Date.now() - t1) / 1000).toFixed(1) + ' s\n' + got1.slice(-1500));
+    if (hasTool('curl')) { // item 82: the WebAssembly curl over the same helper, https (TLS by ssl_client)
+      const t2 = Date.now(); send("/root/curl.wasm -s -o /tmp/ex.html -w 'curl-https %{http_code}\\n' https://example.com/; echo crc=$?; busybox head -c 15 /tmp/ex.html; echo; echo done-curl-$?\n");
+      const got2 = await until(/done-curl-\d/, 120000, { at: 30000 }) || out.slice(-800);
+      const k = /curl-https 200\s+crc=0\s+<!doctype html/i.test(got2); ok = ok && k;
+      console.log((k ? 'PASS ' : 'FAIL ') + 'curl https://example.com/ (-s -o -w) in ' + ((Date.now() - t2) / 1000).toFixed(1) + ' s\n' + got2.slice(-400));
+    }
     process.exit(ok ? 0 : 1);
   }
   const all = [];
@@ -309,6 +316,25 @@ if (process.env.INK_NET) { // item 62: real network through the wisp tunnels, li
     all.push(ok); console.log((ok ? 'PASS ' : 'FAIL ') + 'wget through wisp: ' + name + ' in ' + ((Date.now() - t1) / 1000).toFixed(1) + ' s\n' + (got1 || out.slice(-300)).slice(-500));
   }
   process.exit(all.every(Boolean) ? 0 : 1);
+}
+if (process.env.INK_CURL) { // item 82: the WebAssembly curl (network helper inksoc-net) against busybox httpd on 127.0.0.1; with INK_WASI_THREADS=1
+  if (!hasTool('curl')) { console.log('FAIL INK_CURL: no tests/curl.wasm'); process.exit(1); }
+  const t1 = Date.now(), from = out.length, U = 'http://127.0.0.1:8088';
+  send(`cd /tmp && mkdir -p www/d && printf 'hello curl\\n' > www/index.html && printf 'in d\\n' > www/d/index.html && busybox httpd -p 127.0.0.1:8088 -h /tmp/www && C=/root/curl.wasm; ` +
+    `$C -s ${U}/; echo c1=$?; $C -s -o o.txt ${U}/index.html; echo c2=$?; cat o.txt; rm -f index.html; $C -sO ${U}/index.html; echo c3=$?; cat index.html; ` +
+    `$C -f ${U}/nope 2>&1; echo c4=$?; $C -s ${U}/nope > /dev/null; echo c5=$?; $C -sI ${U}/ | busybox head -n 1; ` +
+    `$C -s -o /dev/null -w 'code=%{http_code}\\n' ${U}/d; $C -sL ${U}/d; echo c6=$?; $C -i -s ${U}/ | busybox grep -c '^HTTP/1.. 200'; ` +
+    `mkdir -p www/cgi-bin && cp /root/curl-e.cgi www/cgi-bin/e && chmod +x www/cgi-bin/e; $C -s -X POST -d a=1 -d b=2 -A inkua -H 'X-T: 1' ${U}/cgi-bin/e; echo c7=$?; $C -s http://127.0.0.1:1/; echo c8=$?; echo done-$?\n`);
+  while (!/done-\d/.test(out.slice(from)) && Date.now() - t1 < 240000) await settle(5000);
+  const got1 = out.slice(from).replace(/\r/g, '');
+  const checks = [[/^hello curl\s+^c1=0$/m, 'body to stdout'], [/^c2=0\s+^hello curl$/m, '-o file'], [/^c3=0\s+^hello curl$/m, '-O (remote name)'],
+    [/curl: \(22\) The requested URL returned error: 404\s+^c4=22$/m, '-f on a 404: exit 22 and the message'], [/^c5=0$/m, 'a 404 without -f: exit 0'],
+    [/^HTTP\/1\.[01] 200/m, '-I (HEAD) status line'], [/^code=30[12]$/m, '-w %{http_code} of a redirect'], [/^in d\s+^c6=0$/m, '-L follows the redirect'],
+    [/^1$/m, '-i headers in the output'], [/^m=POST ua=inkua\s+^a=1&b=2\s+^c7=0$/m, '-X POST -d -d -A to a CGI (body read to the end of the stream)'], [/^c8=7$/m, 'connection refused: exit 7']];
+  let ok = true;
+  for (const [re, name] of checks) { const k = re.test(got1); ok = ok && k; console.log((k ? 'PASS ' : 'FAIL ') + 'curl: ' + name); }
+  console.log('curl in ' + ((Date.now() - t1) / 1000).toFixed(1) + ' s\n' + got1.slice(-1500));
+  process.exit(ok ? 0 : 1);
 }
 if (process.env.INK_SPAWN) { // item 78: processes from WebAssembly programs (host channel /dev/inksoc); with INK_WASI_THREADS=1
   if (!hasPy) { console.log('FAIL INK_SPAWN: no tests/python.wasm'); process.exit(1); }
@@ -563,6 +589,9 @@ if (hasWasi) {
     await step(`cd /tmp && rm -rf gr1 && mkdir -p gr1/d/sub && cd gr1 && printf 'Hello\\nworld foo\\nfoo bar\\nHELLO x\\n' > d/a.txt && printf 'foo in sub\\nnothing\\n' > d/sub/b.txt && hash -r && for c in grep egrep fgrep; do command -v $c; done | busybox tr '\\n' ' '; echo; grep -n foo d/a.txt; grep -rc foo d | busybox sort; grep -rl foo d | busybox sort; grep -ic hello d/a.txt; grep -v foo d/a.txt; grep -E 'fo+$|HEL' d/a.txt; grep -F 'o b' d/a.txt; grep -o 'fo*' d/a.txt; grep -q zzz d/a.txt; echo rc1=$?; grep foo nofile 2>/dev/null; echo rc2=$?; grep -qi hello d/a.txt; echo rc0=$?; egrep -c 'fo+$' d/a.txt; fgrep -c 'fo+' d/a.txt; echo foo | grep -c foo; echo gr-done\n`,
       lines('/usr/local/bin/grep /usr/local/bin/egrep /usr/local/bin/fgrep ', '2:world foo', '3:foo bar', 'd/a.txt:2', 'd/sub/b.txt:1', 'd/a.txt', 'd/sub/b.txt', '2', 'Hello', 'HELLO x', 'world foo', 'HELLO x', 'foo bar', 'foo', 'foo', 'rc1=1', 'rc2=2', 'rc0=0', '1', '0', '1', 'gr-done'),
       'grep: GNU grep in /usr/local/bin before busybox: -n, -r, -c, -l, -i, -v, -E, -F, -o, stdin; exit codes 0/1/2; egrep and fgrep links');
+  }
+  if (hasTool('curl')) { // item 82: apk add curl puts the WebAssembly curl in /usr/local/bin (network checks: INK_CURL, INK_NET_PY)
+    await step(`hash -r; command -v curl; curl -V | busybox head -n 1 | busybox cut -c1-6; curl; echo curl-rc=$?\n`, /\/usr\/local\/bin\/curl\s+curl 8[\s\S]*no URL specified[\s\S]*curl-rc=2/, 'curl: in /usr/local/bin, -V, no URL = exit 2');
   }
   if (hasTool('file')) { // item 72: file/libmagic, the compiled magic database is inside the program
     const E = (l) => l.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
