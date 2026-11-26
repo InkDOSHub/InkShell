@@ -7,7 +7,7 @@ Terminal Alpine Linux no navegador (iPad XeOS principal, iPhone Safari). Motor =
 - Contexto: ler `docs/graph/SUMMARY.md` ANTES de abrir código. Abrir só arquivo/trecho necessário (grep + offset/limit).
 - Nunca ler inteiro: `vendor/`, `engine.wasm`, `*.tar*`, `busybox`, `alpine/`, `engine-base.txt`, `linux.patch`.
 - Testes SÓ no GitHub Actions (`test.yml`, `bench.yml`). Local: só `cargo check`/build e sintaxe (`node --check`).
-- Sem código GPL no bundle. Sem fork/force-push.
+- GPL: nunca no motor/página/worker (engine.wasm, *.js servidos). Permitido só como programa separado no catálogo WASM (`apk add`), com fonte publicado (link da versão + patches) e licença em THIRD_PARTY_LICENSES (Paulo autorizou 26/11: "autorizo quebrar a regra sem GPL"). Sem fork/force-push.
 
 ## Threads
 - **Gerente** (tarefa semanal ter 17:13 SP): mantém fila + pontos em `ROADMAP.md`, revisa, faz merge (ou libera auto-merge).
