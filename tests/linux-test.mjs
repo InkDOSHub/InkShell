@@ -64,7 +64,8 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   ['hashtools', 'hashsum', 'sha256sum,sha1sum,sha224sum,sha384sum,sha512sum,md5sum,b2sum'], ['quickjs', 'qjs', 'qjs'],
   ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
   ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat'],
-  ['bzip2', 'bzip2', 'bzip2,bunzip2,bzcat'], ['zstd', 'zstd', 'zstd,unzstd,zstdcat']]
+  ['bzip2', 'bzip2', 'bzip2,bunzip2,bzcat'], ['zstd', 'zstd', 'zstd,unzstd,zstdcat'],
+  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -452,6 +453,20 @@ if (hasWasi) {
     await step(`cd /tmp && rm -rf zs1 && mkdir zs1 && cd zs1 && busybox seq 1 100000 > a.txt && busybox cp a.txt b.txt && zstd -q a.txt && busybox ls a.txt* | busybox tr '\\n' ' '; echo; zstd -tq a.txt.zst && echo zt-ok; zstd -dc a.txt.zst | busybox md5sum | busybox cut -c1-32; unzstd -c a.txt.zst | busybox wc -l; zstdcat a.txt.zst | busybox head -2 | busybox tr '\\n' ,; echo; zstd -q -1 -c b.txt | zstd -dc | busybox md5sum | busybox cut -c1-32; zstd -q -19 -c b.txt | unzstd | busybox wc -l; busybox cp b.txt c.txt && zstd -q --rm c.txt && unzstd -q --rm c.txt.zst && busybox cmp b.txt c.txt && echo unzstd-same; echo junk > j.zst; zstd -tq j.zst 2>/dev/null; echo zst-bad-rc=$?; zstd -dc nofile-zst 2>/dev/null; echo zst-nofile-rc=$?; echo zst-done\n`,
       lines('a.txt a.txt.zst ', 'zt-ok', md5(seq(100000)), '100000', '1,2,', md5(seq(100000)), '100000', 'unzstd-same', 'zst-bad-rc=1', 'zst-nofile-rc=1', 'zst-done'),
       'zstd: compress (source removed), -t, -d, unzstd, zstdcat, levels 1 and 19, --rm round trip, bad and missing input exit 1');
+  }
+  if (hasTool('bc')) { // item 72: Gavin Howard's bc (bc and dc are one program, picked by argv[0]), WebAssembly, ahead of busybox in PATH
+    const E = (l) => l.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
+    const lines = (...ls) => new RegExp(ls.map(E).join('\\s+^'), 'm');
+    await step(`for c in bc dc; do command -v $c; done | busybox tr '\\n' ' '; echo; echo 'scale=50; 4*a(1)' | bc -l; echo 2^100 | bc; echo '2 100 ^ p' | dc; bc -e 'scale=5; 1/3'; echo 'define f(n){ if(n<2) return 1; return n*f(n-1) }; f(20)' | bc; echo 'sqrt(16' | bc > /dev/null 2>&1 || echo bc-bad-ok; echo bc-done\n`,
+      lines('/usr/local/bin/bc /usr/local/bin/dc ', '3.14159265358979323846264338327950288419716939937508', '1267650600228229401496703205376', '1267650600228229401496703205376', '.33333', '2432902008176640000', 'bc-bad-ok', 'bc-done'),
+      'bc: -l with a(), exponent, dc by its name, -e, functions, a syntax error exits non-zero; the links are in /usr/local/bin before busybox');
+  }
+  if (hasTool('file')) { // item 72: file/libmagic, the compiled magic database is inside the program
+    const E = (l) => l.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
+    const lines = (...ls) => new RegExp(ls.map(E).join('\\s+^'), 'm');
+    await step(`command -v file; cd /tmp && rm -rf fl1 && mkdir fl1 && cd fl1 && printf 'hello text\\n' > t.txt && printf '\\211PNG\\r\\n\\032\\n\\0\\0\\0\\rIHDR\\0\\0\\0\\020\\0\\0\\0\\020\\010\\002\\0\\0\\0' > p.png && busybox gzip -c t.txt > g.gz && busybox cp /bin/busybox elf && printf '#!/bin/sh\\necho hi\\n' > s.sh; file -b t.txt; file -b p.png; file -b g.gz | busybox cut -d, -f1; file -b elf | busybox cut -c1-3; file -bi t.txt; file -b s.sh | busybox cut -d, -f1; file -b - < t.txt; file t.txt p.png | busybox tr '\\n' '|'; echo; file nonexist.x 2>&1 | busybox cut -c1-24; echo file-done\n`,
+      lines('/usr/local/bin/file', 'ASCII text', 'PNG image data, 16 x 16, 8-bit/color RGB, non-interlaced', 'gzip compressed data', 'ELF', 'text/plain; charset=us-ascii', 'POSIX shell script', 'ASCII text', 't.txt: ASCII text|p.png: PNG image data, 16 x 16, 8-bit/color RGB, non-interlaced|', 'nonexist.x: cannot open ', 'file-done'),
+      'file: a text file, PNG, gzip, ELF, shell script, -b, -i (MIME), stdin, several files, a missing file (magic database built in)');
   }
   if (hasTool('hashtools')) { // md5sum, sha1sum, sha224/256/384/512sum, b2sum (one WebAssembly program, picked by its name)
     const abc = Buffer.from('abc');
