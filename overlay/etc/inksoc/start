@@ -31,6 +31,8 @@ fi
 # helper of the page's Store (☰ Store, see /usr/local/sbin/inksoc-store); its own session, so Ctrl+C leaves it
 s=; command -v setsid > /dev/null 2>&1 && s=setsid
 $s /usr/local/sbin/inksoc-store < /dev/null > /dev/null 2>&1 &
+# network helper of WebAssembly programs (python3 urllib http/https, see /usr/local/sbin/inksoc-net)
+$s /usr/local/sbin/inksoc-net < /dev/null > /dev/null 2>&1 &
 u=$(cat /etc/inksoc/user)
 cat /etc/motd
 exec su -l "$u"

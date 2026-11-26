@@ -1,0 +1,26 @@
+#!/bin/sh
+# One connection of the WebAssembly network helper (/usr/local/sbin/inksoc-net), the program's socket on 0/1.
+# Reads "tcp|tls HOST PORT SECONDS", connects (nc -w SECONDS) and runs itself again as the relay
+# (INK_NET_MODE set): the server's socket on 0/1, the program's on 4/5. It says "OK" first, then
+# tls: Alpine's ssl_client (certificate checks, SNI) between both; tcp: two cats.
+# An error before "OK" (nc: bad address, connection refused...) goes to the program as its answer line.
+if [ -n "$INK_NET_MODE" ]; then
+  exec 2>/dev/null
+  printf 'OK\n' >&5
+  if [ "$INK_NET_MODE" = tls ]; then
+    exec 3<&0 0<&4 1>&5 4<&- 5>&-
+    exec /usr/bin/ssl_client -s3 -n "$INK_NET_HOST"
+  fi
+  cat <&4 5>&- &
+  c=$!
+  cat 4<&- >&5
+  kill "$c" 2>/dev/null
+  exit 0
+fi
+read -r mode host port t || exit 0
+case $mode in tcp|tls) ;; *) echo "bad request (tcp|tls HOST PORT SECONDS)"; exit 0 ;; esac
+case $host in ''|-*|*[!A-Za-z0-9.:_-]*) echo "bad host name"; exit 0 ;; esac
+case $port in ''|*[!0-9]*) echo "bad port"; exit 0 ;; esac
+case $t in ''|0|*[!0-9]*) t=30 ;; esac
+exec 4<&0 5>&1 2>&1
+INK_NET_MODE=$mode INK_NET_HOST=$host exec nc -w "$t" "$host" "$port" -e /usr/local/libexec/inksoc-net

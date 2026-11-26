@@ -1,0 +1,13 @@
+#!/bin/sh
+# Network helper for WebAssembly programs (python3's urllib: /usr/local/lib/inksoc-python/inksoc_net.py).
+# WASI has no sockets, so a WebAssembly program opens "/dev/tcp/127.0.0.1/9417" (wasi.js makes it a TCP
+# socket), sends "tcp|tls HOST PORT SECONDS" and gets "OK" + the stream from here: x86 Linux has the
+# network (the page's wisp tunnel, no CORS) and TLS (Alpine's ssl_client, as wget/apk use).
+# /etc/inksoc/start runs it as root in its own session; it waits in accept (no CPU) until a program asks.
+# Each connection runs /usr/local/libexec/inksoc-net.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+n=0
+while [ "$n" -lt 5 ]; do
+  nc -lk -s 127.0.0.1 -p 9417 -e /usr/local/libexec/inksoc-net
+  n=$((n + 1)); sleep 2
+done

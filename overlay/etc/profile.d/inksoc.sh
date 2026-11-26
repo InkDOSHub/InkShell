@@ -3,3 +3,5 @@ alias help=inksoc-help
 alias ls='ls --color=auto'
 if [ "$(id -u)" -eq 0 ]; then PS1='\[\033[1;31m\]\u@\h\[\033[0m\]:\[\033[1;34m\]\w\[\033[0m\]# '
 else PS1='\[\033[1;32m\]\u@\h\[\033[0m\]:\[\033[1;34m\]\w\[\033[0m\]$ '; fi
+# WebAssembly python3: urllib http/https through the network helper (/usr/local/lib/inksoc-python)
+case ":$PYTHONPATH:" in *:/usr/local/lib/inksoc-python:*) ;; *) export PYTHONPATH="/usr/local/lib/inksoc-python${PYTHONPATH:+:$PYTHONPATH}" ;; esac
