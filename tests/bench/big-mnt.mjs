@@ -25,8 +25,11 @@ const rssNow = () => {
 };
 const tick = () => { const r = rssNow(); if (!stats[phase] || r.mb > stats[phase].max) procAt[phase] = r.top; if (r.mb > RSS_GUARD) abort = true; const s = stats[phase] || (stats[phase] = { max: 0, n: 0 }); if (r.mb > s.max) s.max = r.mb; s.last = r.mb; if (s.first === undefined) s.first = r.mb; s.n++; series.push(`${Math.round(Date.now() / 1000)} ${phase} ${r.mb.toFixed(0)} ${r.n}`); };
 const samp = setInterval(tick, 1000);
-const browser = await (br === 'chromium' ? chromium : webkit).launch();
-const ctx = await browser.newContext(sw === 'block' ? { serviceWorkers: 'block' } : {});
+// item 69: PROFILE=disk = a normal Chromium profile (OPFS quota = share of the disk), default = Playwright's in-memory one (small quota)
+const copt = sw === 'block' ? { serviceWorkers: 'block' } : {};
+const disk = br === 'chromium' && E.PROFILE === 'disk';
+const ctx = disk ? await chromium.launchPersistentContext(fs.mkdtempSync('/tmp/prof-'), copt) : await (br === 'chromium' ? chromium : webkit).launch().then((b) => b.newContext(copt));
+const browser = { close: () => ctx.close() };
 const p = await ctx.newPage();
 p.on('pageerror', (e) => console.log('[page error]', e.message));
 const results = [], rows = [];
@@ -52,7 +55,7 @@ async function step(name, cmd, re, ms, bytes, expectOk = false, want = null) {
   else if (!ok) note = abort ? 'stopped by RSS guard' : `NOT finished in ${ms / 1000} s (Ctrl+C)`;
   if (!ok) { await send('\x03'); await p.waitForTimeout(2000); }
   const st = stats[name] || { max: 0 };
-  try { await p.evaluate(() => { window.__dbg = null; w.postMessage({ type: 'dbg' }); }); await p.waitForFunction(() => window.__dbg, null, { timeout: 5000 }); const d = await p.evaluate(() => window.__dbg); console.log(`  counters: mdata ${(d.mdata / MB).toFixed(0)} MB in ${d.pieces} pieces, swap written ${(d.swapw / MB).toFixed(0)} MB, read ${(d.swapr / MB).toFixed(0)} MB, swap file ${(d.swapSize / MB).toFixed(0)} MB`); rows.dbg = d; } catch (e) { console.log('  counters: n/a (worker blocked?)'); }
+  try { await p.evaluate(() => { window.__dbg = null; w.postMessage({ type: 'dbg' }); }); await p.waitForFunction(() => window.__dbg, null, { timeout: 5000 }); const d = await p.evaluate(() => window.__dbg); console.log('  dbg ' + JSON.stringify(d)); console.log(`  counters: mdata ${(d.mdata / MB).toFixed(0)} MB in ${d.pieces} pieces, swap written ${(d.swapw / MB).toFixed(0)} MB, read ${(d.swapr / MB).toFixed(0)} MB, swap file ${(d.swapSize / MB).toFixed(0)} MB`); rows.dbg = d; } catch (e) { console.log('  counters: n/a (worker blocked?)'); }
   rows.push({ top: procAt[name], name, ok, s, mbs: bytes && ok ? bytes / MB / s : null, rss: st.max, rss0: st.first, note });
   if (expectOk || want) check(ok, name + (ok ? '' : ' (not finished in ' + ms / 1000 + ' s)'));
   if (ok && !want) rows[rows.length - 1].note = '';
@@ -83,6 +86,10 @@ try {
   for (const [off, sha] of slices) await step(`dd 64 MB at ${off} MB | sha256sum (WASM)`, `h=$(dd if=${big} bs=1M skip=${off} count=64 2>/dev/null | ./sha256sum); echo "sl${off}=\${h%% *} rc=$?"`, new RegExp(`sl${off}=([0-9a-f]{64}) rc=0`), 120000, 64 * MB, false, sha);
   await step('sha256sum 1 GB file (WASM)', `h=$(./sha256sum ${s1g}); echo "s1=\${h%% *} rc=$?"`, /s1=([0-9a-f]{64}) rc=0/, 300000, 1024 * MB, false, E.S1G_SHA);
   if (budget > 0) await step('sha256sum whole file (WASM)', `h=$(./sha256sum ${big}); echo "fu=\${h%% *} rc=$?"`, /fu=([0-9a-f]{64}) rc=0/, budget, bigB, false, E.FULL_SHA);
+  if (budget > 0) await step('sha256sum whole file again (WASM, item 69: two runs must agree)', `h=$(./sha256sum ${big}); echo "fv=\${h%% *} rc=$?"`, /fv=([0-9a-f]{64}) rc=0/, budget, bigB, false, E.FULL_SHA);
+  if (budget > 0 && results.includes(false) && E.CHUNKS) { // item 69: which 256 MB chunk of the whole-file hash is wrong?
+    for (const ln of E.CHUNKS.split(',')) { const [k, sha] = ln.split(':'); await step(`dd 256 MB chunk ${k} | sha256sum (WASM)`, `h=$(dd if=${big} bs=1M skip=${k * 256} count=256 2>/dev/null | ./sha256sum); echo "ck${k}=\${h%% *} rc=$?"`, new RegExp(`ck${k}=([0-9a-f]{64}) rc=0`), 120000, 256 * MB, false, sha); }
+  }
   if (budget > 0) await step('wc -c, whole file (x86 busybox)', `wc -c ${big}; echo wc-rc=$?`, new RegExp(`${bigB} ${esc(big)}\\s+wc-rc=0`), +(E.WC_BUDGET_S || 600) * 1000, bigB, false);
   phase = 'after'; await send('echo alive-$((6*7))\r');
   check(await until(/alive-42/, 60000), 'shell still alive after the big reads');
