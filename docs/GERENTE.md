@@ -76,17 +76,19 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; até 2 it
 - Limite de 5 horas da conta pode parar workers no meio: retomar depois que liberar.
 
 ## 9. Estado atual (atualizar a cada merge)
-- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 74 feitos; 62, 65, 66, 71 travados.
+- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 74 feitos; 62, 65, 66, 71 travados.
 - **Rodando**: —
 - **Fila desta semana**: vazia (79 feito); próxima: fila da semana 4 (ver ROADMAP).
 - **Fora**: teste do ruby (Paulo: não fazer).
-- **Semana que vem**: 73 less (1; #106 aberto), 75 git oficial GPL (3,5), 77 clang (3,5), retomada do 71 diff (GNU diffutils ou uutils mais novo + pilha maior).
+- **Semana que vem**: 75 git oficial GPL (3,5), 77 clang (3,5), retomada do 71 diff (GNU diffutils ou uutils mais novo + pilha maior).
 - **PRs abertos de propósito**: #80 (não dar merge), #38 (teste iPad).
 - **Contorno para o usuário**: comando WASM sem uma função → chamar a versão x86 pelo caminho completo (`busybox find ...`, `/usr/bin/python3` após `apk add --x86 python3`).
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
-- 2026-11-26 | #113 | 74 vim em WASM | wasm-tools-21 só com vim (Vim 9.1.1400, licença Vim, 3,7 MB), `apk add vim` = vim/vi/view; build de 1ª, teste Linux leve (ex -es, abrir, G o texto Esc :wq); :! ainda sem fork (reporta falha); tty próprio (`inkshell`), trocar pelo do 73 quando #106 entrar | 73 less (#106), 75 git
+- 2026-11-26 | #113 | 74 vim em WASM | wasm-tools-23 só com vim (Vim 9.1.1400, licença Vim, 3,7 MB), `apk add vim` = vim/vi/view; build de 1ª, teste Linux leve (abrir, G o texto Esc :wq); :! ainda sem fork (reporta falha); tty pelos imports `inksoc` do 73 | 73 less (#106), 75 git
+- 2026-11-26 | #106 | 73 less em WASM | merge com aval do Paulo ("autorizo quebrar a regra teto de rodadas no 73"), 3ª rodada verde; less 692 completo, teclas sem Enter, janela; sem ganho de velocidade (4 → 32 ms) | 74 vim
+- 2026-11-26 | #114 | fazer completo, testar 1x no fim | WIP com [skip ci], teste tolerante | —
 - 2026-11-26 | #112 | 79 qjs com ponte de processos | wasm-tools-22 só com qjs; std.popen e os.exec (bloqueante) pela ponte, filho WASM direto; teste leve procs.sh | semana 4
 - 2026-11-26 | #109 | 78 ponte de processos WASM | canal /dev/inksoc (spawn/wait/kill); python subprocess/os.system, awk/lua/find -exec; filho WASM direto; py sort 2571 → 694 ms vs x86 python, find -exec 200 195 → 182 ms | 79: só quickjs
 - 2026-11-26 | #111 | prompt de início | seção 0 com prompt pronto p/ sessão nova | —

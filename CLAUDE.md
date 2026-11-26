@@ -66,6 +66,7 @@ Bump query string: `engine.wasm?v=`, `worker.js?v=`, `app.js?v=`, `overlay.tar?v
 
 ## Testes proporcionais (obrigatório)
 - Teste proporcional ao item: só doc/UI → só teste Linux leve, sem bench. Bench só em item de desempenho.
+- **Fazer completo, testar 1x no fim (Paulo 26/11)**: implementar o item inteiro antes do 1º CI (build, catálogo, docs, linhas ROADMAP/GERENTE), checar local o que der (build, `node --check`), aí 1 rodada de CI com teste simples. Sem commit de debug no CI. Commit WIP de segurança leva `[skip ci]`. Teste tolerante (tirar escapes ANSI antes de comparar texto).
 - Item de ganho de função (programa novo no catálogo etc.): só teste Linux leve + 1 comparativo pequeno (1 navegador, 1 tamanho, 1 rep; ex.: busybox x86 vs WASM). Bench amplo (2 navegadores, vários tamanhos, reps) só em item de desempenho ou rodada de debug (Paulo, 26/11).
 - Arquivo grande (1 GB/10 GB) só no item que mede isso. Nunca em todo PR.
 - Passo que pode travar (mount, hash, rede) = `timeout 300`. Todo job tem `timeout-minutes` curto.

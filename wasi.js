@@ -568,23 +568,17 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     },
     sock_accept: () => 52, sock_recv: () => 52, sock_send: () => 52, sock_shutdown: () => 52,
   };
-  // host imports of programs that need a real terminal (Vim: termios, window size): the kernel's TCGETS / TCSETS / TIOCGWINSZ; 0 = done, else an errno
-  const tty = (fd, req, len, data) => {
-    const lfd = L(fd); if (lfd == null) return 9;
-    const { r, out } = sys(16, [lfd, req, BASE], data, data ? 0 : len); if (r < 0) return -r;
-    if (!data && out) u8().set(out.subarray(0, len), tty.p); return 0;
-  };
-  const inkshell = {
-    tty_get: (fd, p) => { tty.p = p; return tty(fd, 0x5401, 36); },
-    tty_set: (fd, act, p) => tty(fd, 0x5402 + (act === 1 ? 1 : act === 2 ? 2 : 0), 0, u8().slice(p, p + 36)),
-    tty_size: (fd, p) => { tty.p = p; return tty(fd, 0x5413, 8); },
-  };
   let code = 0;
   try {
     let mod = module || (key && mods.get(key));
     if (!mod) { mod = new WebAssembly.Module(bytes); if (key) { cacheModule(mods, key, mod); if (onModule) onModule(key, mod); } }
     else if (key) cacheModule(mods, key, mod);
-    const imports = { wasi_snapshot_preview1: w, wasi_unstable: w, inkshell };
+    const imports = { wasi_snapshot_preview1: w, wasi_unstable: w };
+    imports.inksoc = { // terminal control for full-screen programs (less): WASI has no ioctl. TCGETS / TCSETS (36 bytes, the kernel's struct termios) and TIOCGWINSZ; 0 = ok
+      tty_get: (fd, p) => { const lfd = L(fd); if (lfd == null) return 1; const { r, out } = sys(16, [lfd, 0x5401, BASE], null, 36); if (r < 0 || !out) return 1; u8().set(out.subarray(0, 36), p); return 0; },
+      tty_set: (fd, p) => { const lfd = L(fd); if (lfd == null) return 1; return sys(16, [lfd, 0x5402, BASE], u8().slice(p, p + 36)).r < 0 ? 1 : 0; },
+      tty_size: (fd, p) => { const lfd = L(fd); if (lfd == null) return 1; const { r, out } = sys(16, [lfd, 0x5413, BASE], null, 8); if (r < 0 || !out) return 1; u8().set(out.subarray(0, 8), p); return 0; },
+    };
     for (const i of WebAssembly.Module.imports(mod)) if (!imports[i.module]) imports[i.module] = {};
     inst = new WebAssembly.Instance(mod, imports);
     mem = inst.exports.memory;

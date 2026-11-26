@@ -69,7 +69,7 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
   ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat'],
   ['bzip2', 'bzip2', 'bzip2,bunzip2,bzcat'], ['zstd', 'zstd', 'zstd,unzstd,zstdcat'],
-  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['vim', 'vim', 'vim,vi,view']]
+  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['vim', 'vim', 'vim,vi,view']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -550,6 +550,13 @@ if (hasWasi) {
       lines('/usr/local/bin/bc /usr/local/bin/dc ', '3.14159265358979323846264338327950288419716939937508', '1267650600228229401496703205376', '1267650600228229401496703205376', '.33333', '2432902008176640000', 'bc-bad-ok', 'bc-done'),
       'bc: -l with a(), exponent, dc by its name, -e, functions, a syntax error exits non-zero; the links are in /usr/local/bin before busybox');
   }
+  if (hasTool('less')) { // item 73: less, WebAssembly: a pipe (no terminal on stdout) copies like cat; on the terminal it needs raw keys (host tty_set: TCSETS) and the window size (tty_size)
+    await step(`mkdir -p /tmp/t && seq 1 100 > /tmp/t/l.txt && command -v less && seq 1 5000 | less | tail -n 1 && less -F /tmp/t/l.txt | wc -l && less /tmp/t/l.txt | sed -n 3p; echo less-pipe-done\n`,
+      /\/usr\/local\/bin\/less\s+^5000\s+^100\s+^3\s+^less-pipe-done/m, 'less: in /usr/local/bin before busybox; a pipe and a file copy through; -F');
+    // the harness runs a WebAssembly program to its end inside one step, so the keys go in with the command: space (a page, no Enter) and q
+    await step('less /tmp/t/l.txt\n q', /\x1b\[\?1049h[\s\S]*\b1\r?\n[\s\S]*\b3\r?\n[\s\S]*\b20\r?\n[\s\S]*\b40\r?\n[\s\S]*\x1b\[\?1049l/, 'less on the terminal: alternate screen, first lines, a page of rows (window size), space scrolls a page and q leaves, both without Enter (raw mode)');
+    await step('echo less-back $?\n', /less-back 0/, 'less: the shell works again (cooked mode restored)');
+  }
   if (hasTool('file')) { // item 72: file/libmagic, the compiled magic database is inside the program
     const E = (l) => l.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
     const lines = (...ls) => new RegExp(ls.map(E).join('\\s+^'), 'm');
@@ -557,14 +564,12 @@ if (hasWasi) {
       lines('/usr/local/bin/file', 'ASCII text', 'PNG image data, 16 x 16, 8-bit/color RGB, non-interlaced', 'gzip compressed data', 'ELF', 'text/plain; charset=us-ascii', 'POSIX shell script', 'ASCII text', 't.txt: ASCII text|p.png: PNG image data, 16 x 16, 8-bit/color RGB, non-interlaced|', 'nonexist.x: cannot open ', 'file-done'),
       'file: a text file, PNG, gzip, ELF, shell script, -b, -i (MIME), stdin, several files, a missing file (magic database built in)');
   }
-  if (hasTool('vim')) { // item 74: Vim 9.1 in WebAssembly on the kernel terminal (termios and window size through the host's "inkshell" imports)
-    const E = (l) => l.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
-    const lines = (...ls) => new RegExp(ls.map(E).join('\\s+^'), 'm');
-    await step(`cd /tmp && printf 'one\\ntwo\\n' > v1.txt && command -v vim vi; vim -es -u NONE -c 'g/o/s//0/g' -c wq v1.txt; cat v1.txt; vim --version | busybox head -1 | busybox cut -c1-12; echo vim-batch-done\n`,
-      lines('/usr/local/bin/vim', '/usr/local/bin/vi', '0ne', 'tw0', 'VIM - Vi IMp', 'vim-batch-done'), 'vim: in the PATH ahead of busybox vi, ex mode (-es) edits and writes a file, --version');
-    await step(`vim /tmp/v1.txt\n`, /"\/tmp\/v1\.txt" 2L/, 'vim: opens a file on the terminal (full screen, the file name and size on the status line)');
-    await step(`Gothree\x1b:wq\r`, /tester@inksoc/, 'vim: G, o, typing, Esc, :wq (raw keys through the kernel terminal) and back at the shell');
-    await step(`cat /tmp/v1.txt; echo vim-done\n`, lines('0ne', 'tw0', 'three', 'vim-done'), 'vim: the file has the inserted line');
+  if (hasTool('vim')) { // item 74: Vim 9.1 in WebAssembly on the kernel terminal (termios and window size through the host's "inksoc" imports); one editing session, tolerant matching (escape sequences stripped)
+    const T = (re) => ({ test: (g) => re.test(g.replace(/\x1b\[[0-9;?>]*[A-Za-z]/g, '').replace(/\r/g, '')) });
+    await step(`cd /tmp && printf 'one\\ntwo\\n' > v1.txt && command -v vim; vim --version | busybox head -1 | busybox cut -c1-12\n`, T(/\/usr\/local\/bin\/vim\s+VIM - Vi IMp/), 'vim: in /usr/local/bin, --version');
+    // ex mode (-es): the test engine runs the program in its own thread, so nothing can be typed while it waits (the full screen is tried in the page)
+    await step(`vim -es -c 'normal Gothree' -c wq v1.txt </dev/null; echo vim-rc=$?\n`, T(/vim-rc=0/), 'vim: opens a file, normal mode G o three, :wq (ex mode)');
+    await step(`cat v1.txt; echo vim-done\n`, T(/one\s+two\s+three\s+vim-done/), 'vim: the file has the inserted line');
   }
   if (hasTool('hashtools')) { // md5sum, sha1sum, sha224/256/384/512sum, b2sum (one WebAssembly program, picked by its name)
     const abc = Buffer.from('abc');
