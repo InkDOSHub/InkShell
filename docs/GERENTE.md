@@ -86,7 +86,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; até 2 it
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
-- 2026-11-26 | #regra | fazer completo, testar 1x no fim | WIP com [skip ci], teste tolerante | —
+- 2026-11-26 | #114 | fazer completo, testar 1x no fim | WIP com [skip ci], teste tolerante | —
 - 2026-11-26 | #112 | 79 qjs com ponte de processos | wasm-tools-22 só com qjs; std.popen e os.exec (bloqueante) pela ponte, filho WASM direto; teste leve procs.sh | semana 4
 - 2026-11-26 | #109 | 78 ponte de processos WASM | canal /dev/inksoc (spawn/wait/kill); python subprocess/os.system, awk/lua/find -exec; filho WASM direto; py sort 2571 → 694 ms vs x86 python, find -exec 200 195 → 182 ms | 79: só quickjs
 - 2026-11-26 | #111 | prompt de início | seção 0 com prompt pronto p/ sessão nova | —
