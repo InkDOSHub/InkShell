@@ -1,0 +1,38 @@
+name: grep bench
+# Item 80 (Chromium only): busybox x86 (JIT) grep vs the catalog's WebAssembly grep,
+# same run: three searches on a ~10 MB file (one rep); the other checks are in test.yml.
+# Runs when started by hand or when a PR touches these files.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/grep-bench.yml'
+      - 'tests/bench/browser-grep*'
+permissions:
+  contents: read
+concurrency:
+  group: grep-bench-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: The catalog's grep (sha256 checked) at /usr/local/bin
+        run: |
+          mkdir -p out/tools $RUNNER_TEMP/pw/usr/local/bin
+          e=$(awk -F '\t' '$1 == "grep"' overlay/etc/inksoc/wasm-catalog); f=out/tools/grep
+          [ -n "$e" ] || { echo "no catalog entry grep"; exit 1; }
+          timeout 300 curl -fsSL --retry 3 -o "$f" "$(printf '%s' "$e" | cut -f2)"
+          echo "$(printf '%s' "$e" | cut -f3)  $f" | sha256sum -c
+          for l in $(printf '%s' "$e" | cut -f6 | tr ',' ' '); do install -m 755 "$f" "$RUNNER_TEMP/pw$l"; done
+          tar --format=ustar -C $RUNNER_TEMP/pw -cf out/ztools.tar usr
+          cp tests/bench/browser-grep.sh out/
+          ls -la out out/tools; tar tvf out/ztools.tar
+      - name: Playwright (Chromium)
+        run: timeout 900 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium'
+      - name: busybox vs WebAssembly in Chromium
+        run: timeout 1200 node tests/bench/browser-grep.mjs
