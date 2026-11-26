@@ -100,12 +100,18 @@ const yieldNow = () => new Promise((r) => { const c = new MessageChannel(); c.po
 /* Item 69 counters (the page asks with {type:'dbg'}): a short or failed OPFS write used to be ignored (the page read zeros back). */
 const dbgc = { mdata: 0, pieces: 0, swapw: 0, swapr: 0, swapSize: 0, wcalls: 0, wmax: 0, wshort: 0, wfail: 0, rshort: 0, rdErr: 0, rdRetry: 0 };
 let swapH = null;
+try { navigator.storage.estimate().then((e) => { dbgc.quota = e.quota; dbgc.usage = e.usage; }, () => {}); } catch (e) {}
 function dbgSend() { try { if (swapH) dbgc.swapSize = swapH.getSize(); } catch (e) {} postMessage({ type: 'dbg', d: { ...dbgc } }); }
 function swapWrite(h, b, at) { // all of b or an error (a half-written extent would come back as zeros or old bytes)
   for (let o = 0; o < b.length;) {
     const k = h.write(o ? b.subarray(o) : b, { at: at + o });
     if (k < b.length - o) dbgc.wshort++;
-    if (!(k > 0)) { dbgc.wfail++; dbgSend(); throw new Error('swap write failed at ' + (at + o)); }
+    // Chromium returned 4294967288 (-8 as unsigned) for writes past its storage quota (item 69): the data was not stored and read back as zeros
+    if (!(k > 0) || k > b.length - o) {
+      dbgc.wfail++; dbgc.wbad = { at: at + o, len: b.length - o, k }; dbgSend();
+      out('\r\n\x1b[31m[swap full: the browser refused to store more (storage quota); stopping instead of returning wrong data]\x1b[0m\r\n');
+      throw new Error('swap write failed at ' + (at + o) + ' (returned ' + k + ' for ' + (b.length - o) + ')');
+    }
     o += k; dbgc.swapw += k; dbgc.wcalls++; if (k > dbgc.wmax) dbgc.wmax = k;
   }
 }

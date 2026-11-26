@@ -48,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.only == 'chromium' && '[{"browser":"chromium","sw":"allow","rd":1024},{"browser":"chromium","sw":"block","rd":1024}]' || inputs.only == 'webkit' && '[{"browser":"webkit","sw":"allow","rd":1024},{"browser":"webkit","sw":"block","rd":1024}]' || '[{"browser":"webkit","sw":"allow","rd":1024},{"browser":"webkit","sw":"block","rd":1024},{"browser":"chromium","sw":"allow","rd":1024},{"browser":"chromium","sw":"block","rd":1024}]') }}
+        include: ${{ fromJSON(inputs.only == 'chromium' && '[{"browser":"chromium","sw":"allow","rd":1024,"profile":"disk"},{"browser":"chromium","sw":"block","rd":1024,"profile":"mem"}]' || inputs.only == 'webkit' && '[{"browser":"webkit","sw":"allow","rd":1024},{"browser":"webkit","sw":"block","rd":1024}]' || '[{"browser":"webkit","sw":"allow","rd":1024},{"browser":"webkit","sw":"block","rd":1024},{"browser":"chromium","sw":"allow","rd":1024},{"browser":"chromium","sw":"block","rd":1024}]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -90,6 +90,7 @@ jobs:
         env:
           BROWSER: ${{ matrix.browser }}
           SW: ${{ matrix.sw }}
+          PROFILE: ${{ matrix.profile }}
           RD: ${{ matrix.rd }}
           FULL_BUDGET_S: ${{ inputs.full_budget_s }}
           OUT: ${{ runner.temp }}/big-mnt.md

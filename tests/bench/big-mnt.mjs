@@ -25,8 +25,11 @@ const rssNow = () => {
 };
 const tick = () => { const r = rssNow(); if (!stats[phase] || r.mb > stats[phase].max) procAt[phase] = r.top; if (r.mb > RSS_GUARD) abort = true; const s = stats[phase] || (stats[phase] = { max: 0, n: 0 }); if (r.mb > s.max) s.max = r.mb; s.last = r.mb; if (s.first === undefined) s.first = r.mb; s.n++; series.push(`${Math.round(Date.now() / 1000)} ${phase} ${r.mb.toFixed(0)} ${r.n}`); };
 const samp = setInterval(tick, 1000);
-const browser = await (br === 'chromium' ? chromium : webkit).launch();
-const ctx = await browser.newContext(sw === 'block' ? { serviceWorkers: 'block' } : {});
+// item 69: PROFILE=disk = a normal Chromium profile (OPFS quota = share of the disk), default = Playwright's in-memory one (small quota)
+const copt = sw === 'block' ? { serviceWorkers: 'block' } : {};
+const disk = br === 'chromium' && E.PROFILE === 'disk';
+const ctx = disk ? await chromium.launchPersistentContext(fs.mkdtempSync('/tmp/prof-'), copt) : await (br === 'chromium' ? chromium : webkit).launch().then((b) => b.newContext(copt));
+const browser = { close: () => ctx.close() };
 const p = await ctx.newPage();
 p.on('pageerror', (e) => console.log('[page error]', e.message));
 const results = [], rows = [];
