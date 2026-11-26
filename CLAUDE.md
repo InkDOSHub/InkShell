@@ -42,7 +42,7 @@ Gastar só no que tira gargalo e deixa ganho duradouro.
 ## Custo real (Paulo 26/11, obrigatório)
 - Semana 3: 16,5 pts, 45% queimado, ~2,1% do crédito/pt (meta 1,3). Meta: ≤ 1,3%/pt e < 20% queimado.
 - Velocidade do motor x86 (JIT/InkSoC) CONGELADA: sem item novo de desempenho x86. x86 = reserva. Só correção de bug que quebra uso.
-- Foco: o que o usuário sente (bug de dado/loja/terminal, iPad real, comandos em WASM).
+- **Foco = WASM** (Paulo 26/11): levar comandos/programas p/ WASM, menos dependência do x86. Depois: bug de dado/loja/terminal e iPad real. Item que não é WASM nem bug precisa justificar no ROADMAP.
 - Item só de medição = Sonnet, teto 2 rodadas de CI (qualquer pontuação).
 - Item de motor só começa com prova barata (medição já no main) mostrando o gargalo.
 - Gerente respeita teto de crédito que Paulo der (% do semanal); ao atingir, não inicia item novo.
