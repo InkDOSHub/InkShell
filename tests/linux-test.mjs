@@ -3,6 +3,7 @@
 // Boots Alpine like the page does, creates a user, and checks sudo, files, fork/exec, apk,
 // /proc, and the swap (small real RAM, so pages of several processes go out and come back).
 import fs from 'node:fs';
+import { Worker } from 'node:worker_threads';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { runWasi, cwdStats, cwdSlot } from '../wasi.js';
@@ -58,6 +59,7 @@ const pyWasm = new URL('./python.wasm', import.meta.url);
 const hasPy = hasWasi && fs.existsSync(pyWasm);
 const pyBytes = hasPy ? fs.readFileSync(pyWasm) : null;
 if (hasPy) add('python.wasm', pyBytes);
+if (hasPy) add('pynet.py', fs.readFileSync(new URL('./src/pynet.py', import.meta.url))); // item 76 (INK_NET_PY)
 // tools from the catalog (test.yml downloads them to tests/NAME.wasm, sha256 checked): [catalog name, file, programs]
 const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagick', 'magick', 'magick,convert,identify'], ['ffmpeg', 'ffmpeg', 'ffmpeg'], ['ffprobe', 'ffprobe', 'ffprobe'],
   ['sqlite', 'sqlite3', 'sqlite3'], ['jq', 'jq', 'jq'], ['lua5.4', 'lua', 'lua5.4,lua'], ['zip', 'zip', 'zip'], ['unzip', 'unzip', 'unzip'], ['ripgrep', 'rg', 'rg'],
@@ -231,17 +233,63 @@ if (process.env.INK_NET) { // item 62: real network through the wisp tunnels, li
       else if (op === 3) { got.delete(id); wsSend(packet(4, id, new Uint8Array([2]))); }
     }
   };
+  // item 76: WebAssembly programs here run in worker threads (tests/wasi-thread.mjs), like the page's
+  // wasi-worker.js: the engine and the WebSocket keep running while a program waits on the network
+  const threads = new Map();
+  const serveThreads = () => {
+    if (!hasWasi) return;
+    for (let pid; (pid = x.wasi_next());) {
+      const k = x.wasi_info(pid), info = new Uint8Array(mem.buffer, x.out_ptr(), k).slice();
+      const m = x.wasi_module(pid), bytes = new Uint8Array(mem.buffer, x.out_ptr(), m).slice();
+      const size = x.wasi_buf_size(), sab = new SharedArrayBuffer(256 + Math.max(size, 65536) + 8192);
+      const t = { ctl: new Int32Array(sab, 0, 16), F: new Float64Array(sab, 64, 12), data: new Uint8Array(sab, 256), busy: false };
+      t.w = new Worker(new URL('./wasi-thread.mjs', import.meta.url), { workerData: { sab, info, bytes, base: x.wasi_base(), size } });
+      t.w.on('error', (e) => console.log('  [wasi thread: ' + e.message + ']')); t.w.on('exit', () => threads.delete(pid));
+      threads.set(pid, t);
+    }
+    for (const [pid, t] of threads) {
+      const gone = () => { t.busy = false; Atomics.store(t.ctl, 0, 3); Atomics.notify(t.ctl, 0); };
+      if (!t.busy && Atomics.load(t.ctl, 0) === 1) {
+        const F = t.F, n = F[8], p = x.buffer(n); new Uint8Array(mem.buffer, p, n).set(t.data.subarray(0, n));
+        if (x.wasi_call(pid, F[0], F[1], F[2], F[3], F[4], F[5], F[6], F[7]) !== 0) { gone(); continue; }
+        t.busy = true;
+      }
+      if (!t.busy) continue;
+      const n = x.wasi_take(pid);
+      if (n === -1) continue;
+      if (n === -2) { gone(); continue; }
+      t.busy = false; t.F[9] = x.wasi_ret(); t.F[10] = n;
+      if (n > 0) t.data.set(new Uint8Array(mem.buffer, x.out_ptr(), n));
+      Atomics.store(t.ctl, 0, 2); Atomics.notify(t.ctl, 0);
+    }
+  };
   const until = async (re, maxMs, mark) => {
     const t1 = Date.now(), from = out.length;
     for (let tick = 0; Date.now() - t1 < maxMs;) {
-      const st = x.run(2000000); pump();
+      const st = x.run(2000000); pump(); serveThreads();
       if (re.test(out.slice(from))) return out.slice(from);
       if (st === 2) { console.log('engine stopped'); process.exit(1); }
-      if (st === 3) await new Promise((r) => setTimeout(r, 5)); else if (++tick % 50 === 0) await new Promise((r) => setTimeout(r, 0));
+      if (st === 3) await new Promise((r) => setTimeout(r, threads.size ? 0 : 5)); else if (++tick % 50 === 0) await new Promise((r) => setTimeout(r, 0));
       if (mark && Date.now() - t1 > mark.at) { mark.at += 30000; console.log('  ... ' + ((Date.now() - t1) / 1000 | 0) + ' s'); }
     }
     return null;
   };
+  if (process.env.INK_NET_PY) { // item 76: urllib http/https in the WebAssembly python3 (network helper inksoc-net)
+    if (!hasPy) { console.log('FAIL INK_NET_PY: no tests/python.wasm'); process.exit(1); }
+    const t1 = Date.now(); send('/root/python.wasm /root/pynet.py; echo done-$?\n');
+    const got1 = await until(/done-\d/, 240000, { at: 30000 }) || out.slice(-1500);
+    const checks = [[/py-path \['\/etc\/inksoc\/python'\]/, 'PYTHONPATH from /etc/profile.d has the helper folder'],
+      [/py http 200 \d+ b'<!doctype html/i, 'urlopen http:// (example.com) 200 + body'],
+      [/py https 200 \d+ b'<!doctype html/i, 'urlopen https:// (example.com, TLS by ssl_client) 200 + body'],
+      [/py hub (\d{3}|HTTPError \d{3})/, 'urlopen https://hub.inkdos.workers.dev/ answers (status or HTTPError)'],
+      [/py post (\d{3}|HTTPError \d{3})/, 'urlopen POST https:// answers'],
+      [/py refused URLError/, 'no server: clean URLError, no hang'],
+      [/py-net-done[\s\S]*done-0/, 'python3 ends normally']];
+    let ok = true;
+    for (const [re, name] of checks) { const k = re.test(got1); ok = ok && k; console.log((k ? 'PASS ' : 'FAIL ') + 'python3 urllib: ' + name); }
+    console.log('python3 urllib in ' + ((Date.now() - t1) / 1000).toFixed(1) + ' s\n' + got1.slice(-1500));
+    process.exit(ok ? 0 : 1);
+  }
   const all = [];
   for (const [name, cmd, ms, want] of [['plain http (example.com, no TLS)', 'wget -O /dev/null http://example.com/ 2>&1 | tr "\\r" "\\n" | tail -n 3', 60000],
       ['https (example.com, ssl_client)', 'wget -O /dev/null https://example.com/ 2>&1 | tr "\\r" "\\n" | tail -n 3', 60000],

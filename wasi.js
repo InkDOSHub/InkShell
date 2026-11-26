@@ -14,9 +14,15 @@
 // Otherwise (a third-party module without chdir: wasi-libc then sends "x.txt" and "/x.txt" alike to the "/"
 // preopen as "x.txt") each path on the "/" preopen goes to the shell's folder or to the real root (pick):
 // the argument it comes from ("/etc" or "etc") says which, else the side that has its first name.
-// Limits: getcwd() says "/"; a name in both places that no argument names goes to the folder. No sockets.
+// Limits: getcwd() says "/"; a name in both places that no argument names goes to the folder.
+// Sockets: WASI preview1 has none, so opening "/dev/tcp/IP/PORT" (optionally "?t=MS", an idle read timeout:
+// a read that waits longer fails with ETIMEDOUT) connects a TCP socket of the stub instead (127.x is a local
+// server, e.g. /usr/local/sbin/inksoc-net; other IPs go through the page's wisp tunnel); reads and writes
+// on that fd are the socket's (writes with MSG_NOSIGNAL: a closed peer is EPIPE, not a killed program).
+// Python's urllib uses it through /etc/inksoc/python (inksoc_net.py). Remote hosts need the program in
+// its own Worker (service worker path): inline runWasi blocks the engine's thread, so its WebSocket too.
 import { main as inkvideo } from './inkvideo.js?v=2';
-const E = { 1: 63, 2: 44, 4: 27, 5: 29, 9: 8, 11: 6, 12: 48, 13: 2, 17: 20, 18: 75, 20: 54, 21: 31, 22: 28, 24: 33, 28: 51, 29: 70, 30: 69, 32: 64, 36: 37, 38: 52, 39: 55, 40: 32, 95: 58 };
+const E = { 101: 40, 103: 13, 104: 15, 107: 53, 110: 73, 111: 14, 113: 23, 1: 63, 2: 44, 4: 27, 5: 29, 9: 8, 11: 6, 12: 48, 13: 2, 17: 20, 18: 75, 20: 54, 21: 31, 22: 28, 24: 33, 28: 51, 29: 70, 30: 69, 32: 64, 36: 37, 38: 52, 39: 55, 40: 32, 95: 58 };
 const errno = (v) => E[-v] ?? 29;
 const ftype = (mode) => ({ 0o040000: 3, 0o100000: 4, 0o020000: 2, 0o060000: 1, 0o120000: 7, 0o140000: 6 })[mode & 0o170000] ?? 0;
 const dtype = { 1: 0, 2: 2, 4: 3, 6: 1, 8: 4, 10: 7, 12: 6 };
@@ -250,6 +256,17 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     preopen(c >= 0 ? c : opendir('/'), '/');
   } catch { return -1; } // ended before it started
   const dirs = new Map(); // fd -> entries read by fd_readdir
+  const tcp = new Map(); // fd of a "/dev/tcp/IP/PORT" socket -> idle read timeout in ms (-1: none)
+  /** "/dev/tcp/IP/PORT[?t=MS]" on a preopen: a connected TCP socket (see the top of this file). */
+  const tcpOpen = (m, fdp) => {
+    const ip = m[1] === 'localhost' ? [127, 0, 0, 1] : m[1].split('.').map(Number), port = +m[2];
+    if (port < 1 || port > 65535 || ip.some((v) => v > 255)) return 28;
+    const { r: s } = sys(41, [2, 1 | 0x80000, 0]); if (s < 0) return errno(s);
+    const a = new Uint8Array(16); a[0] = 2; a[2] = port >> 8; a[3] = port & 255; a.set(ip, 4);
+    const { r } = sys(42, [s, BASE, 16], a);
+    if (r < 0) { sys(3, [s]); return errno(r); }
+    const nfd = nextFd++; fds.set(nfd, s); tcp.set(nfd, m[3] ? +m[3] : -1); dv().setUint32(fdp, nfd, true); return 0;
+  };
   let inst, mem;
   const dv = () => new DataView(mem.buffer);
   const u8 = () => new Uint8Array(mem.buffer);
@@ -278,7 +295,7 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     { let o = 0; for (const [p, l] of iovs(iov, n)) { all.set(u8().subarray(p, p + l), o); o += l; } }
     while (total < all.length) {
       const c = all.subarray(total, total + Math.min(SIZE, all.length - total));
-      const { r } = off == null ? sys(1, [lfd, BASE, c.length], c) : sys(18, [lfd, BASE, c.length, off + total], c);
+      const { r } = tcp.has(fd) ? sys(44, [lfd, BASE, c.length, 0x4000, 0, 0], c) : off == null ? sys(1, [lfd, BASE, c.length], c) : sys(18, [lfd, BASE, c.length, off + total], c);
       if (r < 0) { if (total) break; return [errno(r), 0]; }
       if (r === 0) break;
       total += r;
@@ -288,10 +305,16 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
   const read = (fd, iov, n, off) => {
     const lfd = L(fd); if (lfd == null) return [8, 0];
     let total = 0;
+    const tmo = tcp.has(fd) ? tcp.get(fd) : -1;
     for (const [p, l] of iovs(iov, n)) {
       let got = 0;
       while (got < l) {
         const want = Math.min(SIZE, l - got);
+        if (tmo >= 0) { // a /dev/tcp socket with an idle timeout: poll(POLLIN) first
+          const pf = new Uint8Array(8), pv = new DataView(pf.buffer); pv.setInt32(0, lfd, true); pv.setInt16(4, 1, true);
+          const { r: pr } = sys(7, [BASE, 1, tmo], pf);
+          if (pr === 0) return total ? [0, total] : [73, 0];
+        }
         const { r, out } = off == null ? sys(0, [lfd, BASE, want], null, want) : sys(17, [lfd, BASE, want, off + total], null, want);
         if (r < 0) return total ? [0, total] : [errno(r), 0];
         if (r === 0) return [0, total];
@@ -321,7 +344,7 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     fd_pwrite: (fd, iov, n, off, np) => done(write(fd, iov, n, Number(off)), np),
     fd_read: (fd, iov, n, np) => done(read(fd, iov, n), np),
     fd_pread: (fd, iov, n, off, np) => done(read(fd, iov, n, Number(off)), np),
-    fd_close: (fd) => { const lfd = L(fd); if (lfd == null) return 8; const { r } = sys(3, [lfd]); fds.delete(fd); dirs.delete(fd); return r < 0 ? errno(r) : 0; },
+    fd_close: (fd) => { const lfd = L(fd); if (lfd == null) return 8; const { r } = sys(3, [lfd]); fds.delete(fd); dirs.delete(fd); tcp.delete(fd); return r < 0 ? errno(r) : 0; },
     fd_seek: (fd, off, wh, p) => { const lfd = L(fd); if (lfd == null) return 8; const { r } = sys(8, [lfd, Number(off), wh]); if (r < 0) return errno(r); dv().setBigUint64(p, BigInt(r), true); return 0; },
     fd_tell: (fd, p) => w.fd_seek(fd, 0n, 1, p),
     fd_sync: () => 0, fd_datasync: () => 0, fd_advise: () => 0, fd_allocate: () => 0,
@@ -343,7 +366,7 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     fd_filestat_set_times: () => 0,
     fd_prestat_get: (fd, p) => { if (!pre.has(fd)) return 8; dv().setUint32(p, 0, true); dv().setUint32(p + 4, enc.encode(pre.get(fd)).length, true); return 0; },
     fd_prestat_dir_name: (fd, p, n) => { if (!pre.has(fd)) return 8; u8().set(enc.encode(pre.get(fd)).subarray(0, n), p); return 0; },
-    fd_renumber: (a, b) => { const la = L(a), lb = L(b); if (la == null || lb == null) return 8; const { r } = sys(33, [la, lb]); if (r < 0) return errno(r); sys(3, [la]); fds.delete(a); return 0; },
+    fd_renumber: (a, b) => { const la = L(a), lb = L(b); if (la == null || lb == null) return 8; const { r } = sys(33, [la, lb]); if (r < 0) return errno(r); sys(3, [la]); fds.delete(a); if (tcp.has(a)) tcp.set(b, tcp.get(a)); else tcp.delete(b); tcp.delete(a); return 0; },
     fd_readdir: (fd, buf, len, cookie, np) => {
       const lfd = L(fd); if (lfd == null) return 8;
       let list = dirs.get(fd);
@@ -375,6 +398,8 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
       return 0;
     },
     path_open: (fd, lookup, p, n, oflags, rb, ri, fdflags, fdp) => {
+      const m = pre.has(fd) && n < 64 && /^\/?dev\/tcp\/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost)\/(\d{1,5})(?:\?t=(\d{1,9}))?$/.exec(str(p, n));
+      if (m) return tcpOpen(m, fdp);
       const rd = (rb & 2n) !== 0n, wr = (rb & 0x40n) !== 0n || (fdflags & 1) !== 0;
       let fl = (oflags & 2) ? 0x10000 : wr ? (rd ? 2 : 1) : 0;
       if (oflags & 1) fl |= 0x40; if (oflags & 4) fl |= 0x80; if (oflags & 8) fl |= 0x200;
