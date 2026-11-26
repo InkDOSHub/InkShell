@@ -1,11 +1,11 @@
 #!/bin/sh
 # Builds WebAssembly (WASI preview1) command-line tools for the catalog (apk add) from upstream sources.
-# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | bzip2 | zstd
+# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | bzip2 | zstd | bc | file
 # env: WASI_SDK (wasi-sdk-33 or later: C++ exceptions), WORK (sources, build dirs), OUT (the .wasm files)
 # CI: .github/workflows/wasm-tools.yml builds them and publishes a GitHub release; the catalog points at it.
 # No GPL: ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
 # 7-Zip without the unRAR code (LGPL-2.1+ and BSD-3-Clause), qpdf (Apache-2.0), ImageMagick (its own Apache-style license),
-# SQLite (public domain), jq (MIT), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense), hashsum (InkShell's own code, MIT), uutils coreutils (MIT), QuickJS-ng (MIT), uutils sed (MIT), uutils findutils find (MIT; oniguruma BSD-2-Clause inside), one-true-awk (MIT-style Bell Labs license), xz 5.8 (0BSD; liblzma public domain/0BSD), libarchive bsdtar (BSD-2-Clause, BSD-3-Clause; zlib license for zlib, 0BSD for liblzma), gzip (InkShell's own code on zlib, MIT), bzip2 1.0.8 (bzip2 license, BSD-style), zstd 1.5.7 (BSD-3-Clause option of its dual license).
+# SQLite (public domain), jq (MIT), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense), hashsum (InkShell's own code, MIT), uutils coreutils (MIT), QuickJS-ng (MIT), uutils sed (MIT), uutils findutils find (MIT; oniguruma BSD-2-Clause inside), one-true-awk (MIT-style Bell Labs license), xz 5.8 (0BSD; liblzma public domain/0BSD), libarchive bsdtar (BSD-2-Clause, BSD-3-Clause; zlib license for zlib, 0BSD for liblzma), gzip (InkShell's own code on zlib, MIT), bzip2 1.0.8 (bzip2 license, BSD-style), zstd 1.5.7 (BSD-3-Clause option of its dual license), Gavin Howard's bc 7.0.3 (BSD-2-Clause; not GNU bc), file/libmagic 5.46 (BSD-2-Clause).
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 : "${WASI_SDK:=/opt/wasi-sdk}" "${WORK:=$PWD/wasm-tools-work}" "${OUT:=$PWD/wasm-tools-out}"
@@ -26,7 +26,7 @@ CWDL="-Wl,--undefined=chdir"
 STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
-SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7
+SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46
 
 fetch() { # github repo, tag, dir name: shallow clone once into $WORK/dir; a source tarball goes next to the binaries (LGPL)
   [ -d "$WORK/$3" ] && return 0
@@ -294,6 +294,36 @@ b_zstd() { # zstd 1.5.7 (BSD-3-Clause; the GPL-2.0 option of its dual license is
     lib/common/*.c lib/compress/*.c lib/decompress/*.c lib/dictBuilder/*.c programs/*.c -o "$OUT/zstd.wasm" -L"$P/lib" -lcompat $EMUL $STACK)
 }
 
+b_bc() { # Gavin Howard's bc 7.0.3 (BSD-2-Clause; not GNU bc): bc and dc are one program, picked by argv[0]; no readline/history, no NLS, no man pages
+  compat; dl "https://github.com/gavinhoward/bc/releases/download/$BC/bc-$BC.tar.gz" bc
+  # WASI has no sigaction/sigsetjmp: the program's own Windows branch (signal()) handles SIGINT/SIGTERM, and setjmp stands in for sigsetjmp
+  sed -i '/^bc_vm_sigaction(void)/,/^}/ s/^#ifndef _WIN32$/#if !defined(_WIN32) \&\& !defined(__wasi__)/' "$WORK/bc/src/vm.c"
+  printf '#include <setjmp.h>\n#define sigjmp_buf jmp_buf\n#define sigsetjmp(j, s) setjmp(j)\n#define siglongjmp longjmp\n' > "$WORK/bc/wasi_sj.h"
+  (cd "$WORK/bc" && HOSTCC=cc HOSTCFLAGS=-O2 CFLAGS="-O2 $SJLJ -include $WORK/bc/wasi_sj.h $EMU" LDFLAGS="-lsetjmp $EMUL $STACK" \
+    ./configure.sh --disable-nls --disable-history --disable-man-pages --disable-generated-tests -O3 >/dev/null && make -j"$J" && cp bin/bc "$OUT/bc.wasm")
+}
+
+b_file() { # file(1) 5.46 / libmagic (BSD-2-Clause), no external decompressors; the compiled magic database (magic.mgc, made by a native file of the same version) is inside the program, gzip-compressed (file/inkmagic.c); -m FILE still works
+  zlib; compat
+  dl "https://astron.com/pub/file/file-$FILE.tar.gz" file
+  if [ ! -f "$WORK/file/.host" ]; then # native build, only for magic.mgc
+    mkdir -p "$WORK/file-host" && (cd "$WORK/file-host" && export CC=cc CXX=c++ AR=ar RANLIB=ranlib NM=nm STRIP=strip && "$WORK/file/configure" --disable-shared --disable-libseccomp --disable-zlib --disable-bzlib --disable-xzlib --disable-zstdlib --disable-lzlib >/dev/null && make -j"$J" >/dev/null && touch "$WORK/file/.host")
+  fi
+  mgc=$WORK/file-host/magic/magic.mgc
+  { echo "static const unsigned long magic_mgc_size = $(wc -c < "$mgc");"; echo 'static const unsigned char magic_mgc_gz[] = {'
+    gzip -9nc "$mgc" | od -An -v -tx1 | sed 's/ \([0-9a-f][0-9a-f]\)/0x\1,/g'; echo '};'; } > "$WORK/file/src/magic_mgc_gz.h"
+  cp "$here/file/inkmagic.c" "$WORK/file/src/inkmagic.c"
+  sed -i 's/if (magic_load(magic, magicfile) == -1) {/if (ink_magic_load(magic, magicfile) == -1) {/' "$WORK/file/src/file.c"
+  grep -q ink_magic_load "$WORK/file/src/file.c" && sed -i '0,/^#include "file.h"/s//#include "file.h"\nint ink_magic_load(struct magic_set *, const char *);/' "$WORK/file/src/file.c"
+  # file_pipe2file() (stdin to a temp file, only for external decompressors, which are off) calls dup2, and the pipe helper pipe, which WASI lacks: make them fail with ENOSYS
+  printf '#include <errno.h>\n#define dup2(a, b) (errno = ENOSYS, -1)\n#define pipe(a) (errno = ENOSYS, -1)\n' > "$WORK/file/ink_file.h"
+  rm -rf "$WORK/file/b" && mkdir -p "$WORK/file/b" && (cd "$WORK/file/b" && CFLAGS="-O2 -include compat.h -include $WORK/file/ink_file.h -I$P/compat $EMU" CPPFLAGS="-I$P/include" LDFLAGS="-L$P/lib" LIBS="-lcompat $EMUL" \
+    ac_cv_func_mkstemp=yes ../configure --host=$T --disable-shared --enable-static --disable-libseccomp --disable-zlib --disable-bzlib --disable-xzlib --disable-zstdlib --disable-lzlib >/dev/null &&
+    make -C src magic.h >/dev/null && make -C src -j"$J" libmagic.la >/dev/null &&
+    $CC -O2 $EMU -I"$P/include" -Isrc -I../src -c ../src/inkmagic.c -o src/inkmagic.o &&
+    make -C src -j"$J" file LIBS="inkmagic.o -lz -lcompat $EMUL $STACK" && cp src/file "$OUT/file.wasm")
+}
+
 # b_ prefix: functions named zip, unzip... would hide those commands
-for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
+for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd|bc|file) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
 ls -l "$OUT"

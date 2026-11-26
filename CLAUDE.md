@@ -7,7 +7,7 @@ Terminal Alpine Linux no navegador (iPad XeOS principal, iPhone Safari). Motor =
 - Contexto: ler `docs/graph/SUMMARY.md` ANTES de abrir código. Abrir só arquivo/trecho necessário (grep + offset/limit).
 - Nunca ler inteiro: `vendor/`, `engine.wasm`, `*.tar*`, `busybox`, `alpine/`, `engine-base.txt`, `linux.patch`.
 - Testes SÓ no GitHub Actions (`test.yml`, `bench.yml`). Local: só `cargo check`/build e sintaxe (`node --check`).
-- Sem código GPL no bundle. Sem fork/force-push.
+- GPL: nunca no motor/página/worker (engine.wasm, *.js servidos). Permitido só como programa separado no catálogo WASM (`apk add`), com fonte publicado (link da versão + patches) e licença em THIRD_PARTY_LICENSES (Paulo autorizou 26/11: "autorizo quebrar a regra sem GPL"). Sem fork/force-push.
 
 ## Threads
 - **Gerente** (tarefa semanal ter 17:13 SP): mantém fila + pontos em `ROADMAP.md`, revisa, faz merge (ou libera auto-merge).
@@ -16,7 +16,7 @@ Terminal Alpine Linux no navegador (iPad XeOS principal, iPhone Safari). Motor =
 - Worker termina com 2–4 linhas: PR, CI, pontos.
 
 ## Pontos
-- Semana = ter 17:00 → ter 17:00 SP (renova o plano). Teto 30 pts/semana (Paulo). Fácil 1, médio 2, difícil 3,5.
+- Semana = ter 17:00 → ter 17:00 SP (renova o plano). Teto 30 pts/semana (Paulo; semana 3 (até ter 1/12) liberada sem teto: "autorizo quebrar a regra 30 pts", 26/11; itens em sequência, 1 por vez). Fácil 1, médio 2, difícil 3,5.
 - Conversão: 15 pts ≈ 20% do crédito semanal (1 pt ≈ 1,3%). Paulo informa o % real; se % real > pts × 1,3, valer o % real.
 - Antes de começar: somar pontos da semana em `ROADMAP.md`; se estoura, parar e responder "sem cota".
 - Registrar linha no quadro de pontos no mesmo PR.
@@ -56,6 +56,7 @@ Bump query string: `engine.wasm?v=`, `worker.js?v=`, `app.js?v=`, `overlay.tar?v
 
 ## Testes proporcionais (obrigatório)
 - Teste proporcional ao item: só doc/UI → só teste Linux leve, sem bench. Bench só em item de desempenho.
+- Item de ganho de função (programa novo no catálogo etc.): só teste Linux leve + 1 comparativo pequeno (1 navegador, 1 tamanho, 1 rep; ex.: busybox x86 vs WASM). Bench amplo (2 navegadores, vários tamanhos, reps) só em item de desempenho ou rodada de debug (Paulo, 26/11).
 - Arquivo grande (1 GB/10 GB) só no item que mede isso. Nunca em todo PR.
 - Passo que pode travar (mount, hash, rede) = `timeout 300`. Todo job tem `timeout-minutes` curto.
 - Worker cancela run sem saída há 5 min (`gh api -X POST repos/InkDOSHub/InkShell/actions/runs/<id>/cancel`). Conta como rodada de CI.
