@@ -16,7 +16,7 @@ Terminal Alpine Linux no navegador (iPad XeOS principal, iPhone Safari). Motor =
 - Worker termina com 2–4 linhas: PR, CI, pontos.
 
 ## Pontos
-- Semana = ter 17:00 → ter 17:00 SP (renova o plano). Teto 30 pts/semana (Paulo). Fácil 1, médio 2, difícil 3,5.
+- Semana = ter 17:00 → ter 17:00 SP (renova o plano). Teto 30 pts/semana (Paulo; semana 3 (até ter 1/12) liberada sem teto: "autorizo quebrar a regra 30 pts", 26/11; itens em sequência, 1 por vez). Fácil 1, médio 2, difícil 3,5.
 - Conversão: 15 pts ≈ 20% do crédito semanal (1 pt ≈ 1,3%). Paulo informa o % real; se % real > pts × 1,3, valer o % real.
 - Antes de começar: somar pontos da semana em `ROADMAP.md`; se estoura, parar e responder "sem cota".
 - Registrar linha no quadro de pontos no mesmo PR.
