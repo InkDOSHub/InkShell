@@ -61,7 +61,7 @@ InkShell = terminal Alpine Linux no navegador (WebKit do iPad/XeOS primeiro, iPh
 
 ## 6. Catálogo WASM (como se adiciona programa)
 - `overlay/etc/inksoc/wasm-catalog`, separado por TAB: nome, url, sha256, tamanho, licença, arquivos, descrição.
-- Cada item publica sua própria release `wasm-tools-N` só com os seus arquivos (usados: 15 bzip2/zstd, 16 diffutils sem uso, 17 bc/file; reservados: 18 less, 19 vim).
+- Cada item publica sua própria release `wasm-tools-N` só com os seus arquivos (usados: 15 bzip2/zstd, 16 diffutils sem uso, 17 bc/file, 19 sem uso + 20 awk/lua/find (item 78, 19 já estava publicada); reservados: 18 less, 21 vim (19 foi usada pelo 78)).
 - Build: `tools/wasm-tools/build.sh` (funções `b_<nome>`), `.github/workflows/wasm-tools.yml` (TAG/PREV, matriz), licença em `THIRD_PARTY_LICENSES.md`.
 - GPL: nunca no motor/página/worker; permitido só como programa separado do catálogo, com fonte publicado (Paulo autorizou 26/11).
 - `apk add NOME` instala a versão WASM; `apk add --x86 NOME` instala a do Alpine.
@@ -76,9 +76,9 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; até 2 it
 - Limite de 5 horas da conta pode parar workers no meio: retomar depois que liberar.
 
 ## 9. Estado atual (atualizar a cada merge)
-- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76 feitos; 62, 65, 66, 71 travados.
-- **Rodando**: 78 ponte de processos WASM (Opus, mesmo worker do 76).
-- **Fila desta semana**: 79 recompilar com a ponte (find -exec, awk system, lua os.execute/io.popen, quickjs), 2 pts.
+- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78 feitos; 62, 65, 66, 71 travados.
+- **Rodando**: —
+- **Fila desta semana**: 79 recompilar com a ponte: find -exec, awk system/pipes, lua os.execute/io.popen já entraram no #109 (wasm-tools-20); sobra quickjs (os.exec), ~1 pt.
 - **Fora**: teste do ruby (Paulo: não fazer).
 - **Semana que vem**: 73 less (1), 74 vim (2), 75 git oficial GPL (3,5), 77 clang (3,5), retomada do 71 diff (GNU diffutils ou uutils mais novo + pilha maior).
 - **PRs abertos de propósito**: #80 (não dar merge), #38 (teste iPad).
@@ -86,6 +86,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; até 2 it
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
+- 2026-11-26 | #109 | 78 ponte de processos WASM | canal /dev/inksoc (spawn/wait/kill); python subprocess/os.system, awk/lua/find -exec; filho WASM direto; py sort 2571 → 694 ms vs x86 python, find -exec 200 195 → 182 ms | 79: só quickjs
 - 2026-11-26 | #111 | prompt de início | seção 0 com prompt pronto p/ sessão nova | —
 - 2026-11-26 | #110 | regra troca de agente | qualquer agente/conta continua: push a cada passo, PR com "Estado p/ continuar" | —
 - 2026-11-26 | #108 | manual do gerente | este arquivo criado | 78 rodando, depois 79

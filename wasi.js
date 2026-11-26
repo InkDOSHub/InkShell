@@ -15,6 +15,11 @@
 // preopen as "x.txt") each path on the "/" preopen goes to the shell's folder or to the real root (pick):
 // the argument it comes from ("/etc" or "etc") says which, else the side that has its first name.
 // Limits: getcwd() says "/"; a name in both places that no argument names goes to the folder.
+// Processes (item 78): WASI has none, so "/dev/inksoc" is the host channel: a program opens it, writes one JSON
+// line per request and reads one JSON line back (ctlCall: spawn, wait, kill). spawn forks the stub and this
+// host drives the child (dup2, chdir, execve): a .wasm child runs as WebAssembly (its own Worker, no x86 code),
+// anything else as x86 Linux. Users: python3's subprocess/os.system (/etc/inksoc/python/inksoc_proc.py) and
+// system()/popen() of tools built with tools/wasm-tools/compat. Inline (runWasi, no service worker): x86 children only.
 // Sockets: WASI preview1 has none, so opening "/dev/tcp/IP/PORT" (optionally "?t=MS", an idle read timeout:
 // a read that waits longer fails with ETIMEDOUT) connects a TCP socket of the stub instead (127.x is a local
 // server, e.g. /usr/local/sbin/inksoc-net; other IPs go through the page's wisp tunnel); reads and writes
@@ -46,23 +51,25 @@ export function runWasi(x, pid, opts = {}) {
   const bytes = (() => { const n = x.wasi_module(pid); return emem().slice(x.out_ptr(), x.out_ptr() + n); })();
   const key = genKey(x, pid, path, bytes.length);
   // one Linux call of the stub: data goes to BASE first, `outLen` bytes come back
-  function sys(nr, a = [], data, outLen = 0) {
+  // `to`: another stub (a child this program forked, item 78); its end is r = -3 (ESRCH), not this program's
+  function sys(nr, a = [], data, outLen = 0, to = pid) {
     const d = data || new Uint8Array(0);
     const p = x.buffer(d.length); emem().set(d, p);
     const q = [...a, 0, 0, 0, 0, 0, 0].slice(0, 6);
-    if (x.wasi_call(pid, nr, q[0], q[1], q[2], q[3], q[4], q[5], outLen) !== 0) throw new Exit(-1);
+    if (x.wasi_call(to, nr, q[0], q[1], q[2], q[3], q[4], q[5], outLen) !== 0) { if (to !== pid) return { r: -3, out: null }; throw new Exit(-1); }
     let n, idle = 0;
-    while ((n = x.wasi_take(pid)) === -1) {
+    while ((n = x.wasi_take(to)) === -1) {
       const st = x.run(500000);
       if (opts.serve) opts.serve();
       if (st === 1 || st === 2) throw new Exit(-1);
       if (st === 3 && opts.wait) opts.wait(++idle); else idle = 0;
     }
-    if (n === -2) throw new Exit(-1); // the process was killed (Ctrl+C, kill)
+    if (n === -2) { if (to !== pid) return { r: -3, out: null }; throw new Exit(-1); } // the process was killed (Ctrl+C, kill)
     const out = n > 0 ? emem().slice(x.out_ptr(), x.out_ptr() + n) : null;
     return { r: x.wasi_ret(), out };
   }
-  return runModule({ bytes, key, args, envs, base: x.wasi_base(), size: x.wasi_buf_size(), sys, inline: true });
+  // spawn 1: children only as x86 programs (a WebAssembly child would wait for this thread, which waits for it)
+  return runModule({ bytes, key, args, envs, base: x.wasi_base(), size: x.wasi_buf_size(), sys, inline: true, spawn: x.wasi_spawn ? 1 : 0 });
 }
 
 /** JS programs: a module that is only a custom section "inkshell.js" whose content names the program
@@ -198,7 +205,7 @@ function slotOf(bytes, slots, onSlot, k) {
 
 /** Runs a WASI module whose calls go through `sys(nr, args, data, outLen) -> { r, out }`
  *  (a Linux call of the stub process; throws Exit when the process is gone). */
-export function runModule({ bytes, key = null, module = null, args, envs, base: BASE, size: SIZE, sys, inline = false, slots = slotCache, onSlot, mods = modCache, onModule }) {
+export function runModule({ bytes, key = null, module = null, args, envs, base: BASE, size: SIZE, sys, inline = false, slots = slotCache, onSlot, mods = modCache, onModule, spawn: SPAWN = 0 }) {
   const prog = jsProgram(bytes);
   if (prog) { // its exit code (a Promise of it when it works asynchronously, as WebCodecs does)
     const end = (c) => { try { sys(231, [c]); } catch {} return c; };
@@ -257,6 +264,100 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
   } catch { return -1; } // ended before it started
   const dirs = new Map(); // fd -> entries read by fd_readdir
   const tcp = new Map(); // fd of a "/dev/tcp/IP/PORT" socket -> idle read timeout in ms (-1: none)
+  const ctls = new Map(); // fd of "/dev/inksoc" (the host channel, see ctlCall) -> { inb: text written, out: answer bytes }
+  // pipe ends that spawn handed out: a program whose fds are its own table (VMware python3's wasi-vfs) knows
+  // them only after opening "/dev/inksoc/fd/N" (path_open answers N itself, once); others use N directly
+  const adopt = new Set();
+  /** Starts argv as a child process (item 78): the stub forks; this host drives the child (dup2, chdir,
+   *  execve through PATH). A .wasm runs as WebAssembly in its own Worker, anything else as x86 Linux. */
+  const spawnCall = (q) => {
+    if (!SPAWN) return { error: 52, msg: 'this engine cannot start processes from WebAssembly' };
+    const argv = Array.isArray(q.argv) ? q.argv.map(String) : [];
+    if (!argv.length || !argv[0]) return { error: 28, msg: 'argv is empty' };
+    const env = Array.isArray(q.env) ? q.env.map(String) : envs, cwd = q.cwd ? String(q.cwd) : '';
+    const paths = [];
+    if (q.path) paths.push(String(q.path)); // "path": the program file (Popen's executable), argv[0] stays
+    else if (argv[0].includes('/')) paths.push(argv[0]);
+    else for (const d of ((env.find((e) => e.startsWith('PATH=')) || 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin').slice(5)).split(':')) paths.push((d || '.') + '/' + argv[0]);
+    const theirs = [0, 1, 2].map((i) => fds.get(i) ?? i), mine = [], shut = [];
+    const undo = () => { for (const f of [...shut, ...mine.map((m) => m[1])]) sys(3, [f]); };
+    for (const [i, k] of [[0, 'stdin'], [1, 'stdout'], [2, 'stderr']]) {
+      const v = q[k] ?? 'inherit';
+      if (v === 'pipe') {
+        const { r, out } = sys(293, [BASE, 0x80000], null, 8);
+        if (r < 0) { undo(); return { error: errno(r), msg: 'pipe' }; }
+        const pv = new DataView(out.buffer, out.byteOffset), rd = pv.getInt32(0, true), wr = pv.getInt32(4, true);
+        if (i === 0) { theirs[0] = rd; shut.push(rd); mine.push([k, wr]); } else { theirs[i] = wr; shut.push(wr); mine.push([k, rd]); }
+      } else if (v === 'null') {
+        const { r } = sys(257, [-100, BASE, (i ? 1 : 0) | 0x80000, 0], cstr('/dev/null'));
+        if (r < 0) { undo(); return { error: errno(r), msg: '/dev/null' }; }
+        theirs[i] = r; shut.push(r);
+      } else if (v === 'stdout' && i === 2) theirs[2] = theirs[1];
+      else if (typeof v === 'number') { const l = L(v); if (l == null) { undo(); return { error: 8, msg: k + ': bad descriptor' }; } theirs[i] = l; }
+    }
+    // inline (spawn 1): a WebAssembly child cannot run while this program waits in the same thread
+    if (SPAWN === 1) for (const pth of paths) {
+      const f = cwd && pth[0] !== '/' ? cwd + '/' + pth : pth, { r: o } = sys(257, [-100, BASE, 0x80000, 0], cstr(f));
+      if (o < 0) continue;
+      const { r, out } = sys(0, [o, BASE, 4], null, 4); sys(3, [o]);
+      if (r === 4 && out[0] === 0 && out[1] === 0x61 && out[2] === 0x73 && out[3] === 0x6d) { undo(); return { error: 52, msg: argv[0] + ': a WebAssembly program cannot start another one here (no service worker)' }; }
+      break;
+    }
+    const { r: kid } = sys(57);
+    if (kid < 0) { undo(); return { error: errno(kid), msg: 'fork' }; }
+    const C = (nr, a = [], d, o = 0) => sys(nr, a, d, o, kid);
+    let err = 0;
+    for (let i = 0; i < 3 && !err; i++) if (theirs[i] !== i) { const { r } = C(33, [theirs[i], i]); if (r < 0) err = r; }
+    if (!err && cwd) { const { r } = C(80, [BASE], cstr(cwd)); if (r < 0) err = r; }
+    if (!err) {
+      err = -2;
+      for (const pth of paths) { // execve(path, argv, env): pointers, then the strings, all in the child's buffer
+        const strs = [pth, ...argv, ...env].map(cstr), a0 = 0, e0 = (argv.length + 1) * 8, s0 = e0 + (env.length + 1) * 8;
+        const len = strs.reduce((t, b) => t + b.length, s0);
+        if (len > SIZE) { err = -7; break; }
+        const b = new Uint8Array(len), bv = new DataView(b.buffer);
+        let o = s0; const at = strs.map((x) => { b.set(x, o); const v = o; o += x.length; return v; });
+        argv.forEach((_, j) => bv.setBigUint64(a0 + 8 * j, BigInt(BASE + at[1 + j]), true));
+        env.forEach((_, j) => bv.setBigUint64(e0 + 8 * j, BigInt(BASE + at[1 + argv.length + j]), true));
+        const { r } = C(59, [BASE + at[0], BASE + a0, BASE + e0], b);
+        if (r === 0) { err = 0; break; }
+        if (r === -3) { err = 0; break; } // ended at once (killed): wait tells
+        if (err === -2 || r !== -2) err = r;
+        if (r !== -2 && r !== -13 && r !== -20) break;
+      }
+    }
+    for (const f of shut) sys(3, [f]);
+    if (err) {
+      C(231, [127]); sys(61, [kid, 0, 0, 0]);
+      for (const m of mine) sys(3, [m[1]]);
+      return { error: errno(err), msg: argv[0] + ': ' + (err === -2 ? 'not found' : 'cannot run') };
+    }
+    const ans = { pid: kid };
+    for (const [k, l] of mine) { const nfd = nextFd++; fds.set(nfd, l); adopt.add(nfd); ans[k] = nfd; }
+    return ans;
+  };
+  /** One request line of the host channel "/dev/inksoc" (JSON, answer = one JSON line to read back):
+   *  {"op":"spawn","argv":[...],"path":"/bin/x","cwd":"/x","env":["K=V"...],"stdin"|"stdout"|"stderr":"inherit"|"pipe"|"null"|FD|"stdout"}
+   *  -> {"pid":N,"stdin":FD,...} (pipe ends: use FD, or open "/dev/inksoc/fd/FD" once to get it through a wasi-vfs); {"op":"wait","pid":N,"nohang":true} -> {"pid":N or 0,"status":wait status};
+   *  {"op":"kill","pid":N,"sig":15} -> {"r":0}; errors {"error":WASI errno,"msg":"..."}. New ops go here. */
+  const ctlCall = (line) => {
+    let q; try { q = JSON.parse(line); } catch { return { error: 28, msg: 'not JSON' }; }
+    if (q.op === 'spawn') return spawnCall(q);
+    if (q.op === 'wait') {
+      const { r, out } = sys(61, [q.pid | 0, BASE, q.nohang ? 1 : 0, 0], null, 4);
+      return r < 0 ? { error: errno(r), msg: 'wait' } : { pid: r, status: r ? new DataView(out.buffer, out.byteOffset).getInt32(0, true) : 0 };
+    }
+    if (q.op === 'kill') { const { r } = sys(62, [q.pid | 0, q.sig == null ? 15 : q.sig | 0]); return r < 0 ? { error: errno(r), msg: 'kill' } : { r: 0 }; }
+    return { error: 28, msg: 'unknown op ' + q.op };
+  };
+  const ctlWrite = (c, bytes) => {
+    c.inb += c.dec.decode(bytes, { stream: true });
+    for (let k; (k = c.inb.indexOf('\n')) >= 0;) {
+      const line = c.inb.slice(0, k); c.inb = c.inb.slice(k + 1);
+      const a = enc.encode(JSON.stringify(ctlCall(line)) + '\n'), o = new Uint8Array(c.out.length + a.length);
+      o.set(c.out); o.set(a, c.out.length); c.out = o;
+    }
+  };
   /** "/dev/tcp/IP/PORT[?t=MS]" on a preopen: a connected TCP socket (see the top of this file). */
   const tcpOpen = (m, fdp) => {
     const ip = m[1] === 'localhost' ? [127, 0, 0, 1] : m[1].split('.').map(Number), port = +m[2];
@@ -289,6 +390,7 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
   const sizes = (list, a, b) => { dv().setUint32(a, list.length, true); dv().setUint32(b, list.reduce((t, s) => t + enc.encode(s).length + 1, 0), true); return 0; };
   const iovs = (p, n) => { const d = dv(), v = []; for (let i = 0; i < n; i++) v.push([d.getUint32(p + 8 * i, true), d.getUint32(p + 8 * i + 4, true)]); return v; };
   const write = (fd, iov, n, off) => {
+    if (ctls.has(fd)) { let t = 0; for (const [p, l] of iovs(iov, n)) { ctlWrite(ctls.get(fd), u8().slice(p, p + l)); t += l; } return [0, t]; }
     const lfd = L(fd); if (lfd == null) return [8, 0];
     let total = 0;
     const all = new Uint8Array(iovs(iov, n).reduce((t, [, l]) => t + l, 0));
@@ -303,6 +405,11 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     return [0, total];
   };
   const read = (fd, iov, n, off) => {
+    if (ctls.has(fd)) {
+      const c = ctls.get(fd); let t = 0;
+      for (const [p, l] of iovs(iov, n)) { const k = Math.min(l, c.out.length); u8().set(c.out.subarray(0, k), p); c.out = c.out.slice(k); t += k; if (k < l) break; }
+      return [0, t];
+    }
     const lfd = L(fd); if (lfd == null) return [8, 0];
     let total = 0;
     const tmo = tcp.has(fd) ? tcp.get(fd) : -1;
@@ -344,11 +451,12 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     fd_pwrite: (fd, iov, n, off, np) => done(write(fd, iov, n, Number(off)), np),
     fd_read: (fd, iov, n, np) => done(read(fd, iov, n), np),
     fd_pread: (fd, iov, n, off, np) => done(read(fd, iov, n, Number(off)), np),
-    fd_close: (fd) => { const lfd = L(fd); if (lfd == null) return 8; const { r } = sys(3, [lfd]); fds.delete(fd); dirs.delete(fd); tcp.delete(fd); return r < 0 ? errno(r) : 0; },
+    fd_close: (fd) => { if (ctls.delete(fd)) return 0; const lfd = L(fd); if (lfd == null) return 8; const { r } = sys(3, [lfd]); fds.delete(fd); dirs.delete(fd); tcp.delete(fd); return r < 0 ? errno(r) : 0; },
     fd_seek: (fd, off, wh, p) => { const lfd = L(fd); if (lfd == null) return 8; const { r } = sys(8, [lfd, Number(off), wh]); if (r < 0) return errno(r); dv().setBigUint64(p, BigInt(r), true); return 0; },
     fd_tell: (fd, p) => w.fd_seek(fd, 0n, 1, p),
     fd_sync: () => 0, fd_datasync: () => 0, fd_advise: () => 0, fd_allocate: () => 0,
     fd_fdstat_get: (fd, p) => {
+      if (ctls.has(fd)) { const d = dv(); d.setUint8(p, 2); d.setUint8(p + 1, 0); d.setUint16(p + 2, 0, true); d.setUint32(p + 4, 0, true); d.setBigUint64(p + 8, 0x1fffffffn & ~0x24n, true); d.setBigUint64(p + 16, 0n, true); return 0; }
       const lfd = L(fd); if (lfd == null) return 8;
       const { r, out } = sys(5, [lfd, BASE], null, 144); if (r < 0) return errno(r);
       const fl = sys(72, [lfd, 3]).r;
@@ -400,6 +508,9 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     path_open: (fd, lookup, p, n, oflags, rb, ri, fdflags, fdp) => {
       const m = pre.has(fd) && n < 64 && /^\/?dev\/tcp\/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost)\/(\d{1,5})(?:\?t=(\d{1,9}))?$/.exec(str(p, n));
       if (m) return tcpOpen(m, fdp);
+      const fm = pre.has(fd) && n < 32 && /^\/?dev\/inksoc\/fd\/(\d{1,9})$/.exec(str(p, n));
+      if (fm) { const k = +fm[1]; if (!adopt.delete(k)) return 8; dv().setUint32(fdp, k, true); return 0; }
+      if (pre.has(fd) && n < 16 && /^\/?dev\/inksoc$/.test(str(p, n))) { const nfd = nextFd++; ctls.set(nfd, { inb: '', out: new Uint8Array(0), dec: new TextDecoder() }); dv().setUint32(fdp, nfd, true); return 0; }
       const rd = (rb & 2n) !== 0n, wr = (rb & 0x40n) !== 0n || (fdflags & 1) !== 0;
       let fl = (oflags & 2) ? 0x10000 : wr ? (rd ? 2 : 1) : 0;
       if (oflags & 1) fl |= 0x40; if (oflags & 4) fl |= 0x80; if (oflags & 8) fl |= 0x200;

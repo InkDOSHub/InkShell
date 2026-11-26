@@ -60,6 +60,8 @@ const hasPy = hasWasi && fs.existsSync(pyWasm);
 const pyBytes = hasPy ? fs.readFileSync(pyWasm) : null;
 if (hasPy) add('python.wasm', pyBytes);
 if (hasPy) add('pynet.py', fs.readFileSync(new URL('./src/pynet.py', import.meta.url))); // item 76 (INK_NET_PY)
+if (hasPy) add('pyproc.py', fs.readFileSync(new URL('./src/pyproc.py', import.meta.url))); // item 78 (INK_SPAWN)
+add('procs.sh', fs.readFileSync(new URL('./src/procs.sh', import.meta.url))); // item 78 (INK_SPAWN): awk, lua, find
 // tools from the catalog (test.yml downloads them to tests/NAME.wasm, sha256 checked): [catalog name, file, programs]
 const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagick', 'magick', 'magick,convert,identify'], ['ffmpeg', 'ffmpeg', 'ffmpeg'], ['ffprobe', 'ffprobe', 'ffprobe'],
   ['sqlite', 'sqlite3', 'sqlite3'], ['jq', 'jq', 'jq'], ['lua5.4', 'lua', 'lua5.4,lua'], ['zip', 'zip', 'zip'], ['unzip', 'unzip', 'unzip'], ['ripgrep', 'rg', 'rg'],
@@ -111,6 +113,38 @@ put(enc.encode('busybox\0sh /etc/inksoc/start'));
 if (x.start() !== 0) { console.log('FAIL start:', dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()))); process.exit(1); }
 x.linux_winsize(30, 100);
 const send = (t) => { const b = enc.encode(t); put(b); x.linux_stdin(b.length); };
+// item 76/78: WebAssembly programs in worker threads (tests/wasi-thread.mjs), like the page's wasi-worker.js:
+// the engine (and the WebSocket) keep running while a program waits; a program's children run too.
+// Used by the INK_NET block and, with INK_WASI_THREADS=1, by settle() instead of runWasi.
+const threads = new Map();
+function serveThreads() {
+  if (!hasWasi) return;
+  for (let pid; (pid = x.wasi_next());) {
+    const k = x.wasi_info(pid), info = new Uint8Array(mem.buffer, x.out_ptr(), k).slice();
+    const m = x.wasi_module(pid), bytes = new Uint8Array(mem.buffer, x.out_ptr(), m).slice();
+    const size = x.wasi_buf_size(), sab = new SharedArrayBuffer(256 + Math.max(size, 65536) + 8192);
+    const t = { ctl: new Int32Array(sab, 0, 16), F: new Float64Array(sab, 64, 12), data: new Uint8Array(sab, 256), busy: false, to: pid };
+    t.w = new Worker(new URL('./wasi-thread.mjs', import.meta.url), { workerData: { sab, info, bytes, base: x.wasi_base(), size, pid, spawn: !!x.wasi_spawn } });
+    t.w.on('error', (e) => console.log('  [wasi thread: ' + e.message + ']')); t.w.on('exit', () => threads.delete(pid));
+    threads.set(pid, t);
+  }
+  for (const [, t] of threads) {
+    const gone = () => { t.busy = false; Atomics.store(t.ctl, 0, 3); Atomics.notify(t.ctl, 0); };
+    if (!t.busy && Atomics.load(t.ctl, 0) === 1) {
+      const F = t.F, n = F[8], p = x.buffer(n); new Uint8Array(mem.buffer, p, n).set(t.data.subarray(0, n));
+      t.to = F[11];
+      if (x.wasi_call(t.to, F[0], F[1], F[2], F[3], F[4], F[5], F[6], F[7]) !== 0) { gone(); continue; }
+      t.busy = true;
+    }
+    if (!t.busy) continue;
+    const n = x.wasi_take(t.to);
+    if (n === -1) continue;
+    if (n === -2) { gone(); continue; }
+    t.busy = false; t.F[9] = x.wasi_ret(); t.F[10] = n;
+    if (n > 0) t.data.set(new Uint8Array(mem.buffer, x.out_ptr(), n));
+    Atomics.store(t.ctl, 0, 2); Atomics.notify(t.ctl, 0);
+  }
+}
 const WASI_MAX = 300000; // ms, one WebAssembly program in settle()
 // run until the program waits for the terminal again (or ends)
 async function settle(maxMs = 120000) {
@@ -118,12 +152,14 @@ async function settle(maxMs = 120000) {
   for (let idle = 0; Date.now() - t0 < maxMs;) {
     const st = x.run(2000000);
     serveMount();
-    if (hasWasi) for (let pid; (pid = x.wasi_next());) { // serveMount: a WASI read of a big /mnt file waits on its pieces
+    if (process.env.INK_WASI_THREADS) serveThreads();
+    else if (hasWasi) for (let pid; (pid = x.wasi_next());) { // serveMount: a WASI read of a big /mnt file waits on its pieces
       const end = Date.now() + WASI_MAX; // watchdog: fail fast instead of eating the job's 30 min
       runWasi(x, pid, { serve: () => { serveMount(); if (Date.now() > end) { console.log(`FAIL WebAssembly program ran over ${WASI_MAX / 1000} s (hung?)\n---- output ----\n${out.slice(-600)}`); process.exit(1); } } });
     }
     if (st === 1 || st === 2) return st;
     // waiting: a timer due soon (sleep, a timeout) is not idle; only waiting for the terminal is
+    if (st === 3 && threads.size) { await new Promise((r) => setTimeout(r, 0)); idle = 0; continue; } // a program's thread is working
     if (st === 3) { const ms = x.stat(17); if (ms >= 30 && !(x.linux_timer_ms?.() >= 0) && ++idle > 20) return 3; await new Promise((r) => setTimeout(r, Math.min(ms, 30) || 2)); } else idle = 0;
   }
   return 0;
@@ -233,36 +269,6 @@ if (process.env.INK_NET) { // item 62: real network through the wisp tunnels, li
       else if (op === 3) { got.delete(id); wsSend(packet(4, id, new Uint8Array([2]))); }
     }
   };
-  // item 76: WebAssembly programs here run in worker threads (tests/wasi-thread.mjs), like the page's
-  // wasi-worker.js: the engine and the WebSocket keep running while a program waits on the network
-  const threads = new Map();
-  const serveThreads = () => {
-    if (!hasWasi) return;
-    for (let pid; (pid = x.wasi_next());) {
-      const k = x.wasi_info(pid), info = new Uint8Array(mem.buffer, x.out_ptr(), k).slice();
-      const m = x.wasi_module(pid), bytes = new Uint8Array(mem.buffer, x.out_ptr(), m).slice();
-      const size = x.wasi_buf_size(), sab = new SharedArrayBuffer(256 + Math.max(size, 65536) + 8192);
-      const t = { ctl: new Int32Array(sab, 0, 16), F: new Float64Array(sab, 64, 12), data: new Uint8Array(sab, 256), busy: false };
-      t.w = new Worker(new URL('./wasi-thread.mjs', import.meta.url), { workerData: { sab, info, bytes, base: x.wasi_base(), size } });
-      t.w.on('error', (e) => console.log('  [wasi thread: ' + e.message + ']')); t.w.on('exit', () => threads.delete(pid));
-      threads.set(pid, t);
-    }
-    for (const [pid, t] of threads) {
-      const gone = () => { t.busy = false; Atomics.store(t.ctl, 0, 3); Atomics.notify(t.ctl, 0); };
-      if (!t.busy && Atomics.load(t.ctl, 0) === 1) {
-        const F = t.F, n = F[8], p = x.buffer(n); new Uint8Array(mem.buffer, p, n).set(t.data.subarray(0, n));
-        if (x.wasi_call(pid, F[0], F[1], F[2], F[3], F[4], F[5], F[6], F[7]) !== 0) { gone(); continue; }
-        t.busy = true;
-      }
-      if (!t.busy) continue;
-      const n = x.wasi_take(pid);
-      if (n === -1) continue;
-      if (n === -2) { gone(); continue; }
-      t.busy = false; t.F[9] = x.wasi_ret(); t.F[10] = n;
-      if (n > 0) t.data.set(new Uint8Array(mem.buffer, x.out_ptr(), n));
-      Atomics.store(t.ctl, 0, 2); Atomics.notify(t.ctl, 0);
-    }
-  };
   const until = async (re, maxMs, mark) => {
     const t1 = Date.now(), from = out.length;
     for (let tick = 0; Date.now() - t1 < maxMs;) {
@@ -303,6 +309,40 @@ if (process.env.INK_NET) { // item 62: real network through the wisp tunnels, li
     all.push(ok); console.log((ok ? 'PASS ' : 'FAIL ') + 'wget through wisp: ' + name + ' in ' + ((Date.now() - t1) / 1000).toFixed(1) + ' s\n' + (got1 || out.slice(-300)).slice(-500));
   }
   process.exit(all.every(Boolean) ? 0 : 1);
+}
+if (process.env.INK_SPAWN) { // item 78: processes from WebAssembly programs (host channel /dev/inksoc); with INK_WASI_THREADS=1
+  if (!hasPy) { console.log('FAIL INK_SPAWN: no tests/python.wasm'); process.exit(1); }
+  const t1 = Date.now(), from = out.length;
+  send('/root/python.wasm /root/pyproc.py; echo done-$?\n');
+  while (!/done-\d/.test(out.slice(from)) && Date.now() - t1 < 240000) await settle(5000);
+  const got1 = out.slice(from);
+  const hasJq = hasTool('jq');
+  const checks = [[/pp-start inksoc_proc/, 'subprocess.Popen is the bridge'],
+    [/sys-x86 3[\s\S]*pp system-shell 0/, 'os.system with shell syntax (x86 sh -c)'], [/pp system-codes \(0, 1\)/, 'os.system true/false statuses'],
+    [/pp check_output b'hello world\\n'/, 'check_output'], [/pp sort-input b'a\\nb\\nc\\n'/, 'run(input=, capture_output=)'],
+    [/pp rc3 3 /, 'shell=True return code'], [/pp cpe cpe 1 /, 'CalledProcessError'], [/pp fnf fnf-ok/, 'FileNotFoundError'],
+    [/pp popen-cat \(0, 'via cat\\n'\)/, 'Popen pipes, text, communicate'], [/pp merged b'err\\nout\\n'/, 'stderr=STDOUT'],
+    [/pp cwd \/tmp /, 'cwd='], [/pp env envok /, 'env='], [/pp getoutput \(2, 'go'\)/, 'getstatusoutput'], [/pp os-popen popen-ok/, 'os.popen'],
+    ...(hasJq ? [[/pp wasm-jq b'42\\n'/, 'WebAssembly child (jq) with pipes'], [/pp wasm-pipe 8 /, 'pipe of WebAssembly programs in sh']] : []),
+    [/pp wasm-python child wasi/, 'WebAssembly child (python3)'], [/pp kill \(None, -9\)/, 'poll + kill'], [/pp timeout timeout-ok/, 'TimeoutExpired'],
+    [/pp-done[\s\S]*done-0/, 'python3 ends normally']];
+  let ok = true;
+  for (const [re, name] of checks) { const k = re.test(got1); ok = ok && k; console.log((k ? 'PASS ' : 'FAIL ') + 'python3 processes: ' + name); }
+  console.log('python3 processes in ' + ((Date.now() - t1) / 1000).toFixed(1) + ' s\n' + got1.slice(-3000));
+  if (hasTool('onetrue-awk') && hasTool('lua5.4') && hasTool('findutils') && hasTool('jq')) { // the catalog's rebuilds (wasm-tools-19)
+    const t2 = Date.now(), f2 = out.length;
+    send('sh /root/procs.sh; echo done-$?\n');
+    while (!/done-\d/.test(out.slice(f2)) && Date.now() - t2 < 120000) await settle(5000);
+    const got2 = out.slice(f2);
+    for (const [re, name] of [[/awk-sys 4/, 'awk system() status'], [/awk-get piped/, 'awk "cmd" | getline'], [/\ba\r?\nz\r?\nawk-end/, 'awk print | "cmd"'],
+        [/lua-x\s+nil\s+exit\s+5/, 'lua os.execute'], [/lua-p\s+lp/, 'lua io.popen read'], [/lua-c\s+true\s+exit\s+0/, 'lua pclose status'],
+        [/fe \/tmp\/fx\/a\r?\nfe \/tmp\/fx\/b/, 'find -exec ... \;'], [/fp \/tmp\/fx\/[ab] \/tmp\/fx\/[ab]/, 'find -exec ... {} +'], [/"fj \/tmp\/fx\/a"/, 'find -exec of a WebAssembly program (jq)'],
+        [/procs-end[\s\S]*done-0/, 'script ends']]) {
+      const k = re.test(got2); ok = ok && k; console.log((k ? 'PASS ' : 'FAIL ') + 'tool processes: ' + name);
+    }
+    console.log('tool processes in ' + ((Date.now() - t2) / 1000).toFixed(1) + ' s\n' + got2.slice(-1500));
+  }
+  process.exit(ok ? 0 : 1);
 }
 await step('id -un; echo $HOME\n', /tester\s+\/home\/tester/, 'id and home');
 await step('sudo id -u\n', /Password/, 'sudo asks the password');

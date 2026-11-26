@@ -1,0 +1,39 @@
+name: Processes bench
+# Item 78 (one small comparison): python3 subprocess and find -exec from WebAssembly programs (host channel
+# /dev/inksoc) vs x86 python3 / busybox find, in Chromium, 1 size, 1 rep. Light: no big files.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['.github/workflows/procs-bench.yml', 'tests/bench/procs-bench*']
+permissions:
+  contents: read
+concurrency:
+  group: procs-bench-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Inputs (x86 python3, the catalog's python3 and find WebAssembly)
+        run: |
+          mkdir -p out
+          timeout 300 docker run --rm -v "$PWD":/w -w /w alpine:3.21 sh -c '
+            mkdir /x && apk add -q --root /x --initdb --allow-untrusted --no-scripts \
+              --repositories-file /etc/apk/repositories python3 &&
+            tar -C /x -cf out/zpkgs.tar usr/bin usr/lib lib etc/ssl 2>/dev/null'
+          mkdir -p $RUNNER_TEMP/pw/usr/local/bin
+          for n in python3:$RUNNER_TEMP/pw/usr/local/bin/python3 findutils:out/find.wasm; do
+            e=$(awk -F '\t' -v n="${n%%:*}" '$1 == n' overlay/etc/inksoc/wasm-catalog); f=${n#*:}
+            timeout 300 curl -fsSL --retry 3 -o "$f" "$(printf '%s' "$e" | cut -f2)"
+            echo "$(printf '%s' "$e" | cut -f3)  $f" | sha256sum -c
+          done
+          tar --format=ustar -C $RUNNER_TEMP/pw -cf out/zpywasm.tar usr
+          ls -la out
+      - name: Playwright (Chromium)
+        run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium'
+      - name: Bench
+        run: timeout 600 node tests/bench/procs-bench.mjs

@@ -138,7 +138,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   if (network in NETS) net = network;
   mark('run');
   wasiSw = !!sw; wasiOpen(Math.random().toString(36).slice(2));
-  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=15'); } catch (e) { wasiInline = null; } }
+  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=16'); } catch (e) { wasiInline = null; } }
   const swap = await openSwap(), ram = new Map();
   const page = (p) => new Uint8Array(mem.buffer, p, 4096);
   const env = {
@@ -172,8 +172,8 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   };
   const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(u + ': ' + r.status); return r; });
   const [wasm, busybox, overlay, saved] = await Promise.all([
-    get('engine.wasm?v=49').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
-    get('overlay.tar?v=26').then((r) => r.arrayBuffer()), loadSaved()]);
+    get('engine.wasm?v=50').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
+    get('overlay.tar?v=27').then((r) => r.arrayBuffer()), loadSaved()]);
   mark('fetched');
   let rootfs = null;
   if (!saved) {
@@ -339,7 +339,7 @@ function wasiPump() {
       const g = x.wasi_module_gen ? x.wasi_module_gen(pid) : 0;
       const z = info.indexOf(0), key = g ? `${wasiSid}:${g}:${m}:${new TextDecoder().decode(info.subarray(0, z < 0 ? info.length : z))}` : null;
       wasiLive.add(pid);
-      postMessage({ type: 'wasi-start', pid, sid: wasiSid, info, bytes, key, base: x.wasi_base(), size: x.wasi_buf_size() }, [bytes.buffer]);
+      postMessage({ type: 'wasi-start', pid, sid: wasiSid, info, bytes, key, base: x.wasi_base(), size: x.wasi_buf_size(), spawn: !!x.wasi_spawn }, [bytes.buffer]);
     } else if (wasiInline) wasiInline.runWasi(x, pid, { serve: wasiServe });
     else { out('\r\n\x1b[2m[WebAssembly programs need a newer browser]\x1b[0m\r\n'); put(new Uint8Array(0)); x.wasi_call(pid, 231, 126, 0, 0, 0, 0, 0, 0); }
   }
