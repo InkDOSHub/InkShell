@@ -203,6 +203,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-26 | 3 | 65: WebKit RSS cresce lendo /mnt grande (travado, queimado: pedaços de 4 MB crescem +1,38 GB/GB no WebKit sem motor, mas no motor cortar em 1 MB/256 KB não deu ganho; achado: hash errado no Chromium > 2 GiB) | #94 | 3,5 |
 | 2026-11-26 | 3 | 69: hash errado do arquivo inteiro /mnt no Chromium (cota do OPFS: escrita devolvia -8 sem checagem; agora para com erro; hash 3 GB certo 2x em perfil de disco) | #104 | 2 |
 | 2026-11-26 | 3 | 76: rede no python WASM (urllib http/https) | #107 | 3,5 |
+| 2026-11-26 | 3 | 78: ponte de processos WASM (system/popen/subprocess, WASM direto) | #PR78 | 3,5 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.

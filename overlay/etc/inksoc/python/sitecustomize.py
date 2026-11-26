@@ -1,7 +1,9 @@
-# InkShell: network for the WebAssembly python3 (catalog). PYTHONPATH (/etc/profile.d/inksoc.sh) puts
-# this folder first, so site imports this file at start. It only adds an import hook: when http.client or
+# InkShell: network and processes for the WebAssembly python3 (catalog). PYTHONPATH (/etc/profile.d/inksoc.sh)
+# puts this folder first, so site imports this file at start. It only adds an import hook: when http.client or
 # urllib.request is imported, inksoc_net.py gives them connections through the terminal's network
-# helper (http:// and https://; see inksoc_net.py). Nothing else is imported here, so start stays fast.
+# helper (http:// and https://; see inksoc_net.py); when subprocess is imported, inksoc_proc.py gives it
+# processes through the host channel /dev/inksoc. os.system (and os.popen if missing) start the same way.
+# Nothing else is imported here, so start stays fast.
 # Not under /usr: the VMware python3 has its own /usr (standard library inside), which hides the real one.
 import sys
 
@@ -15,6 +17,14 @@ class _InkNetLoader:
         return f(spec) if f else None
 
     def exec_module(self, module):
+        if self._name == 'subprocess':
+            try:
+                self._ld.exec_module(module)
+            except Exception:  # a WASI build may miss select/_posixsubprocess: inksoc_proc gives it all
+                pass
+            import inksoc_proc
+            inksoc_proc.patch(self._name, module)
+            return
         self._ld.exec_module(module)
         try:
             import inksoc_net
@@ -27,7 +37,7 @@ class _InkNetLoader:
 
 
 class _InkNetHook:
-    names = ('http.client', 'urllib.request')
+    names = ('http.client', 'urllib.request', 'subprocess')
 
     def find_spec(self, name, path=None, target=None):
         if name not in self.names:
@@ -45,5 +55,19 @@ class _InkNetHook:
         return spec
 
 
+def _system(command):
+    import inksoc_proc
+    return inksoc_proc.system(command)
+
+
+def _popen(cmd, mode='r', buffering=-1):
+    import inksoc_proc
+    return inksoc_proc.popen(cmd, mode, buffering)
+
+
 if sys.platform == 'wasi' and not any(isinstance(f, _InkNetHook) for f in sys.meta_path):
     sys.meta_path.insert(0, _InkNetHook())
+    import os
+    os.system = _system
+    if not hasattr(os, 'popen'):
+        os.popen = _popen

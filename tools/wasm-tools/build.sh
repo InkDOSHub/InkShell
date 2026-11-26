@@ -144,9 +144,11 @@ b_jq() { # no oniguruma (regex builtins test/match/sub report an error), decNumb
   cp "$WORK/jq/jq" "$OUT/jq.wasm"
 }
 
-b_lua() { # Lua 5.4 interpreter (C setjmp/longjmp errors), no POSIX extras: io.popen, os.execute, os.tmpname, io.tmpfile report failure
+b_lua() { # Lua 5.4 interpreter (C setjmp/longjmp errors); io.popen and os.execute through compat's popen/system (host channel, item 78); os.tmpname, io.tmpfile report failure
   compat; dl "https://www.lua.org/ftp/lua-$LUA.tar.gz" lua
   printf '%s\n' '#include <errno.h>' '#include <setjmp.h>' '#include <string.h>' '#include <unistd.h>' 'int system(const char *);' \
+    '#define l_popen(L,c,m) (fflush(NULL), popen(c,m))' '#define l_pclose(L,file) (pclose(file))' \
+    '#define l_inspectstat(stat,what) if (((stat) & 0x7f) == 0) { stat = ((stat) >> 8) & 0xff; } else { stat = (stat) & 0x7f; what = "signal"; }' \
     '#define LUAI_THROW(L,c) longjmp((c)->b, 1)' '#define LUAI_TRY(L,c,a) if (setjmp((c)->b) == 0) { a }' '#define luai_jmpbuf jmp_buf' \
     '#define LUA_TMPNAMBUFSIZE 32' '#define lua_tmpnam(b,e) { strcpy(b, "/tmp/lua_XXXXXX"); e = -1; }' \
     '#define tmpfile() (errno = ENOSYS, (FILE *)0)' '#define lua_stdin_is_tty() isatty(0)' > "$WORK/lua/wasi.h"
@@ -214,8 +216,10 @@ b_sed() { # uutils sed 0.3.0 (MIT, Rust, wasm32-wasip1): -n -e -f -E -i -s -z, y
   cp "$WORK/uutilssed/target/wasm32-wasip1/release/sed.wasm" "$OUT/sed.wasm"
 }
 
-b_find() { # uutils findutils 0.9.1 `find` (MIT, Rust, wasm32-wasip1; its regex crate onig_sys compiles oniguruma, BSD-2-Clause, C, with wasi-sdk); no -exec/-ok (WASI has no processes)
+b_find() { # uutils findutils 0.9.1 `find` (MIT, Rust, wasm32-wasip1; its regex crate onig_sys compiles oniguruma, BSD-2-Clause, C, with wasi-sdk); -exec/-ok/-execdir through the host channel (item 78)
   fetch uutils/findutils $UFIND uutilsfind
+  # std::process has no processes on WASI: -exec runs its command through wasi.js's /dev/inksoc channel (spawn + wait)
+  grep -q inksoc_status "$WORK/uutilsfind/src/find/matchers/exec.rs" || (cd "$WORK/uutilsfind" && patch -p1 < "$here/patches/findutils/exec-wasi.patch")
   # wasi.js sets the shell folder as the working directory when the program reads its environment (environ_get); find never does before it walks,
   # so a relative path would be looked up from "/": read PWD first thing in main (the only change to upstream)
   grep -q 'var_os("PWD")' "$WORK/uutilsfind/src/find/main.rs" || sed -i 's|^fn main() {|fn main() {\n    let _ = std::env::var_os("PWD"); // InkShell/WASI: makes the host set the working directory|' "$WORK/uutilsfind/src/find/main.rs"
@@ -226,7 +230,7 @@ b_find() { # uutils findutils 0.9.1 `find` (MIT, Rust, wasm32-wasip1; its regex 
   cp "$WORK/uutilsfind/target/wasm32-wasip1/release/find.wasm" "$OUT/find.wasm"
 }
 
-b_awk() { # one-true-awk (Bell Labs, MIT-style license, C): the parser comes from bison (its output is not GPL: bison's exception), maketab runs on the build host
+b_awk() { # one-true-awk (Bell Labs, MIT-style license, C): the parser comes from bison (its output is not GPL: bison's exception), maketab runs on the build host; system() and pipes ("cmd" | getline, print | "cmd") through compat (host channel, item 78)
   compat
   dl "http://deb.debian.org/debian/pool/main/o/original-awk/original-awk_$OTAWK.orig.tar.gz" awk # Debian's copy of the upstream tarball
   (cd "$WORK/awk" && bison -d awkgram.y && gcc -O1 -w maketab.c -o maketab && ./maketab awkgram.tab.h > proctab.c)

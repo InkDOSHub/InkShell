@@ -273,7 +273,8 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     if (!argv.length || !argv[0]) return { error: 28, msg: 'argv is empty' };
     const env = Array.isArray(q.env) ? q.env.map(String) : envs, cwd = q.cwd ? String(q.cwd) : '';
     const paths = [];
-    if (argv[0].includes('/')) paths.push(argv[0]);
+    if (q.path) paths.push(String(q.path)); // "path": the program file (Popen's executable), argv[0] stays
+    else if (argv[0].includes('/')) paths.push(argv[0]);
     else for (const d of ((env.find((e) => e.startsWith('PATH=')) || 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin').slice(5)).split(':')) paths.push((d || '.') + '/' + argv[0]);
     const theirs = [0, 1, 2].map((i) => fds.get(i) ?? i), mine = [], shut = [];
     const undo = () => { for (const f of [...shut, ...mine.map((m) => m[1])]) sys(3, [f]); };
@@ -333,7 +334,7 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     return ans;
   };
   /** One request line of the host channel "/dev/inksoc" (JSON, answer = one JSON line to read back):
-   *  {"op":"spawn","argv":[...],"cwd":"/x","env":["K=V"...],"stdin"|"stdout"|"stderr":"inherit"|"pipe"|"null"|FD|"stdout"}
+   *  {"op":"spawn","argv":[...],"path":"/bin/x","cwd":"/x","env":["K=V"...],"stdin"|"stdout"|"stderr":"inherit"|"pipe"|"null"|FD|"stdout"}
    *  -> {"pid":N,"stdin":FD,...}; {"op":"wait","pid":N,"nohang":true} -> {"pid":N or 0,"status":wait status};
    *  {"op":"kill","pid":N,"sig":15} -> {"r":0}; errors {"error":WASI errno,"msg":"..."}. New ops go here. */
   const ctlCall = (line) => {

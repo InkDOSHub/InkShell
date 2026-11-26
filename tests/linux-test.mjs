@@ -60,6 +60,7 @@ const hasPy = hasWasi && fs.existsSync(pyWasm);
 const pyBytes = hasPy ? fs.readFileSync(pyWasm) : null;
 if (hasPy) add('python.wasm', pyBytes);
 if (hasPy) add('pynet.py', fs.readFileSync(new URL('./src/pynet.py', import.meta.url))); // item 76 (INK_NET_PY)
+if (hasPy) add('pyproc.py', fs.readFileSync(new URL('./src/pyproc.py', import.meta.url))); // item 78 (INK_SPAWN)
 // tools from the catalog (test.yml downloads them to tests/NAME.wasm, sha256 checked): [catalog name, file, programs]
 const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagick', 'magick', 'magick,convert,identify'], ['ffmpeg', 'ffmpeg', 'ffmpeg'], ['ffprobe', 'ffprobe', 'ffprobe'],
   ['sqlite', 'sqlite3', 'sqlite3'], ['jq', 'jq', 'jq'], ['lua5.4', 'lua', 'lua5.4,lua'], ['zip', 'zip', 'zip'], ['unzip', 'unzip', 'unzip'], ['ripgrep', 'rg', 'rg'],
@@ -307,6 +308,27 @@ if (process.env.INK_NET) { // item 62: real network through the wisp tunnels, li
     all.push(ok); console.log((ok ? 'PASS ' : 'FAIL ') + 'wget through wisp: ' + name + ' in ' + ((Date.now() - t1) / 1000).toFixed(1) + ' s\n' + (got1 || out.slice(-300)).slice(-500));
   }
   process.exit(all.every(Boolean) ? 0 : 1);
+}
+if (process.env.INK_SPAWN) { // item 78: processes from WebAssembly programs (host channel /dev/inksoc); with INK_WASI_THREADS=1
+  if (!hasPy) { console.log('FAIL INK_SPAWN: no tests/python.wasm'); process.exit(1); }
+  const t1 = Date.now(), from = out.length;
+  send('/root/python.wasm /root/pyproc.py; echo done-$?\n');
+  while (!/done-\d/.test(out.slice(from)) && Date.now() - t1 < 240000) await settle(5000);
+  const got1 = out.slice(from);
+  const hasJq = hasTool('jq');
+  const checks = [[/pp-start inksoc_proc/, 'subprocess.Popen is the bridge'],
+    [/sys-x86 3[\s\S]*pp system-shell 0/, 'os.system with shell syntax (x86 sh -c)'], [/pp system-codes \(0, 1\)/, 'os.system true/false statuses'],
+    [/pp check_output b'hello world\\n'/, 'check_output'], [/pp sort-input b'a\\nb\\nc\\n'/, 'run(input=, capture_output=)'],
+    [/pp rc3 3 /, 'shell=True return code'], [/pp cpe cpe 1 /, 'CalledProcessError'], [/pp fnf fnf-ok/, 'FileNotFoundError'],
+    [/pp popen-cat \(0, 'via cat\\n'\)/, 'Popen pipes, text, communicate'], [/pp merged b'err\\nout\\n'/, 'stderr=STDOUT'],
+    [/pp cwd \/tmp /, 'cwd='], [/pp env envok /, 'env='], [/pp getoutput \(2, 'go'\)/, 'getstatusoutput'], [/pp os-popen popen-ok/, 'os.popen'],
+    ...(hasJq ? [[/pp wasm-jq b'42\\n'/, 'WebAssembly child (jq) with pipes'], [/pp wasm-pipe 8 /, 'pipe of WebAssembly programs in sh']] : []),
+    [/pp wasm-python child wasi/, 'WebAssembly child (python3)'], [/pp kill \(None, -9\)/, 'poll + kill'], [/pp timeout timeout-ok/, 'TimeoutExpired'],
+    [/pp-done[\s\S]*done-0/, 'python3 ends normally']];
+  let ok = true;
+  for (const [re, name] of checks) { const k = re.test(got1); ok = ok && k; console.log((k ? 'PASS ' : 'FAIL ') + 'python3 processes: ' + name); }
+  console.log('python3 processes in ' + ((Date.now() - t1) / 1000).toFixed(1) + ' s\n' + got1.slice(-3000));
+  process.exit(ok ? 0 : 1);
 }
 await step('id -un; echo $HOME\n', /tester\s+\/home\/tester/, 'id and home');
 await step('sudo id -u\n', /Password/, 'sudo asks the password');
