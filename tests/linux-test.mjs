@@ -61,7 +61,8 @@ if (hasPy) add('python.wasm', pyBytes);
 // tools from the catalog (test.yml downloads them to tests/NAME.wasm, sha256 checked): [catalog name, file, programs]
 const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagick', 'magick', 'magick,convert,identify'], ['ffmpeg', 'ffmpeg', 'ffmpeg'], ['ffprobe', 'ffprobe', 'ffprobe'],
   ['sqlite', 'sqlite3', 'sqlite3'], ['jq', 'jq', 'jq'], ['lua5.4', 'lua', 'lua5.4,lua'], ['zip', 'zip', 'zip'], ['unzip', 'unzip', 'unzip'], ['ripgrep', 'rg', 'rg'],
-  ['hashtools', 'hashsum', 'sha256sum,sha1sum,sha224sum,sha384sum,sha512sum,md5sum,b2sum'], ['quickjs', 'qjs', 'qjs']]
+  ['hashtools', 'hashsum', 'sha256sum,sha1sum,sha224sum,sha384sum,sha512sum,md5sum,b2sum'], ['quickjs', 'qjs', 'qjs'],
+  ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -406,6 +407,14 @@ if (hasWasi) {
     // real cwd: no path lists the shell folder (relative names); /etc/passwd and ./etc/passwd in one command are two files
     await step("rm -rf /tmp/rq && mkdir -p /tmp/rq/etc/d && cd /tmp/rq && printf 'root:x:0\\nroot:x:0\\n' > etc/passwd && printf 'xmark\\n' > a.txt && printf 'xmark\\n' > etc/d/b.txt && rg --color never -l xmark | sort; rg --color never -c '^root:x:0' /etc/passwd ./etc/passwd; cd /tmp && rg --color never -l xmark /etc/passwd ./rq/a.txt; echo rg-same-done; cd\n",
       /^(\.\/)?a\.txt\s+^(\.\/)?etc\/d\/b\.txt\s+^\/etc\/passwd:1\s+^\.\/etc\/passwd:2\s+^\.\/rq\/a\.txt\s+^rg-same-done/m, 'ripgrep: lists the shell folder relative to it; absolute and relative paths in the same command each go to the right place');
+  }
+  if (hasTool('sed') && hasTool('findutils') && hasTool('onetrue-awk')) { // item 67: uutils sed, uutils find, one-true-awk (WebAssembly, ahead of busybox in PATH)
+    await step(`cd /tmp && printf 'a b\\nc d\\ne f\\n' > sed-in.txt && sed -E 's/(\\w) (\\w)/\\2 \\1/' sed-in.txt | busybox tr '\\n' ,; echo; sed -n 2p sed-in.txt; sed -i 's/e/E/' sed-in.txt && busybox cat sed-in.txt | busybox tr '\\n' ,; echo; printf 'x\\n' | sed 's/x/y/;s/y/z/'; sed p nofile-sed; echo sed-rc=$?; echo sed-done\n`,
+      /^b a,d c,f e,\s+^c d\s+^a b,c d,E f,\s+^z\s+.*nofile-sed.*\s+^sed-rc=[1-9]\s+^sed-done/m, 'sed: -E, -n, -i on a relative path in the shell folder, two commands, error exit code');
+    await step(`cd /tmp && printf '1,x\\n2,y\\n3,x\\n' > awk-in.csv && awk -F, '{s += $1; c[$2]++} END {print s, c["x"], length("hello"), toupper("ab")}' awk-in.csv; printf 'a b c\\n' | awk '{print $2, NF; printf "%5.2f|%d\\n", 3.14159, "12ab"}'; awk 'BEGIN { exit 3 }'; echo awk-rc=$?; echo awk-done\n`,
+      /^6 2 5 AB\s+^b 3\s+^ 3\.14\|12\s+^awk-rc=3\s+^awk-done/m, 'awk: -F, sums and arrays on a relative file, length, fields, printf, exit status');
+    await step(`cd /tmp && rm -rf ft && mkdir -p ft/a/b ft/c && touch ft/a/one.txt ft/a/b/two.txt ft/c/three.log && find ft -name '*.txt' | sort | busybox tr '\\n' ' '; echo; find ft -type d | sort | busybox tr '\\n' ' '; echo; find ft -type f | busybox wc -l; find /tmp/ft -name 'three*' ; cd ft && find . -name '*.log'; cd; echo find-done\n`,
+      /^ft\/a\/b\/two\.txt ft\/a\/one\.txt\s+^ft ft\/a ft\/a\/b ft\/c\s+^3\s+^\/tmp\/ft\/c\/three\.log\s+^\.\/c\/three\.log\s+^find-done/m, 'find: -name, -type d/f, relative and absolute paths, from inside a folder');
   }
   if (hasTool('hashtools')) { // md5sum, sha1sum, sha224/256/384/512sum, b2sum (one WebAssembly program, picked by its name)
     const abc = Buffer.from('abc');
