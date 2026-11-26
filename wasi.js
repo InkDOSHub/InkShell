@@ -56,7 +56,7 @@ export function runWasi(x, pid, opts = {}) {
     const out = n > 0 ? emem().slice(x.out_ptr(), x.out_ptr() + n) : null;
     return { r: x.wasi_ret(), out };
   }
-  return runModule({ bytes, key, args, envs, base: x.wasi_base(), size: x.wasi_buf_size(), sys, inline: true });
+  return runModule({ bytes, key, args, envs, base: x.wasi_base(), size: Math.min(x.wasi_buf_size(), opts.size || Infinity), sys, inline: true });
 }
 
 /** JS programs: a module that is only a custom section "inkshell.js" whose content names the program

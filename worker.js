@@ -115,11 +115,12 @@ function info(bytes) {
   postMessage({ type: 'info', user: u ? dec.decode(u).trim() : '', bytes });
 }
 
-async function run({ rows, cols, network, poolMb, targetMb, sw }) {
+async function run({ rows, cols, network, poolMb, targetMb, sw, rd }) {
+  if (rd > 0) CH = rd << 10;
   if (network in NETS) net = network;
   mark('run');
   wasiSw = !!sw; wasiOpen(Math.random().toString(36).slice(2));
-  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=14'); } catch (e) { wasiInline = null; } }
+  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=15'); } catch (e) { wasiInline = null; } }
   const swap = await openSwap(), ram = new Map(); dbgSwap = swap;
   const page = (p) => new Uint8Array(mem.buffer, p, 4096);
   const env = {
@@ -316,8 +317,8 @@ function wasiPump() {
       const g = x.wasi_module_gen ? x.wasi_module_gen(pid) : 0;
       const z = info.indexOf(0), key = g ? `${wasiSid}:${g}:${m}:${new TextDecoder().decode(info.subarray(0, z < 0 ? info.length : z))}` : null;
       wasiLive.add(pid);
-      postMessage({ type: 'wasi-start', pid, sid: wasiSid, info, bytes, key, base: x.wasi_base(), size: x.wasi_buf_size() }, [bytes.buffer]);
-    } else if (wasiInline) wasiInline.runWasi(x, pid, { serve: wasiServe });
+      postMessage({ type: 'wasi-start', pid, sid: wasiSid, info, bytes, key, base: x.wasi_base(), size: Math.min(x.wasi_buf_size(), CH) }, [bytes.buffer]);
+    } else if (wasiInline) wasiInline.runWasi(x, pid, { serve: wasiServe, size: CH });
     else { out('\r\n\x1b[2m[WebAssembly programs need a newer browser]\x1b[0m\r\n'); put(new Uint8Array(0)); x.wasi_call(pid, 231, 126, 0, 0, 0, 0, 0, 0); }
   }
   for (const [pid, q] of wasiWait) {
@@ -487,7 +488,7 @@ async function readAll(path) { // a big file as a Blob, read piece by piece (the
    bigger than ~512 KB (item 65: reading 4 MB pieces grew the web process by 1.4 GB per GB read, 256 KB pieces by 0.08 GB),
    so the kernel's requests (up to 4 MB) are cut here into CH-aligned pieces. `asked` holds the pieces the page was asked for and
    has not answered yet, so the kernel asking again while they arrive does not read them twice. */
-const CH = 256 << 10;
+let CH = 256 << 10; // also the largest WebAssembly read/write per call (rd=KB in the page URL changes it: tests)
 const asked = new Set();
 function chunkReqs(lines) {
   const out = [];

@@ -48,9 +48,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { browser: webkit, sw: block }
-          - { browser: chromium, sw: block }
-          - { browser: webkit, sw: allow }
+          - { browser: webkit, sw: allow, rd: 256 }
+          - { browser: webkit, sw: allow, rd: 1024 }
+          - { browser: webkit, sw: block, rd: 256 }
+          - { browser: chromium, sw: allow, rd: 256 }
+          - { browser: chromium, sw: allow, rd: 1024 }
+          - { browser: chromium, sw: block, rd: 256 }
+          - { browser: chromium, sw: block, rd: 1024 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -91,6 +95,7 @@ jobs:
         env:
           BROWSER: ${{ matrix.browser }}
           SW: ${{ matrix.sw }}
+          RD: ${{ matrix.rd }}
           FULL_BUDGET_S: ${{ inputs.full_budget_s }}
           OUT: ${{ runner.temp }}/big-mnt.md
         run: timeout 2300 node tests/bench/big-mnt.mjs
@@ -101,5 +106,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: rss-${{ matrix.browser }}-${{ matrix.sw }}
+          name: rss-${{ matrix.browser }}-${{ matrix.sw }}-${{ matrix.rd }}
           path: ${{ runner.temp }}/big-mnt.md.rss.txt

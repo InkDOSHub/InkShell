@@ -16,13 +16,14 @@ const budget = (+E.FULL_BUDGET_S || 600) * 1000;
 const srv = spawn('python3', ['-m', 'http.server', '8125'], { stdio: 'ignore' });
 await new Promise((r) => setTimeout(r, 1000));
 // RSS sampler: every process of the Playwright browser (WebKit: WebProcess, NetworkProcess, MiniBrowser; Chromium: renderer, gpu...)
-let phase = 'start'; const stats = {}; const series = [];
+let phase = 'start'; const stats = {}, procAt = {}; const series = [];
 const rssNow = () => {
-  const o = execFileSync('ps', ['-eo', 'rss=,args=']).toString(); let sum = 0, n = 0;
-  for (const l of o.split('\n')) { if (!/ms-playwright/.test(l) || /ps -eo/.test(l)) continue; sum += parseInt(l.trim(), 10) || 0; n++; }
-  return { mb: sum / 1024, n };
+  const o = execFileSync('ps', ['-eo', 'rss=,args=']).toString(); let sum = 0, n = 0; const per = [];
+  for (const l of o.split('\n')) { if (!/ms-playwright/.test(l) || /ps -eo/.test(l)) continue; const k = parseInt(l.trim(), 10) || 0; sum += k; n++; per.push([k, (l.match(/\/([A-Za-z.]*(?:Process|MiniBrowser|chrome)[A-Za-z.]*)/) || ['', '?'])[1] + (/--type=(\w+)/.test(l) ? ':' + l.match(/--type=(\w+)/)[1] : '')]); }
+  const top = per.sort((a, b) => b[0] - a[0]).slice(0, 3).map(([k, n]) => `${n} ${(k / 1024).toFixed(0)}`).join('; ');
+  return { mb: sum / 1024, n, top };
 };
-const tick = () => { const r = rssNow(); if (r.mb > RSS_GUARD) abort = true; const s = stats[phase] || (stats[phase] = { max: 0, n: 0 }); if (r.mb > s.max) s.max = r.mb; s.last = r.mb; if (s.first === undefined) s.first = r.mb; s.n++; series.push(`${Math.round(Date.now() / 1000)} ${phase} ${r.mb.toFixed(0)} ${r.n}`); };
+const tick = () => { const r = rssNow(); if (!stats[phase] || r.mb > stats[phase].max) procAt[phase] = r.top; if (r.mb > RSS_GUARD) abort = true; const s = stats[phase] || (stats[phase] = { max: 0, n: 0 }); if (r.mb > s.max) s.max = r.mb; s.last = r.mb; if (s.first === undefined) s.first = r.mb; s.n++; series.push(`${Math.round(Date.now() / 1000)} ${phase} ${r.mb.toFixed(0)} ${r.n}`); };
 const samp = setInterval(tick, 1000);
 const browser = await (br === 'chromium' ? chromium : webkit).launch();
 const ctx = await browser.newContext(sw === 'block' ? { serviceWorkers: 'block' } : {});
@@ -52,16 +53,17 @@ async function step(name, cmd, re, ms, bytes, expectOk = false, want = null) {
   if (!ok) { await send('\x03'); await p.waitForTimeout(2000); }
   const st = stats[name] || { max: 0 };
   try { await p.evaluate(() => { window.__dbg = null; w.postMessage({ type: 'dbg' }); }); await p.waitForFunction(() => window.__dbg, null, { timeout: 5000 }); const d = await p.evaluate(() => window.__dbg); console.log(`  counters: mdata ${(d.mdata / MB).toFixed(0)} MB in ${d.pieces} pieces, swap written ${(d.swapw / MB).toFixed(0)} MB, read ${(d.swapr / MB).toFixed(0)} MB, swap file ${(d.swapSize / MB).toFixed(0)} MB`); rows.dbg = d; } catch (e) { console.log('  counters: n/a (worker blocked?)'); }
-  rows.push({ name, ok, s, mbs: bytes && ok ? bytes / MB / s : null, rss: st.max, rss0: st.first, note });
+  rows.push({ top: procAt[name], name, ok, s, mbs: bytes && ok ? bytes / MB / s : null, rss: st.max, rss0: st.first, note });
   if (expectOk || want) check(ok, name + (ok ? '' : ' (not finished in ' + ms / 1000 + ' s)'));
   if (ok && !want) rows[rows.length - 1].note = '';
+  console.log(`  procs at max: ${procAt[name]}`);
   console.log(`  ${name}: ${s.toFixed(1)} s${bytes && ok ? ', ' + (bytes / MB / s).toFixed(0) + ' MB/s' : ''}, RSS max ${st.max.toFixed(0)} MB`);
   return ok;
 }
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
 try {
   phase = 'boot'; const tb = Date.now();
-  await p.goto('http://localhost:8125/index.html');
+  await p.goto('http://localhost:8125/index.html' + (E.RD ? '?rd=' + E.RD : ''));
   if (sw === 'allow') check(await p.waitForFunction(() => !!(navigator.serviceWorker && navigator.serviceWorker.controller), null, { timeout: 30000 }).then(() => true, () => false), 'service worker controls the page');
   else check(await p.evaluate(() => !swOn()), 'no service worker controls the page');
   await p.evaluate(() => { if (!w) start(); });
@@ -89,9 +91,9 @@ try {
 clearInterval(samp);
 await browser.close(); srv.kill();
 const peak = Math.max(0, ...Object.values(stats).map((s) => s.max)), b0 = (stats.boot || { max: 0 }).max;
-const md = [`### Big file in /mnt: ${br}${sw === 'allow' ? ' + service worker' : ' (no service worker)'}, file ${bigMb} MB (${(bigMb / 1024).toFixed(1)} GB)`, '',
-  '| Step | Result | Time | MB/s | RSS at start / max (MB, sum of browser processes) |', '|---|---|---|---|---|',
-  ...rows.map((r) => `| ${r.name} | ${r.note || (r.ok ? 'ok' : 'FAILED')} | ${r.s ? r.s.toFixed(1) + ' s' : '-'} | ${r.mbs ? r.mbs.toFixed(0) : '-'} | ${r.rss0 === undefined ? '' : r.rss0.toFixed(0) + ' / '}${r.rss.toFixed(0)} |`), '',
+const md = [`### Big file in /mnt: ${br} rd=${E.RD || 'default'}${sw === 'allow' ? ' + service worker' : ' (no service worker)'}, file ${bigMb} MB (${(bigMb / 1024).toFixed(1)} GB)`, '',
+  '| Step | Result | Time | MB/s | RSS at start / max (MB, sum of browser processes) | biggest processes at max |', '|---|---|---|---|---|---|',
+  ...rows.map((r) => `| ${r.name} | ${r.note || (r.ok ? 'ok' : 'FAILED')} | ${r.s ? r.s.toFixed(1) + ' s' : '-'} | ${r.mbs ? r.mbs.toFixed(0) : '-'} | ${r.rss0 === undefined ? '' : r.rss0.toFixed(0) + ' / '}${r.rss.toFixed(0)} | ${r.top || ''} |`), '',
   `Verdict (informational, the job only fails on a crash): RSS ${peak < 2 * (stats.mount || { max: 0 }).max + 1500 ? 'stays bounded' : 'GROWS (peak > 2x mount-time RSS + 1.5 GB)'}. Peak RSS ${peak.toFixed(0)} MB (boot phase: ${b0.toFixed(0)} MB). RSS is summed over processes, so shared pages count more than once.`, ''].join('\n');
 console.log(md); if (E.OUT) fs.writeFileSync(E.OUT, md);
 fs.writeFileSync((E.OUT || 'big-mnt') + '.rss.txt', series.join('\n') + '\n');
