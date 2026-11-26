@@ -12,8 +12,8 @@ on:
 permissions:
   contents: write
 env:
-  TAG: wasm-tools-28
-  PREV: "" # wasm-tools-28 holds only git (item 75): no copy from an earlier release
+  TAG: wasm-tools-29
+  PREV: "" # wasm-tools-29 holds only git (item 75): no copy from an earlier release
 concurrency:
   group: wasm-tools-${{ github.ref }}
 jobs:
@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tool: [git] # wasm-tools-28: git 2.47.1 (item 75, GPL-2.0-only, a separate catalog program; the source release goes in the release; child processes through the host channel /dev/inksoc, tools/wasm-tools/git), published alone; -27: curl (item 82, InkShell's own curl-compatible client, MIT, tools/wasm-tools/curl/curl.c; connections through the network helper inksoc-net), published alone (-26: its first build, relative -o names went to the wrong folder; not used); -25: GNU nano 8.3 over ncurses 6.5 (item 81, GPL-3.0-or-later, a separate catalog program; both source tarballs in the release); -24: Vim 9.1.1400 (item 74, Vim license, a separate catalog program; the source release goes in the release; -21 was an earlier vim build with other host imports, not used), published alone; -23: GNU grep 3.12 (item 80, GPL-3.0-or-later, a separate catalog program; the source release goes in the release), published alone; -22: qjs std.popen/os.exec (item 79: host channel /dev/inksoc, tools/wasm-tools/patches/quickjs/exec-wasi.patch), published alone; -20 (-19: same, before the shell-builtin fix): awk system()/pipes, lua os.execute/io.popen, find -exec/-ok (item 78: host channel /dev/inksoc), published alone; -18: less (item 73); -17: bc, file; earlier tools stay in their own releases (-15: bzip2, zstd; -14: xz, tar, gzip; -13: find; -12: awk; -11: sed)
+        tool: [git] # wasm-tools-29: git 2.47.1 (item 75, GPL-2.0-only, a separate catalog program; the source release goes in the release; child processes through the host channel /dev/inksoc, tools/wasm-tools/git), published alone (-28: its first build, the terminal PAGER started less; not used); -27: curl (item 82, InkShell's own curl-compatible client, MIT, tools/wasm-tools/curl/curl.c; connections through the network helper inksoc-net), published alone (-26: its first build, relative -o names went to the wrong folder; not used); -25: GNU nano 8.3 over ncurses 6.5 (item 81, GPL-3.0-or-later, a separate catalog program; both source tarballs in the release); -24: Vim 9.1.1400 (item 74, Vim license, a separate catalog program; the source release goes in the release; -21 was an earlier vim build with other host imports, not used), published alone; -23: GNU grep 3.12 (item 80, GPL-3.0-or-later, a separate catalog program; the source release goes in the release), published alone; -22: qjs std.popen/os.exec (item 79: host channel /dev/inksoc, tools/wasm-tools/patches/quickjs/exec-wasi.patch), published alone; -20 (-19: same, before the shell-builtin fix): awk system()/pipes, lua os.execute/io.popen, find -exec/-ok (item 78: host channel /dev/inksoc), published alone; -18: less (item 73); -17: bc, file; earlier tools stay in their own releases (-15: bzip2, zstd; -14: xz, tar, gzip; -13: find; -12: awk; -11: sed)
     steps:
       - uses: actions/checkout@v4
       - name: Already published?
