@@ -97,12 +97,27 @@ function pumpNet() {
 
 const yieldNow = () => new Promise((r) => { const c = new MessageChannel(); c.port1.onmessage = () => r(); c.port2.postMessage(0); });
 
+/* Item 69 counters (the page asks with {type:'dbg'}): a short or failed OPFS write used to be ignored (the page read zeros back). */
+const dbgc = { mdata: 0, pieces: 0, swapw: 0, swapr: 0, swapSize: 0, wshort: 0, wfail: 0, rshort: 0, rdErr: 0, rdRetry: 0 };
+let swapH = null;
+function dbgSend() { try { if (swapH) dbgc.swapSize = swapH.getSize(); } catch (e) {} postMessage({ type: 'dbg', d: { ...dbgc } }); }
+function swapWrite(h, b, at) { // all of b or an error (a half-written extent would come back as zeros or old bytes)
+  for (let o = 0; o < b.length;) {
+    const k = h.write(o ? b.subarray(o) : b, { at: at + o });
+    if (k < b.length - o) dbgc.wshort++;
+    if (!(k > 0)) { dbgc.wfail++; dbgSend(); throw new Error('swap write failed at ' + (at + o)); }
+    o += k; dbgc.swapw += k;
+  }
+}
+function swapRead(h, b, at) { const k = h.read(b, { at }); dbgc.swapr += k; if (k < b.length) { dbgc.rshort++; b.fill(0, k); } }
+
 /* swap file in OPFS (sync access in this worker); RAM if the browser has none */
 async function openSwap() {
   try {
     const root = await navigator.storage.getDirectory();
     const h = await (await root.getFileHandle('alpine-swap.bin', { create: true })).createSyncAccessHandle();
     h.truncate(0);
+    swapH = h;
     return h;
   } catch (e) { return null; }
 }
@@ -124,16 +139,16 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
     host_console: (p, n) => out(dec.decode(new Uint8Array(mem.buffer, p, n).slice(), { stream: true })),
     host_now_ms: () => performance.now(),
     host_epoch_ms: () => Date.now(),
-    host_swap_write: (slot, p) => { if (swap) swap.write(page(p), { at: slot * 4096 }); else ram.set(slot, page(p).slice()); },
-    host_swap_read: (slot, p) => { if (swap) swap.read(page(p), { at: slot * 4096 }); else page(p).set(ram.get(slot) || new Uint8Array(4096)); },
+    host_swap_write: (slot, p) => { if (swap) swapWrite(swap, page(p), slot * 4096); else ram.set(slot, page(p).slice()); },
+    host_swap_read: (slot, p) => { if (swap) swapRead(swap, page(p), slot * 4096); else page(p).set(ram.get(slot) || new Uint8Array(4096)); },
     // n contiguous slots in one call (64 KB extents of big Linux files); never-written ones read as zeros
     host_swap_writev: (slot, n, p) => {
       const b = new Uint8Array(mem.buffer, p, n * 4096);
-      if (swap) swap.write(b, { at: slot * 4096 }); else for (let i = 0; i < n; i++) ram.set(slot + i, b.slice(i * 4096, (i + 1) * 4096));
+      if (swap) swapWrite(swap, b, slot * 4096); else for (let i = 0; i < n; i++) ram.set(slot + i, b.slice(i * 4096, (i + 1) * 4096));
     },
     host_swap_readv: (slot, n, p) => {
       const b = new Uint8Array(mem.buffer, p, n * 4096);
-      if (swap) { const k = swap.read(b, { at: slot * 4096 }); if (k < b.length) b.fill(0, k); }
+      if (swap) swapRead(swap, b, slot * 4096);
       else for (let i = 0; i < n; i++) { const r = ram.get(slot + i); if (r) b.set(r, i * 4096); else b.fill(0, i * 4096, (i + 1) * 4096); }
     },
     wine_call: () => 0,
@@ -192,14 +207,14 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
     // a piece of a big mounted file (offset, length asked; the bytes may be fewer)
     mdata(name, off, len, data) {
       const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 17 + d.length), v = new DataView(b.buffer);
-      b.set(nm); v.setBigUint64(nm.length + 1, BigInt(off), true); v.setBigUint64(nm.length + 9, BigInt(len), true); b.set(d, nm.length + 17); put(b); x.linux_mount_data();
+      dbgc.mdata += d.byteLength; dbgc.pieces++; b.set(nm); v.setBigUint64(nm.length + 1, BigInt(off), true); v.setBigUint64(nm.length + 9, BigInt(len), true); b.set(d, nm.length + 17); put(b); x.linux_mount_data();
     },
     get(path) { put(enc.encode(path)); const n = x.linux_get_file(); return n < 0 ? null : new Uint8Array(mem.buffer, x.out_ptr(), n).slice(); },
     // a piece of a file: { size, data }, 'wait' (a mounted file still misses it: asked from the page) or null
     range(path, off, len) {
       if (!x.linux_get_range) return null;
       const nm = enc.encode(path), b = new Uint8Array(nm.length + 17), v = new DataView(b.buffer);
-      b.set(nm); v.setBigUint64(nm.length + 1, BigInt(off), true); v.setBigUint64(nm.length + 9, BigInt(len), true); put(b);
+      dbgc.mdata += d.byteLength; dbgc.pieces++; b.set(nm); v.setBigUint64(nm.length + 1, BigInt(off), true); v.setBigUint64(nm.length + 9, BigInt(len), true); put(b);
       const n = x.linux_get_range();
       if (n === -2) return 'wait';
       if (n < 8) return null;
@@ -292,7 +307,14 @@ const mfiles = new Map();
 function wasiServe() {
   const n = x.linux_mount_fetch();
   if (!n) return;
-  const rd = (f, a, b) => { try { return f ? new FileReaderSync().readAsArrayBuffer(b === undefined ? f : f.slice(a, b)) : new ArrayBuffer(0); } catch (e) { return new ArrayBuffer(0); } };
+  // a failed read (memory, the device) used to give an empty piece: its extents counted as fetched and read as zeros
+  const rd = (f, a, b) => {
+    if (!f) return new ArrayBuffer(0);
+    for (let k = 0; ; k++) {
+      try { return new FileReaderSync().readAsArrayBuffer(b === undefined ? f : f.slice(a, b)); }
+      catch (e) { if (k === 4) { dbgc.rdErr++; dbgSend(); throw e; } dbgc.rdRetry++; }
+    }
+  };
   for (const ln of lx.text(n).split('\n')) {
     const [p, off, len] = ln.split('\t');
     if (!p) continue;
@@ -330,6 +352,7 @@ onmessage = async (ev) => {
   if (d.type === 'key') { keys.push(d.data); return; }
   if (d.type === 'resize') { if (lx) lx.resize(d.rows, d.cols); return; }
   if (d.type === 'put') { if (lx) { lx.put(d.name, d.data); loaded(d.name, d.data.byteLength); } else pendingPuts.push({ name: d.name, data: d.data }); return; }
+  if (d.type === 'dbg') { dbgSend(); return; }
   if (d.type === 'mdata') { if (lx && x.linux_mount_data) { lx.mdata(d.name, d.off, d.len, d.data); loaded(d.name, (held.get(d.name) || 0) + d.len); } return; }
   if (d.type === 'mfiles') { for (const [p, f] of d.files) { if (f) mfiles.set(p, f); else mfiles.delete(p); } return; }
   if (d.type === 'mount') { if (lx) mount(d); else pendingMounts.push(d); return; }

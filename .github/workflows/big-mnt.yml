@@ -12,6 +12,7 @@ on:
       full_budget_s: { description: 'seconds the whole-file WebAssembly sha256sum may take (0 = skip it and the wc -c)', default: '600' }
       variants: { description: 'micro: comma list of variants (empty = all)', default: '' }
       mb: { description: 'micro: MB read per variant', default: '1536' }
+      only: { description: 'big: run only this browser (webkit | chromium; empty = all)', default: '' }
 permissions:
   contents: read
 concurrency:
@@ -41,17 +42,13 @@ jobs:
         if: always()
         run: cat $RUNNER_TEMP/micro.md >> $GITHUB_STEP_SUMMARY || true
   big:
-    if: ${{ inputs.which == 'big' || inputs.which == 'both' || inputs.which == '' }}
+    if: ${{ (inputs.which == 'big' || inputs.which == 'both' || inputs.which == '') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { browser: webkit, sw: allow, rd: 1024 }
-          - { browser: webkit, sw: block, rd: 1024 }
-          - { browser: chromium, sw: allow, rd: 1024 }
-          - { browser: chromium, sw: block, rd: 1024 }
+        include: ${{ fromJSON(inputs.only == 'chromium' && '[{"browser":"chromium","sw":"allow","rd":1024},{"browser":"chromium","sw":"block","rd":1024}]' || inputs.only == 'webkit' && '[{"browser":"webkit","sw":"allow","rd":1024},{"browser":"webkit","sw":"block","rd":1024}]' || '[{"browser":"webkit","sw":"allow","rd":1024},{"browser":"webkit","sw":"block","rd":1024},{"browser":"chromium","sw":"allow","rd":1024},{"browser":"chromium","sw":"block","rd":1024}]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
