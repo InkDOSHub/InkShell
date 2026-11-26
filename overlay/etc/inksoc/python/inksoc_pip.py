@@ -33,6 +33,28 @@ def _pip(mod):
                  ('SO_KEEPALIVE', 9), ('SHUT_RD', 0)):
         if not hasattr(socket, k):
             setattr(socket, k, v)
+    if not hasattr(os, 'getuid'):  # platformdirs does "from os import getuid"; WASI has no users
+        os.getuid = lambda: 0 if os.environ.get('HOME') == '/root' else 1000
+    try:
+        import mmap  # noqa: F401
+    except ImportError:  # CPython for WASI has no mmap; rich and CacheControl import it (pip never maps a file here)
+        sys.modules['mmap'] = _mmap_stub()
+
+
+def _mmap_stub():
+    import errno
+    import types
+    m = types.ModuleType('mmap', 'stub: no mmap in WASI (InkShell inksoc_pip.py)')
+
+    class mmap:
+        def __init__(self, *a, **kw):
+            raise OSError(errno.ENOSYS, 'mmap is not available in WASI')
+
+    m.mmap = mmap
+    m.error = OSError
+    m.ACCESS_DEFAULT, m.ACCESS_READ, m.ACCESS_WRITE, m.ACCESS_COPY = 0, 1, 2, 3
+    m.PAGESIZE = m.ALLOCATIONGRANULARITY = 65536
+    return m
 
 
 def _no_tls_warning(mod):  # pip._internal.models.search_scope: https works (the helper does TLS)
