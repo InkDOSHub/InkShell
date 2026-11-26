@@ -197,7 +197,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-26 | 3 | 68: tar/gzip/xz em WASM | #93 | 2 |
 | 2026-11-26 | 3 | 70: bzip2/zstd em WASM (bzip2 -c 5,2x/6,3x, bunzip2 2,3x/2,7x; zstd -dc 216 ms/64 MB) | #96 | 1 |
 | 2026-11-26 | 3 | 65: WebKit RSS cresce lendo /mnt grande (travado, queimado: pedaços de 4 MB crescem +1,38 GB/GB no WebKit sem motor, mas no motor cortar em 1 MB/256 KB não deu ganho; achado: hash errado no Chromium > 2 GiB) | #94 | 3,5 |
-| 2026-11-26 | 3 | 69: hash errado do arquivo inteiro /mnt no Chromium (cota do OPFS: escrita devolvia -8 sem checagem; agora para com erro; hash 3 GB certo 2x em perfil de disco) | #97 | 2 |
+| 2026-11-26 | 3 | 69: hash errado do arquivo inteiro /mnt no Chromium (cota do OPFS: escrita devolvia -8 sem checagem; agora para com erro; hash 3 GB certo 2x em perfil de disco) | #104 | 2 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
