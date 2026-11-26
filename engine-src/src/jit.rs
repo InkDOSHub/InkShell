@@ -55,6 +55,22 @@ fn stack_on() -> bool {
     STACK.load(core::sync::atomic::Ordering::Relaxed)
 }
 
+/// jitprobe build only (item 63, measurement): A/B bits that emit one part of the block code twice,
+/// so the time difference prices that part: 1 register write-back (flush), 2 register reload from
+/// Cpu, 4 lazy-flag stores, 8 rip/icount stores at exits, 16 TLB check of plain loads/stores,
+/// 32 budget check at jumps back. 0 (default) = the same code as the default build.
+#[cfg(feature = "jitprobe")]
+static AB: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "jitprobe")]
+#[no_mangle]
+pub extern "C" fn set_jit_ab(m: u32) {
+    AB.store(m, core::sync::atomic::Ordering::Relaxed);
+}
+#[cfg(feature = "jitprobe")]
+fn ab(bit: u32) -> bool {
+    AB.load(core::sync::atomic::Ordering::Relaxed) & bit != 0
+}
+
 static HOT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(500);
 /// Visits before a block is compiled (default 500, item 52: best of HOT {40..2000} x region {16,32,64} in Chromium and WebKit). Run-time settable in every build (item 48 sweeps
 /// it in Chromium and WebKit; item 46's jitprobe build uses it too).
@@ -782,6 +798,15 @@ impl G {
 
     fn ensure(&mut self, r: u8) {
         if self.valid & (1 << r) == 0 {
+            #[cfg(feature = "jitprobe")]
+            if ab(2) {
+                self.i32c(0);
+                let a = self.reg_addr(r);
+                self.mem(I64LOAD, 3, a);
+                self.rsp_reload = true;
+                self.set(R0 + r as u32);
+                self.rsp_reload = false;
+            }
             self.i32c(0);
             let a = self.reg_addr(r);
             self.mem(I64LOAD, 3, a);
@@ -952,6 +977,11 @@ impl G {
             return;
         }
         self.tlb_check(a, size / 8, false);
+        #[cfg(feature = "jitprobe")]
+        if ab(16) {
+            self.tlb_check(a, size / 8, false);
+            self.b(I32AND);
+        }
         #[cfg(feature = "ab_tlb")]
         {
             self.tlb_check(a, size / 8, false);
@@ -1028,6 +1058,11 @@ impl G {
             return;
         }
         self.tlb_check(a, size / 8, true);
+        #[cfg(feature = "jitprobe")]
+        if ab(16) {
+            self.tlb_check(a, size / 8, true);
+            self.b(I32AND);
+        }
         #[cfg(feature = "ab_tlb")]
         {
             self.tlb_check(a, size / 8, true);
@@ -1311,6 +1346,10 @@ impl G {
     /// Writes a known producer to the cpu struct (lazy flags) and forgets it.
     fn spill_flags(&mut self) {
         if let Prod::Known { op, size, a, b, r, cf } = self.prod {
+            #[cfg(feature = "jitprobe")]
+            if ab(4) {
+                self.store_lazy(op, size, a, b, r, cf);
+            }
             self.store_lazy(op, size, a, b, r, cf);
             self.prod = Prod::Unknown;
         }
@@ -1346,6 +1385,10 @@ impl G {
     /// Lazy-flag stores for an exit, without changing the compile state.
     fn exit_flags(&mut self) {
         if let Prod::Known { op, size, a, b, r, cf } = self.prod {
+            #[cfg(feature = "jitprobe")]
+            if ab(4) {
+                self.store_lazy(op, size, a, b, r, cf);
+            }
             self.store_lazy(op, size, a, b, r, cf);
         }
     }
@@ -1437,6 +1480,10 @@ impl G {
     fn flush(&mut self) {
         #[cfg(feature = "ab_flush")]
         self.flush_once();
+        #[cfg(feature = "jitprobe")]
+        if ab(1) {
+            self.flush_once();
+        }
         self.flush_once();
     }
     fn flush_once(&mut self) {
@@ -1452,6 +1499,14 @@ impl G {
     fn add_icount(&mut self, n: u32) {
         let a = self.cpu + off!(icount);
         if self.lic {
+            #[cfg(feature = "jitprobe")]
+            if ab(8) {
+                self.st_base();
+                self.get(L_IC);
+                self.i64c(n as u64);
+                self.b(I64ADD);
+                self.mem(I64STORE, 3, a);
+            }
             self.st_base();
             self.get(L_IC);
             self.i64c(n as u64);
@@ -1467,6 +1522,12 @@ impl G {
     }
     fn set_rip_const(&mut self, rip: u64) {
         let a = self.cpu + off!(rip);
+        #[cfg(feature = "jitprobe")]
+        if ab(8) {
+            self.st_base();
+            self.i64c(rip);
+            self.mem(I64STORE, 3, a);
+        }
         self.st_base();
         self.i64c(rip);
         self.mem(I64STORE, 3, a);
@@ -1589,6 +1650,13 @@ impl G {
             self.tee(L_IC);
             self.cpu_ld64(off!(jit_limit));
             self.b(I64GEU);
+            #[cfg(feature = "jitprobe")]
+            if ab(32) {
+                self.get(L_IC);
+                self.cpu_ld64(off!(jit_limit));
+                self.b(I64GEU);
+                self.b(I32OR);
+            }
             self.if_hint(VOID, false);
             self.cnt(9);
             if !need {
@@ -3860,6 +3928,8 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
         g.prod = Prod::Unknown;
         g.z.clear();
         g.ntmp = FIRST_TMP;
+        #[cfg(feature = "jitprobe")]
+        probe::mark(g.heads[j], g.c.len() as u32, u32::MAX);
         emit_block(&mut g, b);
         g.max_tmp = g.max_tmp.max(g.ntmp);
     }
@@ -3995,6 +4065,8 @@ fn emit_block(g: &mut G, b: Block) {
             cut = true;
             break;
         }
+        #[cfg(feature = "jitprobe")]
+        probe::mark(i.rip, g.c.len() as u32, i.op);
         // straight-line code from here on (conditional jumps only leave): the check covers the rest
         if let (Some((first, lo, hi)), Some(d)) = (win, g.rsp_d) {
             if k == first {
@@ -4079,6 +4151,10 @@ fn emit_block(g: &mut G, b: Block) {
             (g.ntmp, g.valid, g.dirty, g.prod) = (snap.1, snap.2, snap.3, snap.4);
             g.fallback(i, n);
         }
+    }
+    #[cfg(feature = "jitprobe")]
+    if !done_all {
+        probe::mark(end_rip.unwrap_or(pc), g.c.len() as u32, u32::MAX - 1);
     }
     if !done_all {
         let n = list.iter().take_while(|i| Some(i.rip) != end_rip).count() as u32;
@@ -4271,8 +4347,64 @@ pub mod probe {
     static mut HEADS: Vec<u64> = Vec::new();
     static mut INS: u32 = 0;
     static mut TR_MS: f64 = 0.0;
+    // item 63: (guest rip, code position in the function body after its locals, opcode) at each
+    // instruction start; opcode u32::MAX = block head, u32::MAX - 1 = fall-through jump at a block end
+    static mut MARKS: Vec<(u64, u32, u32)> = Vec::new();
+    pub fn mark(rip: u64, pos: u32, op: u32) {
+        unsafe { (&mut *core::ptr::addr_of_mut!(MARKS)).push((rip, pos, op)) }
+    }
+    /// field 0 rip, 1 code position, 2 opcode of mark i of the region being handed to host_jit
+    #[no_mangle]
+    pub extern "C" fn jit_probe_mark(i: u32, f: u32) -> f64 {
+        let m = unsafe { (&*core::ptr::addr_of!(MARKS)).get(i as usize).copied().unwrap_or((0, 0, 0)) };
+        match f {
+            0 => m.0 as f64,
+            1 => m.1 as f64,
+            _ => m.2 as f64,
+        }
+    }
+    /// Where the JIT code's absolute addresses point (item 63): 0 Cpu address, 1 size of Cpu,
+    /// 2 TLB address, 3 TLB bytes, then offsets in Cpu of 4 regs, 5 rip, 6 icount, 7 jit_limit,
+    /// 8 jit_l1, 9 lz_op, 10 lz_size, 11 lz_cf, 12 lz_a, 13 lz_b, 14 lz_r, 15 cf, 16 zf, 17 sf,
+    /// 18 of, 19 pf, 20 df, 21 xmm, 22 xs
+    #[no_mangle]
+    pub extern "C" fn jit_probe_layout(i: u32) -> f64 {
+        macro_rules! o {
+            ($f:ident) => {
+                core::mem::offset_of!(crate::cpu::Cpu, $f) as f64
+            };
+        }
+        let e = crate::eng();
+        match i {
+            0 => &e.cpu as *const _ as u32 as f64,
+            1 => core::mem::size_of::<crate::cpu::Cpu>() as f64,
+            2 => e.mmu.tlb_addr() as f64,
+            3 => ((crate::mmu::Mmu::TLB_MASK as u64 + 1) * 16) as f64,
+            4 => o!(regs),
+            5 => o!(rip),
+            6 => o!(icount),
+            7 => o!(jit_limit),
+            8 => o!(jit_l1),
+            9 => o!(lz_op),
+            10 => o!(lz_size),
+            11 => o!(lz_cf),
+            12 => o!(lz_a),
+            13 => o!(lz_b),
+            14 => o!(lz_r),
+            15 => o!(cf),
+            16 => o!(zf),
+            17 => o!(sf),
+            18 => o!(of),
+            19 => o!(pf),
+            20 => o!(df),
+            21 => o!(xmm),
+            22 => o!(xs),
+            _ => -1.0,
+        }
+    }
     pub fn region(heads: &[u64], ins: usize) {
         unsafe {
+            (&mut *core::ptr::addr_of_mut!(MARKS)).clear();
             let h = &mut *core::ptr::addr_of_mut!(HEADS);
             h.clear();
             h.extend_from_slice(heads);
@@ -4289,6 +4421,7 @@ pub mod probe {
             match i {
                 0 => (&*core::ptr::addr_of!(HEADS)).len() as f64,
                 1 => INS as f64,
+                3 => (&*core::ptr::addr_of!(MARKS)).len() as f64,
                 _ => TR_MS,
             }
         }
