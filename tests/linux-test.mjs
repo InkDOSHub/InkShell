@@ -63,7 +63,8 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   ['sqlite', 'sqlite3', 'sqlite3'], ['jq', 'jq', 'jq'], ['lua5.4', 'lua', 'lua5.4,lua'], ['zip', 'zip', 'zip'], ['unzip', 'unzip', 'unzip'], ['ripgrep', 'rg', 'rg'],
   ['hashtools', 'hashsum', 'sha256sum,sha1sum,sha224sum,sha384sum,sha512sum,md5sum,b2sum'], ['quickjs', 'qjs', 'qjs'],
   ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
-  ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat']]
+  ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat'],
+  ['bzip2', 'bzip2', 'bzip2,bunzip2,bzcat'], ['zstd', 'zstd', 'zstd,unzstd,zstdcat']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -439,6 +440,18 @@ if (hasWasi) {
     await step(`cd /tmp/tr1 && tar -czf t.tgz src && busybox tar -tzf t.tgz | busybox wc -l; tar -cJf t.txz src && tar -tJf t.txz | busybox wc -l; busybox mkdir y1 y2 y3 y4 && tar -xzf t.tgz -C y1 && busybox diff -r src y1/src && echo same-z; tar -xJf t.txz -C y2 && busybox diff -r src y2/src && echo same-J; busybox cat t.tar | tar -xf - -C y3 && busybox diff -r src y3/src && echo same-stdin; tar -cf - -C src a | busybox tar -xf - -C y4 && busybox cat y4/a/one.txt; tar -xf t.tar -C y4 --strip-components=1 src/c; busybox ls y4 | busybox tr '\\n' ' '; echo; tar -tf nofile-tar >/dev/null 2>&1; echo tar-rc=$?; echo junk > j.tar; tar -tf j.tar >/dev/null 2>&1; echo tar-bad-rc=$?; echo tar2-done\n`,
       lines('8', '8', 'same-z', 'same-J', 'same-stdin', 'hello', 'a c ', 'tar-rc=1', 'tar-bad-rc=1', 'tar2-done'),
       'tar: -z and -J in the process, busybox reads them back, stdin and stdout, -C, --strip-components, a missing or non-tar file exits 1');
+  }
+  if (hasTool('bzip2') && hasTool('zstd')) { // item 70: bzip2 (libbz2) and zstd (libzstd), WebAssembly, ahead of busybox in PATH; busybox bzip2 is the other side of the round trips (it has no zstd)
+    const seq = (n) => { let t = ''; for (let i = 1; i <= n; i++) t += i + '\n'; return t; };
+    const md5 = (t) => crypto.createHash('md5').update(t).digest('hex');
+    const E = (l) => (l instanceof RegExp ? l.source : l.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&'));
+    const lines = (...ls) => new RegExp(ls.map(E).join('\\s+^'), 'm');
+    await step(`for c in bzip2 bunzip2 bzcat zstd unzstd zstdcat; do command -v $c; done | busybox tr '\\n' ' '; echo; cd /tmp && rm -rf bz1 && mkdir bz1 && cd bz1 && busybox seq 1 50000 > a.txt && busybox cp a.txt b.txt && bzip2 a.txt && busybox ls a.txt* | busybox tr '\\n' ' '; echo; bzip2 -t a.txt.bz2 && echo t-ok; busybox bunzip2 -c a.txt.bz2 | busybox md5sum | busybox cut -c1-32; bunzip2 -c a.txt.bz2 | busybox md5sum | busybox cut -c1-32; bzcat a.txt.bz2 | busybox wc -l; bzip2 -k b.txt && busybox ls b.txt* | busybox tr '\\n' ' '; echo; busybox bzip2 -c b.txt | bunzip2 | busybox md5sum | busybox cut -c1-32; bzip2 -c b.txt | busybox bunzip2 | busybox wc -l; echo notbz > n.bz2; bunzip2 n.bz2 2>/dev/null; echo bz-bad-rc=$?; busybox head -c 100 b.txt.bz2 | bzcat 2>/dev/null > /dev/null; echo bz-trunc-rc=$?; echo bz-done\n`,
+      lines('/usr/local/bin/bzip2 /usr/local/bin/bunzip2 /usr/local/bin/bzcat /usr/local/bin/zstd /usr/local/bin/unzstd /usr/local/bin/zstdcat ', 'a.txt.bz2 ', 't-ok', md5(seq(50000)), md5(seq(50000)), '50000', 'b.txt b.txt.bz2 ', md5(seq(50000)), '50000', 'bz-bad-rc=2', 'bz-trunc-rc=2', 'bz-done'),
+      'bzip2: compress, -t, busybox reads our .bz2 and we read busybox\'s, bunzip2, bzcat, -k, pipe round trip; the links are in /usr/local/bin before busybox; bad and truncated input fail');
+    await step(`cd /tmp && rm -rf zs1 && mkdir zs1 && cd zs1 && busybox seq 1 100000 > a.txt && busybox cp a.txt b.txt && zstd -q a.txt && busybox ls a.txt* | busybox tr '\\n' ' '; echo; zstd -tq a.txt.zst && echo zt-ok; zstd -dc a.txt.zst | busybox md5sum | busybox cut -c1-32; unzstd -c a.txt.zst | busybox wc -l; zstdcat a.txt.zst | busybox head -2 | busybox tr '\\n' ,; echo; zstd -q -1 -c b.txt | zstd -dc | busybox md5sum | busybox cut -c1-32; zstd -q -19 -c b.txt | unzstd | busybox wc -l; busybox cp b.txt c.txt && zstd -q --rm c.txt && unzstd -q --rm c.txt.zst && busybox cmp b.txt c.txt && echo unzstd-same; echo junk > j.zst; zstd -tq j.zst 2>/dev/null; echo zst-bad-rc=$?; zstd -dc nofile-zst 2>/dev/null; echo zst-nofile-rc=$?; echo zst-done\n`,
+      lines('a.txt a.txt.zst ', 'zt-ok', md5(seq(100000)), '100000', '1,2,', md5(seq(100000)), '100000', 'unzstd-same', 'zst-bad-rc=1', 'zst-nofile-rc=1', 'zst-done'),
+      'zstd: compress (source removed), -t, -d, unzstd, zstdcat, levels 1 and 19, --rm round trip, bad and missing input exit 1');
   }
   if (hasTool('hashtools')) { // md5sum, sha1sum, sha224/256/384/512sum, b2sum (one WebAssembly program, picked by its name)
     const abc = Buffer.from('abc');
