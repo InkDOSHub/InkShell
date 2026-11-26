@@ -1,11 +1,11 @@
 #!/bin/sh
 # Builds WebAssembly (WASI preview1) command-line tools for the catalog (apk add) from upstream sources.
-# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs
+# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk
 # env: WASI_SDK (wasi-sdk-33 or later: C++ exceptions), WORK (sources, build dirs), OUT (the .wasm files)
 # CI: .github/workflows/wasm-tools.yml builds them and publishes a GitHub release; the catalog points at it.
 # No GPL: ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
 # 7-Zip without the unRAR code (LGPL-2.1+ and BSD-3-Clause), qpdf (Apache-2.0), ImageMagick (its own Apache-style license),
-# SQLite (public domain), jq (MIT), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense), hashsum (InkShell's own code, MIT), uutils coreutils (MIT), QuickJS-ng (MIT).
+# SQLite (public domain), jq (MIT), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense), hashsum (InkShell's own code, MIT), uutils coreutils (MIT), QuickJS-ng (MIT), uutils sed (MIT), uutils findutils find (MIT; oniguruma BSD-2-Clause inside), one-true-awk (MIT-style Bell Labs license).
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 : "${WASI_SDK:=/opt/wasi-sdk}" "${WORK:=$PWD/wasm-tools-work}" "${OUT:=$PWD/wasm-tools-out}"
@@ -26,7 +26,7 @@ CWDL="-Wl,--undefined=chdir"
 STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
-SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0
+SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=20240728
 
 fetch() { # github repo, tag, dir name: shallow clone once into $WORK/dir; a source tarball goes next to the binaries (LGPL)
   [ -d "$WORK/$3" ] && return 0
@@ -205,6 +205,37 @@ b_qjs() { # QuickJS-ng (MIT) `qjs`: JavaScript (ES2023+, modules, std/os libs, R
     -o "$OUT/qjs.wasm" $EMUL $STACK -lm)
 }
 
+b_sed() { # uutils sed 0.3.0 (MIT, Rust, wasm32-wasip1): -n -e -f -E -i -s -z, y///, hold space, w files; one thread (WASI has none)
+  fetch uutils/sed $USED uutilssed
+  rustup target add wasm32-wasip1
+  (cd "$WORK/uutilssed" && env -u CC -u CXX -u AR -u RANLIB -u NM -u STRIP CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=true \
+    CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS="-C link-arg=--undefined=chdir" \
+    cargo build --release --locked --target wasm32-wasip1 --bin sed)
+  cp "$WORK/uutilssed/target/wasm32-wasip1/release/sed.wasm" "$OUT/sed.wasm"
+}
+
+b_find() { # uutils findutils 0.9.1 `find` (MIT, Rust, wasm32-wasip1; its regex crate onig_sys compiles oniguruma, BSD-2-Clause, C, with wasi-sdk); no -exec/-ok (WASI has no processes)
+  fetch uutils/findutils $UFIND uutilsfind
+  rustup target add wasm32-wasip1
+  (cd "$WORK/uutilsfind" && env CC_wasm32_wasip1="$CC" AR_wasm32_wasip1="$AR" CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=true \
+    CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS="-C link-arg=--undefined=chdir" \
+    cargo build --release --locked --target wasm32-wasip1 --bin find)
+  cp "$WORK/uutilsfind/target/wasm32-wasip1/release/find.wasm" "$OUT/find.wasm"
+}
+
+b_awk() { # one-true-awk (Bell Labs, MIT-style license, C): the parser comes from bison (its output is not GPL: bison's exception), maketab runs on the build host
+  compat
+  if [ ! -d "$WORK/awk" ]; then
+    git -c advice.detachedHead=false clone -q --depth 1 --branch "$OTAWK" https://github.com/onetrue-awk/awk.git "$WORK/awk" ||
+      git clone -q --depth 1 https://github.com/onetrue-awk/awk.git "$WORK/awk"
+    git -C "$WORK/awk" rev-parse HEAD; git -C "$WORK/awk" archive --prefix="awk-$OTAWK/" -o "$OUT/src-awk-$OTAWK.tar.gz" HEAD
+  fi
+  (cd "$WORK/awk" && bison -y -d awkgram.y && cp y.tab.c ytab.c && cp y.tab.h ytab.h && gcc -O1 -w maketab.c -o maketab && ./maketab ytab.h > proctab.c)
+  printf '%s\n' 'int system(const char *);' > "$WORK/awk/wasi.h"
+  (cd "$WORK/awk" && $CC -O2 -w $EMU -I"$P/compat" -include compat.h -include wasi.h -Wno-implicit-function-declaration \
+    ytab.c b.c lex.c lib.c main.c parse.c proctab.c run.c tran.c -o "$OUT/awk.wasm" -L"$P/lib" -lcompat $EMUL $STACK -lm)
+}
+
 # b_ prefix: functions named zip, unzip... would hide those commands
-for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
+for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
 ls -l "$OUT"

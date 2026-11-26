@@ -12,8 +12,8 @@ on:
 permissions:
   contents: write
 env:
-  TAG: wasm-tools-10
-  PREV: wasm-tools-9
+  TAG: wasm-tools-11
+  PREV: wasm-tools-10
 concurrency:
   group: wasm-tools-${{ github.ref }}
 jobs:
@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tool: [qjs] # wasm-tools-10: QuickJS-ng (item 57); the other tools are copied from $PREV (-9: coreutils; -8 stayed a draft after a GitHub 504)
+        tool: [sed, find, awk] # wasm-tools-11: sed, find, awk (item 67); the other tools are copied from $PREV (-10: qjs; -9: coreutils)
     steps:
       - uses: actions/checkout@v4
       - name: Already published?
@@ -35,7 +35,7 @@ jobs:
         if: steps.rel.outputs.done != '1'
         run: |
           curl -fsSL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-linux.tar.gz | tar -xz -C $RUNNER_TEMP
-          sudo apt-get install -y -qq ninja-build >/dev/null
+          sudo apt-get install -y -qq ninja-build bison >/dev/null
       - name: Build ${{ matrix.tool }}
         if: steps.rel.outputs.done != '1'
         run: |
@@ -69,4 +69,4 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then echo "$TAG already published"; gh release view "$TAG"; exit 0; fi
           gh release download "$PREV" -D out --skip-existing && rm -f out/SHA256SUMS
           cd out && ls -l && sha256sum * > SHA256SUMS
-          gh release create "$TAG" --target "$GITHUB_SHA" --title "WebAssembly tools ($TAG)" --notes "WASI (wasm32-wasip1) builds for the InkShell catalog (apk add), made by .github/workflows/wasm-tools.yml from tools/wasm-tools/build.sh at $GITHUB_SHA. No GPL code: ffmpeg is LGPL-2.1+ (no --enable-gpl, no external libraries), 7-Zip LGPL-2.1+/BSD-3-Clause without unRAR, qpdf Apache-2.0, ImageMagick under the ImageMagick license (with libpng, libjpeg-turbo, zlib), SQLite public domain, jq MIT, Lua MIT, Info-ZIP zip/unzip under the Info-ZIP license (unzip with the Debian 6.0-28 security patches, src-unzip-6.0-debian-patches.tar.gz), ripgrep MIT/Unlicense, hashsum (md5sum, sha*sum, b2sum; InkShell's own code) MIT, uutils coreutils 0.8.0 (multicall: ls, cat, cp, sort, wc...) MIT with MIT/Apache-2.0/Unicode dependencies (the crate that offers GPL-2.0 as an alternative is used under Apache-2.0), QuickJS-ng (qjs) MIT. Only qjs is built in $TAG; the other tools are copied from $PREV unchanged. Every tool is linked with the wasi-libc working-directory support (chdir/getcwd: relative paths follow the shell folder); a tool whose build failed is copied from $PREV. The src-*.tar.gz files are the exact sources used." *
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "WebAssembly tools ($TAG)" --notes "WASI (wasm32-wasip1) builds for the InkShell catalog (apk add), made by .github/workflows/wasm-tools.yml from tools/wasm-tools/build.sh at $GITHUB_SHA. No GPL code: ffmpeg is LGPL-2.1+ (no --enable-gpl, no external libraries), 7-Zip LGPL-2.1+/BSD-3-Clause without unRAR, qpdf Apache-2.0, ImageMagick under the ImageMagick license (with libpng, libjpeg-turbo, zlib), SQLite public domain, jq MIT, Lua MIT, Info-ZIP zip/unzip under the Info-ZIP license (unzip with the Debian 6.0-28 security patches, src-unzip-6.0-debian-patches.tar.gz), ripgrep MIT/Unlicense, hashsum (md5sum, sha*sum, b2sum; InkShell's own code) MIT, uutils coreutils 0.8.0 (multicall: ls, cat, cp, sort, wc...) MIT with MIT/Apache-2.0/Unicode dependencies (the crate that offers GPL-2.0 as an alternative is used under Apache-2.0), QuickJS-ng (qjs) MIT, uutils sed 0.3.0 MIT, uutils findutils 0.9.1 (find) MIT with oniguruma BSD-2-Clause, one-true-awk (Bell Labs, MIT-style license). Only sed, find and awk are built in $TAG; the other tools are copied from $PREV unchanged. Every tool is linked with the wasi-libc working-directory support (chdir/getcwd: relative paths follow the shell folder); a tool whose build failed is copied from $PREV. The src-*.tar.gz files are the exact sources used." *
