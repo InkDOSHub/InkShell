@@ -115,7 +115,7 @@ if (navigator.serviceWorker) {
 }
 function wasiEnd(pid) { const b = wasiWorkers.get(pid); if (b) { b.terminate(); wasiWorkers.delete(pid); } }
 function wasiStart(m) {
-  const b = new Worker('wasi-worker.js?v=70', { type: 'module' });
+  const b = new Worker('wasi-worker.js?v=71', { type: 'module' });
   wasiWorkers.set(m.pid, b);
   b.onmessage = (ev) => {
     if (ev.data.type === 'done') wasiEnd(m.pid);

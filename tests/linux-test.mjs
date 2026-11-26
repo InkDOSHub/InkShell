@@ -65,7 +65,7 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
   ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat'],
   ['bzip2', 'bzip2', 'bzip2,bunzip2,bzcat'], ['zstd', 'zstd', 'zstd,unzstd,zstdcat'],
-  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file']]
+  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -460,6 +460,14 @@ if (hasWasi) {
     await step(`for c in bc dc; do command -v $c; done | busybox tr '\\n' ' '; echo; echo 'scale=50; 4*a(1)' | bc -l; echo 2^100 | bc; echo '2 100 ^ p' | dc; bc -e 'scale=5; 1/3'; echo 'define f(n){ if(n<2) return 1; return n*f(n-1) }; f(20)' | bc; echo 'sqrt(16' | bc > /dev/null 2>&1 || echo bc-bad-ok; echo bc-done\n`,
       lines('/usr/local/bin/bc /usr/local/bin/dc ', '3.14159265358979323846264338327950288419716939937508', '1267650600228229401496703205376', '1267650600228229401496703205376', '.33333', '2432902008176640000', 'bc-bad-ok', 'bc-done'),
       'bc: -l with a(), exponent, dc by its name, -e, functions, a syntax error exits non-zero; the links are in /usr/local/bin before busybox');
+  }
+  if (hasTool('less')) { // item 73: less, WebAssembly: a pipe (no terminal on stdout) copies like cat; on the terminal it needs raw keys (host tty_set: TCSETS) and the window size (tty_size)
+    await step(`mkdir -p /tmp/t && seq 1 100 > /tmp/t/l.txt && command -v less && seq 1 5000 | less | tail -n 1 && less -F /tmp/t/l.txt | wc -l && less /tmp/t/l.txt | sed -n 3p; echo less-pipe-done\n`,
+      /\/usr\/local\/bin\/less\s+^5000\s+^100\s+^3\s+^less-pipe-done/m, 'less: in /usr/local/bin before busybox; a pipe and a file copy through; -F');
+    await step('less /tmp/t/l.txt\n', /\x1b\[\?1049h[\s\S]*\r?\n1\r?\n2\r?\n3\r?\n[\s\S]*\b20\r?\n/, 'less on the terminal: alternate screen, first lines, a page of rows (window size)');
+    await step(' ', /\b40\r?\n/, 'less: one key (space, no Enter) scrolls a page: raw mode');
+    await step('q', /\x1b\[\?1049l/, 'less: q leaves without Enter');
+    await step('echo less-back $?\n', /less-back 0/, 'less: the shell works again (cooked mode restored)');
   }
   if (hasTool('file')) { // item 72: file/libmagic, the compiled magic database is inside the program
     const E = (l) => l.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
