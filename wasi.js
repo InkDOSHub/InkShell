@@ -265,6 +265,9 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
   const dirs = new Map(); // fd -> entries read by fd_readdir
   const tcp = new Map(); // fd of a "/dev/tcp/IP/PORT" socket -> idle read timeout in ms (-1: none)
   const ctls = new Map(); // fd of "/dev/inksoc" (the host channel, see ctlCall) -> { inb: text written, out: answer bytes }
+  // pipe ends that spawn handed out: a program whose fds are its own table (VMware python3's wasi-vfs) knows
+  // them only after opening "/dev/inksoc/fd/N" (path_open answers N itself, once); others use N directly
+  const adopt = new Set();
   /** Starts argv as a child process (item 78): the stub forks; this host drives the child (dup2, chdir,
    *  execve through PATH). A .wasm runs as WebAssembly in its own Worker, anything else as x86 Linux. */
   const spawnCall = (q) => {
@@ -330,12 +333,12 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
       return { error: errno(err), msg: argv[0] + ': ' + (err === -2 ? 'not found' : 'cannot run') };
     }
     const ans = { pid: kid };
-    for (const [k, l] of mine) { const nfd = nextFd++; fds.set(nfd, l); ans[k] = nfd; }
+    for (const [k, l] of mine) { const nfd = nextFd++; fds.set(nfd, l); adopt.add(nfd); ans[k] = nfd; }
     return ans;
   };
   /** One request line of the host channel "/dev/inksoc" (JSON, answer = one JSON line to read back):
    *  {"op":"spawn","argv":[...],"path":"/bin/x","cwd":"/x","env":["K=V"...],"stdin"|"stdout"|"stderr":"inherit"|"pipe"|"null"|FD|"stdout"}
-   *  -> {"pid":N,"stdin":FD,...}; {"op":"wait","pid":N,"nohang":true} -> {"pid":N or 0,"status":wait status};
+   *  -> {"pid":N,"stdin":FD,...} (pipe ends: use FD, or open "/dev/inksoc/fd/FD" once to get it through a wasi-vfs); {"op":"wait","pid":N,"nohang":true} -> {"pid":N or 0,"status":wait status};
    *  {"op":"kill","pid":N,"sig":15} -> {"r":0}; errors {"error":WASI errno,"msg":"..."}. New ops go here. */
   const ctlCall = (line) => {
     let q; try { q = JSON.parse(line); } catch { return { error: 28, msg: 'not JSON' }; }
@@ -505,6 +508,8 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     path_open: (fd, lookup, p, n, oflags, rb, ri, fdflags, fdp) => {
       const m = pre.has(fd) && n < 64 && /^\/?dev\/tcp\/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost)\/(\d{1,5})(?:\?t=(\d{1,9}))?$/.exec(str(p, n));
       if (m) return tcpOpen(m, fdp);
+      const fm = pre.has(fd) && n < 32 && /^\/?dev\/inksoc\/fd\/(\d{1,9})$/.exec(str(p, n));
+      if (fm) { const k = +fm[1]; if (!adopt.delete(k)) return 8; dv().setUint32(fdp, k, true); return 0; }
       if (pre.has(fd) && n < 16 && /^\/?dev\/inksoc$/.test(str(p, n))) { const nfd = nextFd++; ctls.set(nfd, { inb: '', out: new Uint8Array(0), dec: new TextDecoder() }); dv().setUint32(fdp, nfd, true); return 0; }
       const rd = (rb & 2n) !== 0n, wr = (rb & 0x40n) !== 0n || (fdflags & 1) !== 0;
       let fl = (oflags & 2) ? 0x10000 : wr ? (rd ? 2 : 1) : 0;

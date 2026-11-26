@@ -22,7 +22,8 @@ def diag():  # raw channel steps (which one fails)
     import inksoc_proc as ip
     a = ip.call_host({'op': 'spawn', 'argv': ['echo', 'diag'], 'stdout': 'pipe'})
     r = [a]
-    for f in (lambda: os.fstat(a['stdout']).st_mode, lambda: os.read(a['stdout'], 100), lambda: os.close(a['stdout']),
+    fd = os.open('/dev/inksoc/fd/%d' % a['stdout'], os.O_RDONLY)
+    for f in (lambda: fd, lambda: os.read(fd, 100), lambda: os.close(fd),
               lambda: ip.call_host({'op': 'wait', 'pid': a['pid']})):
         try:
             r.append(f())

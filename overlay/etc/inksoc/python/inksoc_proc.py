@@ -168,6 +168,9 @@ class Popen:
                 pass
         a = call_host(req)
         self.pid = a['pid']
+        for k, m in (('stdin', os.O_WRONLY), ('stdout', os.O_RDONLY), ('stderr', os.O_RDONLY)):
+            if k in a:  # this python's descriptors go through wasi-vfs: the pipe end is adopted by its path
+                a[k] = os.open('/dev/inksoc/fd/%d' % a[k], m)
         buf = -1 if bufsize in (None, 1) or self.text_mode else bufsize
         if 'stdin' in a:
             self.stdin = io.open(a['stdin'], 'wb', buf)
