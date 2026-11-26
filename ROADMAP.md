@@ -191,7 +191,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-25 | 3 | 64: retomada 62: wget https EINVAL no kernel | #90 | 2 |
 | 2026-11-25 | 3 | 66: x86 JIT ret/call dentro da região (travado, queimado: fib só 0,03 ret interno por call, fib +1,7%, calls +8%) | #91 | 2 |
 | 2026-11-26 | 3 | 67: sed/awk/grep/find em WASM | #92 | 2 |
-| 2026-11-26 | 3 | 68: tar/gzip/xz em WASM | #PR | 2 |
+| 2026-11-26 | 3 | 68: tar/gzip/xz em WASM | #93 | 2 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.

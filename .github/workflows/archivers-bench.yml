@@ -40,6 +40,6 @@ jobs:
           cp tests/bench/browser-archivers.sh out/
           ls -la out out/tools; tar tvf out/ztools.tar
       - name: Playwright (Chromium + WebKit)
-        run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit'
+        run: timeout 900 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit'
       - name: busybox vs WebAssembly in both browsers
         run: timeout 2400 node tests/bench/browser-archivers.mjs
