@@ -63,7 +63,7 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   ['sqlite', 'sqlite3', 'sqlite3'], ['jq', 'jq', 'jq'], ['lua5.4', 'lua', 'lua5.4,lua'], ['zip', 'zip', 'zip'], ['unzip', 'unzip', 'unzip'], ['ripgrep', 'rg', 'rg'],
   ['hashtools', 'hashsum', 'sha256sum,sha1sum,sha224sum,sha384sum,sha512sum,md5sum,b2sum'], ['quickjs', 'qjs', 'qjs'],
   ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
-  ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat'], ['diffutils', 'diffutils', 'diff,cmp']]
+  ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -439,20 +439,6 @@ if (hasWasi) {
     await step(`cd /tmp/tr1 && tar -czf t.tgz src && busybox tar -tzf t.tgz | busybox wc -l; tar -cJf t.txz src && tar -tJf t.txz | busybox wc -l; busybox mkdir y1 y2 y3 y4 && tar -xzf t.tgz -C y1 && busybox diff -r src y1/src && echo same-z; tar -xJf t.txz -C y2 && busybox diff -r src y2/src && echo same-J; busybox cat t.tar | tar -xf - -C y3 && busybox diff -r src y3/src && echo same-stdin; tar -cf - -C src a | busybox tar -xf - -C y4 && busybox cat y4/a/one.txt; tar -xf t.tar -C y4 --strip-components=1 src/c; busybox ls y4 | busybox tr '\\n' ' '; echo; tar -tf nofile-tar >/dev/null 2>&1; echo tar-rc=$?; echo junk > j.tar; tar -tf j.tar >/dev/null 2>&1; echo tar-bad-rc=$?; echo tar2-done\n`,
       lines('8', '8', 'same-z', 'same-J', 'same-stdin', 'hello', 'a c ', 'tar-rc=1', 'tar-bad-rc=1', 'tar2-done'),
       'tar: -z and -J in the process, busybox reads them back, stdin and stdout, -C, --strip-components, a missing or non-tar file exits 1');
-  }
-  if (hasTool('diffutils')) { // item 71: uutils diffutils (diff, cmp), WebAssembly, ahead of busybox in PATH
-    const E = (l) => (l instanceof RegExp ? l.source : l.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&'));
-    const lines = (...ls) => new RegExp(ls.map(E).join('\\s+^'), 'm'); // consecutive output lines, literal text or a RegExp
-    await step(`cd /tmp && rm -rf df1 && mkdir -p df1/a/s df1/b/s && cd df1 && printf 'one\\ntwo\\nthree\\nfour\\nfive\\n' > x1 && printf 'one\\n2\\nthree\\nfive\\nsix\\n' > x2; command -v diff cmp | busybox tr '\\n' ' '; echo; diff x1 x1; echo df-rc0=$?; diff x1 x2; echo df-rc1=$?; diff -u --label A --label B x1 x2; echo df-urc=$?; diff x1 nofile-df 2>/dev/null; echo df-rc2=$?\n`,
-      lines('/usr/local/bin/diff /usr/local/bin/cmp ', 'df-rc0=0', '2c2', '< two', '---', '> 2', '4d3', '< four', '5a5', '> six', 'df-rc1=1',
-        '--- A', '+++ B', '@@ -1,5 +1,5 @@', ' one', '-two', '+2', ' three', '-four', ' five', '+six', 'df-urc=1', 'df-rc2=2'),
-      'diff: equal files exit 0 without output; normal and -u (with --label) hunks; differences exit 1; a missing file exits 2; the WebAssembly diff and cmp come first in PATH');
-    await step(`cd /tmp/df1 && cmp x1 x1; echo cm-rc0=$?; cmp x1 x2; echo cm-rc1=$?; cmp -s x1 x2; echo cm-s=$?; cmp x1 nofile-df 2>/dev/null; echo cm-rc2=$?; cmp -l x1 x2 | busybox wc -l; cmp -n 4 x1 x2; echo cm-n=$?\n`,
-      lines('cm-rc0=0', /x1 x2 differ: .*byte 5.*/, 'cm-rc1=1', 'cm-s=1', 'cm-rc2=2', /\s*\d+/, 'cm-n=0'),
-      'cmp: equal exits 0, first difference reported with byte 5, -s silent, missing file exits 2, -l lists differing bytes, -n limits');
-    await step(`cd /tmp/df1 && printf 'same\\n' > a/f && cp a/f b/f && printf 'p\\n' > a/s/g && printf 'q\\n' > b/s/g && printf 'o\\n' > b/h; diff -rq a b | busybox sort; echo dr-rc=$?; diff -ru a b | busybox grep -c '^@@'; diff -r a b > /dev/null; echo dr2-rc=$?; cd a && diff -r . ../b > /dev/null; echo dr3-rc=$?; diff -rq s ../b/s; echo dr4-rc=$?; echo df-done\n`,
-      /Files a\/s\/g and b\/s\/g differ\s+^Only in b: h\s+^dr-rc=\d\s+^1\s+^dr2-rc=1\s+^dr3-rc=1\s+^Files s\/g and \.\.\/b\/s\/g differ\s+^dr4-rc=1\s+^df-done/m,
-      'diff -r: relative trees (-q lists, -u hunks, exit 1), run from inside a folder');
   }
   if (hasTool('hashtools')) { // md5sum, sha1sum, sha224/256/384/512sum, b2sum (one WebAssembly program, picked by its name)
     const abc = Buffer.from('abc');

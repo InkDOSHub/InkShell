@@ -12,8 +12,8 @@ on:
 permissions:
   contents: write
 env:
-  TAG: wasm-tools-16
-  PREV: '' # item 71: wasm-tools-16 holds only diffutils (nothing copied; the catalog line points at its own tag)
+  TAG: wasm-tools-14
+  PREV: wasm-tools-13
 concurrency:
   group: wasm-tools-${{ github.ref }}
 jobs:
@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tool: [diffutils] # item 71, wasm-tools-16 = diffutils only; older: wasm-tools-14: xz, tar (bsdtar), gzip (item 68); the other tools are copied from $PREV (-13: find, -12: awk, -11: sed)
+        tool: [xz, tar, gzip] # wasm-tools-14: xz, tar (bsdtar), gzip (item 68); the other tools are copied from $PREV (-13: find, -12: awk, -11: sed)
     steps:
       - uses: actions/checkout@v4
       - name: Already published?
@@ -67,6 +67,6 @@ jobs:
         env: { GH_TOKEN: '${{ github.token }}' }
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then echo "$TAG already published"; gh release view "$TAG"; exit 0; fi
-          [ -z "$PREV" ] || { gh release download "$PREV" -D out --skip-existing && rm -f out/SHA256SUMS; }
+          gh release download "$PREV" -D out --skip-existing && rm -f out/SHA256SUMS
           cd out && ls -l && sha256sum * > SHA256SUMS
-          gh release create "$TAG" --target "$GITHUB_SHA" --title "WebAssembly tools ($TAG)" --notes "WASI (wasm32-wasip1) builds for the InkShell catalog (apk add), made by .github/workflows/wasm-tools.yml from tools/wasm-tools/build.sh at $GITHUB_SHA. No GPL code: ffmpeg is LGPL-2.1+ (no --enable-gpl, no external libraries), 7-Zip LGPL-2.1+/BSD-3-Clause without unRAR, qpdf Apache-2.0, ImageMagick under the ImageMagick license (with libpng, libjpeg-turbo, zlib), SQLite public domain, jq MIT, Lua MIT, Info-ZIP zip/unzip under the Info-ZIP license (unzip with the Debian 6.0-28 security patches, src-unzip-6.0-debian-patches.tar.gz), ripgrep MIT/Unlicense, hashsum (md5sum, sha*sum, b2sum; InkShell's own code) MIT, uutils coreutils 0.8.0 (multicall: ls, cat, cp, sort, wc...) MIT with MIT/Apache-2.0/Unicode dependencies (the crate that offers GPL-2.0 as an alternative is used under Apache-2.0), QuickJS-ng (qjs) MIT, uutils sed 0.3.0 MIT, uutils findutils 0.9.1 (find) MIT with oniguruma BSD-2-Clause, one-true-awk (Bell Labs, MIT-style license), xz 5.8.1 (0BSD; liblzma 0BSD), libarchive 3.8.1 bsdtar (BSD-2-Clause and BSD-3-Clause, with zlib and liblzma; the InkShell WASI patch is tools/wasm-tools/patches/libarchive/wasi.patch), gzip (InkShell's own code over zlib, MIT and zlib license), uutils diffutils 0.6.0 (diff, cmp) MIT OR Apache-2.0 (wasm-tools-16 holds only diffutils). Only xz, tar and gzip are built in $TAG (find is the wasm-tools-13 build, sed wasm-tools-11, awk wasm-tools-12); the other tools are copied from $PREV unchanged. Every tool is linked with the wasi-libc working-directory support (chdir/getcwd: relative paths follow the shell folder); a tool whose build failed is copied from $PREV. The src-*.tar.gz files are the exact sources used." *
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "WebAssembly tools ($TAG)" --notes "WASI (wasm32-wasip1) builds for the InkShell catalog (apk add), made by .github/workflows/wasm-tools.yml from tools/wasm-tools/build.sh at $GITHUB_SHA. No GPL code: ffmpeg is LGPL-2.1+ (no --enable-gpl, no external libraries), 7-Zip LGPL-2.1+/BSD-3-Clause without unRAR, qpdf Apache-2.0, ImageMagick under the ImageMagick license (with libpng, libjpeg-turbo, zlib), SQLite public domain, jq MIT, Lua MIT, Info-ZIP zip/unzip under the Info-ZIP license (unzip with the Debian 6.0-28 security patches, src-unzip-6.0-debian-patches.tar.gz), ripgrep MIT/Unlicense, hashsum (md5sum, sha*sum, b2sum; InkShell's own code) MIT, uutils coreutils 0.8.0 (multicall: ls, cat, cp, sort, wc...) MIT with MIT/Apache-2.0/Unicode dependencies (the crate that offers GPL-2.0 as an alternative is used under Apache-2.0), QuickJS-ng (qjs) MIT, uutils sed 0.3.0 MIT, uutils findutils 0.9.1 (find) MIT with oniguruma BSD-2-Clause, one-true-awk (Bell Labs, MIT-style license), xz 5.8.1 (0BSD; liblzma 0BSD), libarchive 3.8.1 bsdtar (BSD-2-Clause and BSD-3-Clause, with zlib and liblzma; the InkShell WASI patch is tools/wasm-tools/patches/libarchive/wasi.patch), gzip (InkShell's own code over zlib, MIT and zlib license). Only xz, tar and gzip are built in $TAG (find is the wasm-tools-13 build, sed wasm-tools-11, awk wasm-tools-12); the other tools are copied from $PREV unchanged. Every tool is linked with the wasi-libc working-directory support (chdir/getcwd: relative paths follow the shell folder); a tool whose build failed is copied from $PREV. The src-*.tar.gz files are the exact sources used." *

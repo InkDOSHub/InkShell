@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds WebAssembly (WASI preview1) command-line tools for the catalog (apk add) from upstream sources.
-# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | diffutils
+# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip
 # env: WASI_SDK (wasi-sdk-33 or later: C++ exceptions), WORK (sources, build dirs), OUT (the .wasm files)
 # CI: .github/workflows/wasm-tools.yml builds them and publishes a GitHub release; the catalog points at it.
 # No GPL: ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
@@ -26,7 +26,7 @@ CWDL="-Wl,--undefined=chdir"
 STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
-SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 UDIFF=0.6.0
+SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1
 
 fetch() { # github repo, tag, dir name: shallow clone once into $WORK/dir; a source tarball goes next to the binaries (LGPL)
   [ -d "$WORK/$3" ] && return 0
@@ -214,17 +214,6 @@ b_sed() { # uutils sed 0.3.0 (MIT, Rust, wasm32-wasip1): -n -e -f -E -i -s -z, y
   cp "$WORK/uutilssed/target/wasm32-wasip1/release/sed.wasm" "$OUT/sed.wasm"
 }
 
-b_diffutils() { # uutils diffutils 0.6.0 (MIT OR Apache-2.0, Rust, wasm32-wasip1): one multicall program, diff and cmp by argv[0]
-  fetch uutils/diffutils $UDIFF uutilsdiff
-  rustup target add wasm32-wasip1
-  # InkShell/WASI: reading PWD makes the host (wasi.js) set the working directory, so relative paths follow the shell folder
-  grep -q 'var_os("PWD")' "$WORK/uutilsdiff/src/main.rs" || sed -i 's|^fn main() -> ExitCode {|fn main() -> ExitCode {\n    let _ = std::env::var_os("PWD"); // InkShell/WASI: makes the host set the working directory|' "$WORK/uutilsdiff/src/main.rs"
-  (cd "$WORK/uutilsdiff" && env -u CC -u CXX -u AR -u RANLIB -u NM -u STRIP CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=true \
-    CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS="-C link-arg=--undefined=chdir" \
-    cargo build --release --locked --target wasm32-wasip1 --bin diffutils)
-  cp "$WORK/uutilsdiff/target/wasm32-wasip1/release/diffutils.wasm" "$OUT/diffutils.wasm"
-}
-
 b_find() { # uutils findutils 0.9.1 `find` (MIT, Rust, wasm32-wasip1; its regex crate onig_sys compiles oniguruma, BSD-2-Clause, C, with wasi-sdk); no -exec/-ok (WASI has no processes)
   fetch uutils/findutils $UFIND uutilsfind
   # wasi.js sets the shell folder as the working directory when the program reads its environment (environ_get); find never does before it walks,
@@ -293,5 +282,5 @@ b_gzip() { # gzip, gunzip, zcat: InkShell's own program (gzip/gzip.c, MIT) over 
 }
 
 # b_ prefix: functions named zip, unzip... would hide those commands
-for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|diffutils) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
+for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
 ls -l "$OUT"
