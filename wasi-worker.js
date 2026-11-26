@@ -5,7 +5,7 @@
 import { runModule, parseInfo, pack, unpack, Exit } from './wasi.js?v=15';
 
 onmessage = async (ev) => {
-  const { pid, sid, info, bytes, key, module, base, size, slots } = ev.data;
+  const { pid, sid, info, bytes, key, module, base, size, slots, spawn } = ev.data;
   const { args, envs } = parseInfo(info);
   const url = new URL('__wasi?s=' + encodeURIComponent(sid), self.location).href;
   const post = (h, data) => {
@@ -16,13 +16,13 @@ onmessage = async (ev) => {
     if (q.status !== 200) throw new Exit(-1);
     return unpack(new Uint8Array(q.response));
   };
-  const sys = (nr, a = [], data, outLen = 0) => {
-    let r = post({ op: 'call', pid, nr, a, outLen }, data);
-    while (r.h.pending) r = post({ op: 'wait', pid });
-    if (r.h.gone) throw new Exit(-1);
+  const sys = (nr, a = [], data, outLen = 0, to = pid) => { // to: a child this program forked (item 78)
+    let r = post({ op: 'call', pid: to, nr, a, outLen }, data);
+    while (r.h.pending) r = post({ op: 'wait', pid: to });
+    if (r.h.gone) { if (to !== pid) return { r: -3, out: null }; throw new Exit(-1); }
     return { r: r.h.r, out: r.out };
   };
-  const code = await runModule({ bytes, key, module, args, envs, base, size, sys,
+  const code = await runModule({ bytes, key, module, args, envs, base, size, sys, spawn: spawn ? 2 : 0,
     slots: new Map(slots || []), onSlot: (k, slot) => postMessage({ type: 'slot', key: k, slot }),
     // the compiled module goes back to the page, which hands it to the next Worker of the same file
     onModule: (k, mod) => { try { postMessage({ type: 'module', key: k, module: mod }); } catch {} } });

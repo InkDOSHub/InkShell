@@ -111,6 +111,38 @@ put(enc.encode('busybox\0sh /etc/inksoc/start'));
 if (x.start() !== 0) { console.log('FAIL start:', dec.decode(new Uint8Array(mem.buffer, x.msg_ptr(), x.msg_len()))); process.exit(1); }
 x.linux_winsize(30, 100);
 const send = (t) => { const b = enc.encode(t); put(b); x.linux_stdin(b.length); };
+// item 76/78: WebAssembly programs in worker threads (tests/wasi-thread.mjs), like the page's wasi-worker.js:
+// the engine (and the WebSocket) keep running while a program waits; a program's children run too.
+// Used by the INK_NET block and, with INK_WASI_THREADS=1, by settle() instead of runWasi.
+const threads = new Map();
+function serveThreads() {
+  if (!hasWasi) return;
+  for (let pid; (pid = x.wasi_next());) {
+    const k = x.wasi_info(pid), info = new Uint8Array(mem.buffer, x.out_ptr(), k).slice();
+    const m = x.wasi_module(pid), bytes = new Uint8Array(mem.buffer, x.out_ptr(), m).slice();
+    const size = x.wasi_buf_size(), sab = new SharedArrayBuffer(256 + Math.max(size, 65536) + 8192);
+    const t = { ctl: new Int32Array(sab, 0, 16), F: new Float64Array(sab, 64, 12), data: new Uint8Array(sab, 256), busy: false, to: pid };
+    t.w = new Worker(new URL('./wasi-thread.mjs', import.meta.url), { workerData: { sab, info, bytes, base: x.wasi_base(), size, pid, spawn: !!x.wasi_spawn } });
+    t.w.on('error', (e) => console.log('  [wasi thread: ' + e.message + ']')); t.w.on('exit', () => threads.delete(pid));
+    threads.set(pid, t);
+  }
+  for (const [, t] of threads) {
+    const gone = () => { t.busy = false; Atomics.store(t.ctl, 0, 3); Atomics.notify(t.ctl, 0); };
+    if (!t.busy && Atomics.load(t.ctl, 0) === 1) {
+      const F = t.F, n = F[8], p = x.buffer(n); new Uint8Array(mem.buffer, p, n).set(t.data.subarray(0, n));
+      t.to = F[11];
+      if (x.wasi_call(t.to, F[0], F[1], F[2], F[3], F[4], F[5], F[6], F[7]) !== 0) { gone(); continue; }
+      t.busy = true;
+    }
+    if (!t.busy) continue;
+    const n = x.wasi_take(t.to);
+    if (n === -1) continue;
+    if (n === -2) { gone(); continue; }
+    t.busy = false; t.F[9] = x.wasi_ret(); t.F[10] = n;
+    if (n > 0) t.data.set(new Uint8Array(mem.buffer, x.out_ptr(), n));
+    Atomics.store(t.ctl, 0, 2); Atomics.notify(t.ctl, 0);
+  }
+}
 const WASI_MAX = 300000; // ms, one WebAssembly program in settle()
 // run until the program waits for the terminal again (or ends)
 async function settle(maxMs = 120000) {
@@ -118,12 +150,14 @@ async function settle(maxMs = 120000) {
   for (let idle = 0; Date.now() - t0 < maxMs;) {
     const st = x.run(2000000);
     serveMount();
-    if (hasWasi) for (let pid; (pid = x.wasi_next());) { // serveMount: a WASI read of a big /mnt file waits on its pieces
+    if (process.env.INK_WASI_THREADS) serveThreads();
+    else if (hasWasi) for (let pid; (pid = x.wasi_next());) { // serveMount: a WASI read of a big /mnt file waits on its pieces
       const end = Date.now() + WASI_MAX; // watchdog: fail fast instead of eating the job's 30 min
       runWasi(x, pid, { serve: () => { serveMount(); if (Date.now() > end) { console.log(`FAIL WebAssembly program ran over ${WASI_MAX / 1000} s (hung?)\n---- output ----\n${out.slice(-600)}`); process.exit(1); } } });
     }
     if (st === 1 || st === 2) return st;
     // waiting: a timer due soon (sleep, a timeout) is not idle; only waiting for the terminal is
+    if (st === 3 && threads.size) { await new Promise((r) => setTimeout(r, 0)); idle = 0; continue; } // a program's thread is working
     if (st === 3) { const ms = x.stat(17); if (ms >= 30 && !(x.linux_timer_ms?.() >= 0) && ++idle > 20) return 3; await new Promise((r) => setTimeout(r, Math.min(ms, 30) || 2)); } else idle = 0;
   }
   return 0;
@@ -231,36 +265,6 @@ if (process.env.INK_NET) { // item 62: real network through the wisp tunnels, li
         body[0] = 1; new DataView(body.buffer).setUint16(1, +sd.slice(k + 1), true); body.set(host, 3); wsSend(packet(1, id, body));
       } else if (op === 2) wsSend(packet(2, id, d));
       else if (op === 3) { got.delete(id); wsSend(packet(4, id, new Uint8Array([2]))); }
-    }
-  };
-  // item 76: WebAssembly programs here run in worker threads (tests/wasi-thread.mjs), like the page's
-  // wasi-worker.js: the engine and the WebSocket keep running while a program waits on the network
-  const threads = new Map();
-  const serveThreads = () => {
-    if (!hasWasi) return;
-    for (let pid; (pid = x.wasi_next());) {
-      const k = x.wasi_info(pid), info = new Uint8Array(mem.buffer, x.out_ptr(), k).slice();
-      const m = x.wasi_module(pid), bytes = new Uint8Array(mem.buffer, x.out_ptr(), m).slice();
-      const size = x.wasi_buf_size(), sab = new SharedArrayBuffer(256 + Math.max(size, 65536) + 8192);
-      const t = { ctl: new Int32Array(sab, 0, 16), F: new Float64Array(sab, 64, 12), data: new Uint8Array(sab, 256), busy: false };
-      t.w = new Worker(new URL('./wasi-thread.mjs', import.meta.url), { workerData: { sab, info, bytes, base: x.wasi_base(), size } });
-      t.w.on('error', (e) => console.log('  [wasi thread: ' + e.message + ']')); t.w.on('exit', () => threads.delete(pid));
-      threads.set(pid, t);
-    }
-    for (const [pid, t] of threads) {
-      const gone = () => { t.busy = false; Atomics.store(t.ctl, 0, 3); Atomics.notify(t.ctl, 0); };
-      if (!t.busy && Atomics.load(t.ctl, 0) === 1) {
-        const F = t.F, n = F[8], p = x.buffer(n); new Uint8Array(mem.buffer, p, n).set(t.data.subarray(0, n));
-        if (x.wasi_call(pid, F[0], F[1], F[2], F[3], F[4], F[5], F[6], F[7]) !== 0) { gone(); continue; }
-        t.busy = true;
-      }
-      if (!t.busy) continue;
-      const n = x.wasi_take(pid);
-      if (n === -1) continue;
-      if (n === -2) { gone(); continue; }
-      t.busy = false; t.F[9] = x.wasi_ret(); t.F[10] = n;
-      if (n > 0) t.data.set(new Uint8Array(mem.buffer, x.out_ptr(), n));
-      Atomics.store(t.ctl, 0, 2); Atomics.notify(t.ctl, 0);
     }
   };
   const until = async (re, maxMs, mark) => {
