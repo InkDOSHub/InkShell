@@ -26,7 +26,7 @@ CWDL="-Wl,--undefined=chdir"
 STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
-SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=20240728
+SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16
 
 fetch() { # github repo, tag, dir name: shallow clone once into $WORK/dir; a source tarball goes next to the binaries (LGPL)
   [ -d "$WORK/$3" ] && return 0
@@ -225,15 +225,11 @@ b_find() { # uutils findutils 0.9.1 `find` (MIT, Rust, wasm32-wasip1; its regex 
 
 b_awk() { # one-true-awk (Bell Labs, MIT-style license, C): the parser comes from bison (its output is not GPL: bison's exception), maketab runs on the build host
   compat
-  if [ ! -d "$WORK/awk" ]; then
-    git -c advice.detachedHead=false clone -q --depth 1 --branch "$OTAWK" https://github.com/onetrue-awk/awk.git "$WORK/awk" ||
-      git clone -q --depth 1 https://github.com/onetrue-awk/awk.git "$WORK/awk"
-    git -C "$WORK/awk" rev-parse HEAD; git -C "$WORK/awk" archive --prefix="awk-$OTAWK/" -o "$OUT/src-awk-$OTAWK.tar.gz" HEAD
-  fi
-  (cd "$WORK/awk" && bison -y -d awkgram.y && cp y.tab.c ytab.c && cp y.tab.h ytab.h && gcc -O1 -w maketab.c -o maketab && ./maketab ytab.h > proctab.c)
+  dl "http://deb.debian.org/debian/pool/main/o/original-awk/original-awk_$OTAWK.orig.tar.gz" awk # Debian's copy of the upstream tarball
+  (cd "$WORK/awk" && bison -d awkgram.y && gcc -O1 -w maketab.c -o maketab && ./maketab awkgram.tab.h > proctab.c)
   printf '%s\n' 'int system(const char *);' > "$WORK/awk/wasi.h"
-  (cd "$WORK/awk" && $CC -O2 -w $EMU -I"$P/compat" -include compat.h -include wasi.h -Wno-implicit-function-declaration \
-    ytab.c b.c lex.c lib.c main.c parse.c proctab.c run.c tran.c -o "$OUT/awk.wasm" -L"$P/lib" -lcompat $EMUL $STACK -lm)
+  (cd "$WORK/awk" && $CC -O2 -w $EMU $SJLJ -I"$P/compat" -include compat.h -include wasi.h -Wno-implicit-function-declaration \
+    awkgram.tab.c b.c lex.c lib.c main.c parse.c proctab.c run.c tran.c -o "$OUT/awk.wasm" -L"$P/lib" -lcompat -lsetjmp $EMUL $STACK -lm)
 }
 
 # b_ prefix: functions named zip, unzip... would hide those commands
