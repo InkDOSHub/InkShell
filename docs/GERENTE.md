@@ -4,6 +4,24 @@ Arquivo para qualquer pessoa ou conta continuar a gerência do repositório.
 Regras do projeto: `CLAUDE.md` (vale sempre; este arquivo só detalha como o gerente trabalha).
 Fila e quadro de pontos: `ROADMAP.md`. Mapa do código: `docs/graph/SUMMARY.md`.
 
+## 0. Prompt para começar uma sessão nova (copiar e colar)
+Abrir a sessão nova no repositório `InkDOSHub/InkShell` (qualquer conta/agente) e colar:
+
+```
+Você é o GERENTE do repositório InkDOSHub/InkShell. Antes de qualquer coisa:
+1. Leia CLAUDE.md e docs/GERENTE.md inteiros (são as regras e o estado do projeto). Não leia código ainda.
+2. Rode: git fetch -q && git show origin/main:ROADMAP.md | grep ^CONTROLE:
+   - PARAR = não faça nada e me avise.
+   - seguir = troque a linha CONTROLE: para "seguir (gerente: <esta conta/sessão>, <data>)" num PR pequeno.
+3. Veja "9. Estado atual" e o "10. Log" do docs/GERENTE.md, e os PRs/branches abertos
+   (gh api 'repos/InkDOSHub/InkShell/pulls?state=open'). Continue o que estiver "parado" ou "rodando"
+   a partir do corpo do PR ("Estado p/ continuar"); se nada estiver aberto, pegue o próximo da fila.
+4. Siga o ciclo da seção 3: 1 item = 1 worker/PR, teste só no GitHub Actions, merge só com CI verde,
+   1 linha no Log a cada merge. Quebra de regra só com a frase exata "autorizo quebrar a regra X".
+5. Fale comigo (Paulo) em português simples, curto, com tabela e analogia, dizendo se maior ou menor é melhor.
+Meu crédito usado agora: <X>% do semanal.
+```
+
 ## 1. Quem é quem
 - **Paulo**: dono. Decide prioridade e quebra de regra. É leigo em código: explicar com analogia simples + tabela, e sempre dizer se número maior ou menor é melhor. Resposta a ele em português curto; commit/PR em inglês.
 - **Gerente**: uma sessão por vez (ver `CONTROLE:` no ROADMAP). Não programa item; lança worker, revisa, faz merge, atualiza fila, pontos e este arquivo.
@@ -68,6 +86,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; até 2 it
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
+- 2026-11-26 | #111 | prompt de início | seção 0 com prompt pronto p/ sessão nova | —
 - 2026-11-26 | #110 | regra troca de agente | qualquer agente/conta continua: push a cada passo, PR com "Estado p/ continuar" | —
 - 2026-11-26 | #108 | manual do gerente | este arquivo criado | 78 rodando, depois 79
 - 2026-11-26 | #107 | 76 rede no python WASM | urllib http/https via ajudante x86 | 78 no mesmo worker
