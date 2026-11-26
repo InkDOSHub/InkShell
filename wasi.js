@@ -560,6 +560,11 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     if (!mod) { mod = new WebAssembly.Module(bytes); if (key) { cacheModule(mods, key, mod); if (onModule) onModule(key, mod); } }
     else if (key) cacheModule(mods, key, mod);
     const imports = { wasi_snapshot_preview1: w, wasi_unstable: w };
+    imports.inksoc = { // terminal control for full-screen programs (less): WASI has no ioctl. TCGETS / TCSETS (36 bytes, the kernel's struct termios) and TIOCGWINSZ; 0 = ok
+      tty_get: (fd, p) => { const lfd = L(fd); if (lfd == null) return 1; const { r, out } = sys(16, [lfd, 0x5401, BASE], null, 36); if (r < 0 || !out) return 1; u8().set(out.subarray(0, 36), p); return 0; },
+      tty_set: (fd, p) => { const lfd = L(fd); if (lfd == null) return 1; return sys(16, [lfd, 0x5402, BASE], u8().slice(p, p + 36)).r < 0 ? 1 : 0; },
+      tty_size: (fd, p) => { const lfd = L(fd); if (lfd == null) return 1; const { r, out } = sys(16, [lfd, 0x5413, BASE], null, 8); if (r < 0 || !out) return 1; u8().set(out.subarray(0, 8), p); return 0; },
+    };
     for (const i of WebAssembly.Module.imports(mod)) if (!imports[i.module]) imports[i.module] = {};
     inst = new WebAssembly.Instance(mod, imports);
     mem = inst.exports.memory;
