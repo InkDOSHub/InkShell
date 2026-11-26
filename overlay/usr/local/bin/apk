@@ -26,7 +26,8 @@ progress() { # NAME BYTES TOTAL
 install_one() {
   e=$(entry "$1"); url=$(field "$e" 2); sum=$(field "$e" 3); size=$(field "$e" 4); lic=$(field "$e" 5); files=$(field "$e" 6)
   main=${files%%,*}
-  if [ -f "$DB/$1" ] && [ "$(head -n1 "$DB/$1")" = "$sum" ] && [ -f "$main" ]; then echo "$1 (WebAssembly) is already installed"; return 0; fi
+  with=$(field "$e" 8 | tr ',' ' ') # 8th field (optional): more catalog names installed with this one (python3: py3-pip)
+  if [ -f "$DB/$1" ] && [ "$(head -n1 "$DB/$1")" = "$sum" ] && [ -f "$main" ]; then echo "$1 (WebAssembly) is already installed"; install_with $with; return; fi
   echo "($1) WebAssembly build, $lic, $((${size:-0} / 1048576)) MB"
   mkdir -p "$(dirname "$main")" "$DB" || return 1
   tmp="$main.apk-new"
@@ -79,7 +80,9 @@ install_one() {
     mkdir -p "$(dirname "$f")" && ln -sf "$main" "$f" && echo "$f" >> "$DB/$1"
   done
   echo "OK: $1 installed: $main"
+  install_with $with
 }
+install_with() { for w in "$@"; do [ -n "$(entry "$w")" ] && { install_one "$w" || return 1; }; done; return 0; }
 del_one() {
   tail -n +2 "$DB/$1" | while read -r f; do rm -f "$f"; done
   rm -f "$DB/$1"; echo "($1) WebAssembly build removed"
