@@ -69,7 +69,7 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
   ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat'],
   ['bzip2', 'bzip2', 'bzip2,bunzip2,bzcat'], ['zstd', 'zstd', 'zstd,unzstd,zstdcat'],
-  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file']]
+  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['vim', 'vim', 'vim,vi,view']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -556,6 +556,15 @@ if (hasWasi) {
     await step(`command -v file; cd /tmp && rm -rf fl1 && mkdir fl1 && cd fl1 && printf 'hello text\\n' > t.txt && printf '\\211PNG\\r\\n\\032\\n\\0\\0\\0\\rIHDR\\0\\0\\0\\020\\0\\0\\0\\020\\010\\002\\0\\0\\0' > p.png && busybox gzip -c t.txt > g.gz && busybox cp /bin/busybox elf && printf '#!/bin/sh\\necho hi\\n' > s.sh; file -b t.txt; file -b p.png; file -b g.gz | busybox cut -d, -f1; file -b elf | busybox cut -c1-3; file -bi t.txt; file -b s.sh | busybox cut -d, -f1; file -b - < t.txt; file t.txt p.png | busybox tr '\\n' '|'; echo; file nonexist.x 2>&1 | busybox cut -c1-24; echo file-done\n`,
       lines('/usr/local/bin/file', 'ASCII text', 'PNG image data, 16 x 16, 8-bit/color RGB, non-interlaced', 'gzip compressed data', 'ELF', 'text/plain; charset=us-ascii', 'POSIX shell script', 'ASCII text', 't.txt: ASCII text|p.png: PNG image data, 16 x 16, 8-bit/color RGB, non-interlaced|', 'nonexist.x: cannot open ', 'file-done'),
       'file: a text file, PNG, gzip, ELF, shell script, -b, -i (MIME), stdin, several files, a missing file (magic database built in)');
+  }
+  if (hasTool('vim')) { // item 74: Vim 9.1 in WebAssembly on the kernel terminal (termios and window size through the host's "inkshell" imports)
+    const E = (l) => l.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
+    const lines = (...ls) => new RegExp(ls.map(E).join('\\s+^'), 'm');
+    await step(`cd /tmp && printf 'one\\ntwo\\n' > v1.txt && command -v vim vi; vim -es -u NONE -c 'g/o/s//0/g' -c wq v1.txt; cat v1.txt; vim --version | busybox head -1 | busybox cut -c1-12; echo vim-batch-done\n`,
+      lines('/usr/local/bin/vim', '/usr/local/bin/vi', '0ne', 'tw0', 'VIM - Vi IMp', 'vim-batch-done'), 'vim: in the PATH ahead of busybox vi, ex mode (-es) edits and writes a file, --version');
+    await step(`vim /tmp/v1.txt\n`, /"\/tmp\/v1\.txt" 2L/, 'vim: opens a file on the terminal (full screen, the file name and size on the status line)');
+    await step(`Gothree\x1b:wq\r`, /tester@inksoc/, 'vim: G, o, typing, Esc, :wq (raw keys through the kernel terminal) and back at the shell');
+    await step(`cat /tmp/v1.txt; echo vim-done\n`, lines('0ne', 'tw0', 'three', 'vim-done'), 'vim: the file has the inserted line');
   }
   if (hasTool('hashtools')) { // md5sum, sha1sum, sha224/256/384/512sum, b2sum (one WebAssembly program, picked by its name)
     const abc = Buffer.from('abc');
