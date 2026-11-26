@@ -216,6 +216,9 @@ b_sed() { # uutils sed 0.3.0 (MIT, Rust, wasm32-wasip1): -n -e -f -E -i -s -z, y
 
 b_find() { # uutils findutils 0.9.1 `find` (MIT, Rust, wasm32-wasip1; its regex crate onig_sys compiles oniguruma, BSD-2-Clause, C, with wasi-sdk); no -exec/-ok (WASI has no processes)
   fetch uutils/findutils $UFIND uutilsfind
+  # wasi.js sets the shell folder as the working directory when the program reads its environment (environ_get); find never does before it walks,
+  # so a relative path would be looked up from "/": read PWD first thing in main (the only change to upstream)
+  grep -q 'var_os("PWD")' "$WORK/uutilsfind/src/find/main.rs" || sed -i 's|^fn main() {|fn main() {\n    let _ = std::env::var_os("PWD"); // InkShell/WASI: makes the host set the working directory|' "$WORK/uutilsfind/src/find/main.rs"
   rustup target add wasm32-wasip1
   (cd "$WORK/uutilsfind" && env CC_wasm32_wasip1="$CC" AR_wasm32_wasip1="$AR" CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=true \
     CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS="-C link-arg=--undefined=chdir" \

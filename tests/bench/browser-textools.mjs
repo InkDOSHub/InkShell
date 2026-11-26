@@ -20,7 +20,8 @@ const srv = http.createServer((q, r) => {
 const job = { files: [['ztools.tar', '/out/ztools.tar'], ['browser-textools.sh', '/out/browser-textools.sh']], tools: TOOLS, cmd: 'sh /root/browser-textools.sh',
   mnt: [['/mnt/b/big.csv', 'csv']] };
 async function run(type, name) {
-  const b = await type.launch();
+  // awk.wasm uses setjmp/longjmp with the standard (exnref) exception handling: Chromium 131 (Playwright 1.49) needs the flag, WebKit and current Chrome do not
+  const b = await type.launch(name === 'chromium' ? { args: ['--js-flags=--experimental-wasm-exnref'] } : {});
   try {
     const p = await b.newPage();
     p.on('pageerror', (e) => console.log(`[${name} page error]`, e.message));
