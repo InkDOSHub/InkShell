@@ -296,8 +296,8 @@ if (process.env.INK_NET) { // item 62: real network through the wisp tunnels, li
     for (const [re, name] of checks) { const k = re.test(got1); ok = ok && k; console.log((k ? 'PASS ' : 'FAIL ') + 'python3 urllib: ' + name); }
     console.log('python3 urllib in ' + ((Date.now() - t1) / 1000).toFixed(1) + ' s\n' + got1.slice(-1500));
     if (hasTool('curl')) { // item 82: the WebAssembly curl over the same helper, https (TLS by ssl_client)
-      const t2 = Date.now(); send("/root/curl.wasm -s -o /tmp/ex.html -w 'curl-https %{http_code}\\n' https://example.com/; echo crc=$?; busybox head -c 15 /tmp/ex.html; echo; echo done-curl\n");
-      const got2 = await until(/done-curl\s/, 120000, { at: 30000 }) || out.slice(-800);
+      const t2 = Date.now(); send("/root/curl.wasm -s -o /tmp/ex.html -w 'curl-https %{http_code}\\n' https://example.com/; echo crc=$?; busybox head -c 15 /tmp/ex.html; echo; echo done-curl-$?\n");
+      const got2 = await until(/done-curl-\d/, 120000, { at: 30000 }) || out.slice(-800);
       const k = /curl-https 200\s+crc=0\s+<!doctype html/i.test(got2); ok = ok && k;
       console.log((k ? 'PASS ' : 'FAIL ') + 'curl https://example.com/ (-s -o -w) in ' + ((Date.now() - t2) / 1000).toFixed(1) + ' s\n' + got2.slice(-400));
     }
