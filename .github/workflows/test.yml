@@ -25,6 +25,7 @@ jobs:
             apk add -q gcc musl-dev openssl-dev && gcc -O2 -fno-tree-loop-distribute-patterns -static -o tests/x86string tests/src/x86string.c &&
             gcc -O2 -mbmi -mbmi2 -mpopcnt -mlzcnt -static -o tests/x86bmi tests/src/x86bmi.c &&
             gcc -O2 -static -o tests/x86pwrite tests/src/x86pwrite.c &&
+            gcc -O2 -static -o tests/x86vfork tests/src/x86vfork.c &&
             gcc -O2 -static -o tests/x86sha tests/src/x86sha.c &&
             gcc -O2 -o tests/x86ssl tests/src/x86ssl.c -lcrypto &&
             gcc -O2 -fno-tree-vectorize -mssse3 -msse4.1 -msse4.2 -mcx16 -static -o tests/x86v2 tests/src/x86v2.c &&
