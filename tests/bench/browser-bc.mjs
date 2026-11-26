@@ -15,7 +15,8 @@ const srv = http.createServer((q, r) => {
   fs.readFile(f, (e, d) => { if (e) { r.writeHead(404); return r.end(); } r.writeHead(200, { 'content-type': types[path.extname(f)] || 'application/octet-stream' }); r.end(d); });
 }).listen(PORT);
 const job = { files: [['ztools.tar', '/out/ztools.tar'], ['browser-bc.sh', '/out/browser-bc.sh']], tools: ['bc'], cmd: 'sh /root/browser-bc.sh', mnt: [] };
-const b = await chromium.launch();
+// bc.wasm uses setjmp/longjmp with the standard (exnref) exception handling: Chromium 131 (Playwright 1.49) needs the flag
+const b = await chromium.launch({ args: ['--js-flags=--experimental-wasm-exnref'] });
 let res;
 try {
   const p = await b.newPage();
