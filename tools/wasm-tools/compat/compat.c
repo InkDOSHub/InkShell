@@ -63,14 +63,21 @@ static int ink_ask(ink_buf *q, char *ans, size_t cap) /* 0, or -1 with errno */
   if (e) { errno = (int)e; return -1; }
   return 0;
 }
-static int ink_plain(const char *c) /* no shell syntax: the words can be started directly */
+static int ink_plain(const char *c) /* no shell syntax, no builtin: the words can be started directly */
 {
   int words = 0;
   for (const char *p = c; *p; p++) {
     if (strchr("|&;<>()$`\\\"'*?[]#~=%{}!\n", *p)) return 0;
     if (*p != ' ' && *p != '\t' && (p == c || p[-1] == ' ' || p[-1] == '\t')) words++;
   }
-  return words > 0;
+  if (!words) return 0;
+  static const char *const sh[] = { "exit", "cd", "export", "set", "unset", ".", "source", "eval", "exec", "ulimit", "umask", "alias",
+    "unalias", "read", "wait", "shift", "trap", "readonly", "return", "break", "continue", "times", "type", "command", "hash",
+    "jobs", "fg", "bg", "local", "getopts", "if", "for", "while", "until", "case", "function", "select", "time", 0 };
+  while (*c == ' ' || *c == '\t') c++;
+  size_t n = strcspn(c, " \t");
+  for (int i = 0; sh[i]; i++) if (strlen(sh[i]) == n && !strncmp(c, sh[i], n)) return 0; /* a shell builtin: sh -c */
+  return 1;
 }
 /* starts `cmd`; io: 0 = inherit, 'r' = its stdout is a pipe, 'w' = its stdin is a pipe (*fd = this side) */
 static pid_t ink_spawn(const char *cmd, int io, int *fd)

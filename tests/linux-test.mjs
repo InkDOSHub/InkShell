@@ -61,6 +61,7 @@ const pyBytes = hasPy ? fs.readFileSync(pyWasm) : null;
 if (hasPy) add('python.wasm', pyBytes);
 if (hasPy) add('pynet.py', fs.readFileSync(new URL('./src/pynet.py', import.meta.url))); // item 76 (INK_NET_PY)
 if (hasPy) add('pyproc.py', fs.readFileSync(new URL('./src/pyproc.py', import.meta.url))); // item 78 (INK_SPAWN)
+add('procs.sh', fs.readFileSync(new URL('./src/procs.sh', import.meta.url))); // item 78 (INK_SPAWN): awk, lua, find
 // tools from the catalog (test.yml downloads them to tests/NAME.wasm, sha256 checked): [catalog name, file, programs]
 const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagick', 'magick', 'magick,convert,identify'], ['ffmpeg', 'ffmpeg', 'ffmpeg'], ['ffprobe', 'ffprobe', 'ffprobe'],
   ['sqlite', 'sqlite3', 'sqlite3'], ['jq', 'jq', 'jq'], ['lua5.4', 'lua', 'lua5.4,lua'], ['zip', 'zip', 'zip'], ['unzip', 'unzip', 'unzip'], ['ripgrep', 'rg', 'rg'],
@@ -328,6 +329,19 @@ if (process.env.INK_SPAWN) { // item 78: processes from WebAssembly programs (ho
   let ok = true;
   for (const [re, name] of checks) { const k = re.test(got1); ok = ok && k; console.log((k ? 'PASS ' : 'FAIL ') + 'python3 processes: ' + name); }
   console.log('python3 processes in ' + ((Date.now() - t1) / 1000).toFixed(1) + ' s\n' + got1.slice(-3000));
+  if (hasTool('onetrue-awk') && hasTool('lua5.4') && hasTool('findutils') && hasTool('jq')) { // the catalog's rebuilds (wasm-tools-19)
+    const t2 = Date.now(), f2 = out.length;
+    send('sh /root/procs.sh; echo done-$?\n');
+    while (!/done-\d/.test(out.slice(f2)) && Date.now() - t2 < 120000) await settle(5000);
+    const got2 = out.slice(f2);
+    for (const [re, name] of [[/awk-sys 4/, 'awk system() status'], [/awk-get piped/, 'awk "cmd" | getline'], [/\ba\r?\nz\r?\nawk-end/, 'awk print | "cmd"'],
+        [/lua-x\s+nil\s+exit\s+5/, 'lua os.execute'], [/lua-p\s+lp/, 'lua io.popen read'], [/lua-c\s+true\s+exit\s+0/, 'lua pclose status'],
+        [/fe \/tmp\/fx\/a\r?\nfe \/tmp\/fx\/b/, 'find -exec ... \;'], [/fp \/tmp\/fx\/[ab] \/tmp\/fx\/[ab]/, 'find -exec ... {} +'], [/"fj \/tmp\/fx\/a"/, 'find -exec of a WebAssembly program (jq)'],
+        [/procs-end[\s\S]*done-0/, 'script ends']]) {
+      const k = re.test(got2); ok = ok && k; console.log((k ? 'PASS ' : 'FAIL ') + 'tool processes: ' + name);
+    }
+    console.log('tool processes in ' + ((Date.now() - t2) / 1000).toFixed(1) + ' s\n' + got2.slice(-1500));
+  }
   process.exit(ok ? 0 : 1);
 }
 await step('id -un; echo $HOME\n', /tester\s+\/home\/tester/, 'id and home');

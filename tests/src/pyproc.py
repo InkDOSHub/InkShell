@@ -16,6 +16,22 @@ def t(name, f):
 
 
 print('pp-start', subprocess.Popen.__module__)
+
+
+def diag():  # raw channel steps (which one fails)
+    import inksoc_proc as ip
+    a = ip.call_host({'op': 'spawn', 'argv': ['echo', 'diag'], 'stdout': 'pipe'})
+    r = [a]
+    for f in (lambda: os.fstat(a['stdout']).st_mode, lambda: os.read(a['stdout'], 100), lambda: os.close(a['stdout']),
+              lambda: ip.call_host({'op': 'wait', 'pid': a['pid']})):
+        try:
+            r.append(f())
+        except Exception as e:
+            r.append('EXC %s' % e)
+    return r
+
+
+t('diag', diag)
 t('system-shell', lambda: os.system('echo sys-x86 $((1+2))') >> 8)
 t('system-codes', lambda: (os.system('true'), os.system('false') >> 8))
 t('check_output', lambda: subprocess.check_output(['echo', 'hello', 'world']))

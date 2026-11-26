@@ -21,6 +21,11 @@ import time
 
 PIPE, STDOUT, DEVNULL = -1, -2, -3
 _SHELL_CHARS = set('|&;<>()$`\\"\'*?[]#~=%{}!\n')
+# shell builtins (and keywords) that are no program: such a command goes to /bin/sh -c
+_BUILTINS = {'exit', 'cd', 'export', 'set', 'unset', '.', 'source', 'eval', 'exec', 'ulimit', 'umask', 'alias',
+             'unalias', 'read', 'wait', 'shift', 'trap', 'readonly', 'return', 'break', 'continue', 'times',
+             'type', 'command', 'hash', 'jobs', 'fg', 'bg', 'local', 'getopts', 'if', 'for', 'while', 'until',
+             'case', 'function', 'select', 'time'}
 _ch = None
 
 
@@ -111,7 +116,7 @@ def _argv(args, shell, executable=None):
         args = [os.fsdecode(a) for a in args]
     if shell:
         cmd = args[0] if args else ''
-        if len(args) == 1 and cmd.strip() and not (set(cmd) & _SHELL_CHARS):
+        if len(args) == 1 and cmd.strip() and not (set(cmd) & _SHELL_CHARS) and cmd.split()[0] not in _BUILTINS:
             return cmd.split(), None  # plain words: started directly (a WebAssembly build stays WebAssembly)
         return [executable or '/bin/sh', '-c'] + args, None
     return args, executable
