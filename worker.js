@@ -98,7 +98,7 @@ function pumpNet() {
 const yieldNow = () => new Promise((r) => { const c = new MessageChannel(); c.port1.onmessage = () => r(); c.port2.postMessage(0); });
 
 /* Item 69 counters (the page asks with {type:'dbg'}): a short or failed OPFS write used to be ignored (the page read zeros back). */
-const dbgc = { mdata: 0, pieces: 0, swapw: 0, swapr: 0, swapSize: 0, wshort: 0, wfail: 0, rshort: 0, rdErr: 0, rdRetry: 0 };
+const dbgc = { mdata: 0, pieces: 0, swapw: 0, swapr: 0, swapSize: 0, wcalls: 0, wmax: 0, wshort: 0, wfail: 0, rshort: 0, rdErr: 0, rdRetry: 0 };
 let swapH = null;
 function dbgSend() { try { if (swapH) dbgc.swapSize = swapH.getSize(); } catch (e) {} postMessage({ type: 'dbg', d: { ...dbgc } }); }
 function swapWrite(h, b, at) { // all of b or an error (a half-written extent would come back as zeros or old bytes)
@@ -106,7 +106,7 @@ function swapWrite(h, b, at) { // all of b or an error (a half-written extent wo
     const k = h.write(o ? b.subarray(o) : b, { at: at + o });
     if (k < b.length - o) dbgc.wshort++;
     if (!(k > 0)) { dbgc.wfail++; dbgSend(); throw new Error('swap write failed at ' + (at + o)); }
-    o += k; dbgc.swapw += k;
+    o += k; dbgc.swapw += k; dbgc.wcalls++; if (k > dbgc.wmax) dbgc.wmax = k;
   }
 }
 function swapRead(h, b, at) { const k = h.read(b, { at }); dbgc.swapr += k; if (k < b.length) { dbgc.rshort++; b.fill(0, k); } }

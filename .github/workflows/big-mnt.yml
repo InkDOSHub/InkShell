@@ -79,10 +79,11 @@ jobs:
             h=$(timeout 60 dd if=$D/big.bin bs=1M skip=$off count=64 status=none | sha256sum | cut -d' ' -f1)
             SLICES="$SLICES${SLICES:+,}$off:$h"
           done
+          CHUNKS=""; for k in $(seq 0 $((BIG_MB / 256 - 1))); do h=$(timeout 60 dd if=$D/big.bin bs=1M skip=$((k * 256)) count=256 status=none | sha256sum | cut -d' ' -f1); CHUNKS="$CHUNKS${CHUNKS:+,}$k:$h"; done
           du -h --apparent-size $D/*; du -h $D/*
           F=$(timeout 300 sha256sum $D/big.bin | cut -d' ' -f1)
           G=$(timeout 120 sha256sum $D/s1g.bin | cut -d' ' -f1)
-          { echo "BIG_MB=$BIG_MB"; echo "SLICES=$SLICES"; echo "FULL_SHA=$F"; echo "S1G_SHA=$G"; echo "DIR=$D"; } >> $GITHUB_ENV
+          { echo "BIG_MB=$BIG_MB"; echo "SLICES=$SLICES"; echo "CHUNKS=$CHUNKS"; echo "FULL_SHA=$F"; echo "S1G_SHA=$G"; echo "DIR=$D"; } >> $GITHUB_ENV
           echo "BIG_MB=$BIG_MB (wanted 10240)"
       - name: Browser run
         timeout-minutes: 40
