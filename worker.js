@@ -245,7 +245,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
     st = x.run(2000000);
     pumpNet();
     if (x.wasi_next) wasiPump();
-    { const n = x.linux_mount_fetch(); if (n) { const paths = lx.text(n).split('\n').filter((p) => p !== SREQ || !(storeIdle = true)); if (paths.length) postMessage({ type: 'mfetch', paths }); } }
+    { const n = x.linux_mount_fetch(); if (n) { const paths = lx.text(n).split('\n').filter((p) => p !== SREQ || !(storeIdle = true)); const reqs = chunkReqs(paths); if (reqs.length) postMessage({ type: 'mfetch', paths: reqs }); } }
     storePump();
     if (st === 1 || st === 2) break;
     if (st === 3) {
@@ -303,7 +303,7 @@ function wasiServe() {
     if (!p) continue;
     if (p === SREQ) { storeIdle = true; continue; }
     const f = mfiles.get(p);
-    if (len !== undefined) { const a = +off, d = rd(f, a, a + +len); lx.mdata(p, a, +len, d); loaded(p, (held.get(p) || 0) + d.byteLength); }
+    if (len !== undefined) { const a = +off; for (let c = a; c < a + +len; c += CH) { const m = Math.min(CH, a + +len - c), d = rd(f, c, c + m); lx.mdata(p, c, m, d); loaded(p, (held.get(p) || 0) + d.byteLength); } }
     else { const d = rd(f); lx.put(p, d); loaded(p, d.byteLength); }
   }
 }
@@ -335,7 +335,7 @@ onmessage = async (ev) => {
   if (d.type === 'key') { keys.push(d.data); return; }
   if (d.type === 'resize') { if (lx) lx.resize(d.rows, d.cols); return; }
   if (d.type === 'put') { if (lx) { lx.put(d.name, d.data); loaded(d.name, d.data.byteLength); } else pendingPuts.push({ name: d.name, data: d.data }); return; }
-  if (d.type === 'mdata') { if (lx && x.linux_mount_data) { lx.mdata(d.name, d.off, d.len, d.data); loaded(d.name, (held.get(d.name) || 0) + d.len); } return; }
+  if (d.type === 'mdata') { asked.delete(d.name + '\0' + Math.floor(d.off / CH)); if (lx && x.linux_mount_data) { lx.mdata(d.name, d.off, d.len, d.data); loaded(d.name, (held.get(d.name) || 0) + d.len); } return; }
   if (d.type === 'dbg') { postMessage({ type: 'dbg', ...dbg, swapSize: dbgSwap ? dbgSwap.getSize() : 0 }); return; }
   if (d.type === 'mfiles') { for (const [p, f] of d.files) { if (f) mfiles.set(p, f); else mfiles.delete(p); } return; }
   if (d.type === 'mount') { if (lx) mount(d); else pendingMounts.push(d); return; }
@@ -482,6 +482,26 @@ async function readAll(path) { // a big file as a Blob, read piece by piece (the
     parts.push(new Blob([r.data])); off += r.data.length;
   }
   return new Blob(parts);
+}
+/* Big mounted files are read from the device in pieces of at most CH bytes. WebKit never gives back the memory of ArrayBuffers
+   bigger than ~512 KB (item 65: reading 4 MB pieces grew the web process by 1.4 GB per GB read, 256 KB pieces by 0.08 GB),
+   so the kernel's requests (up to 4 MB) are cut here into CH-aligned pieces. `asked` holds the pieces the page was asked for and
+   has not answered yet, so the kernel asking again while they arrive does not read them twice. */
+const CH = 256 << 10;
+const asked = new Set();
+function chunkReqs(lines) {
+  const out = [];
+  for (const ln of lines) {
+    const [p, off, len] = ln.split('\t');
+    if (len === undefined) { out.push(ln); continue; }
+    const a = +off, z = a + +len;
+    for (let c = a; c < z;) {
+      const e = Math.min(z, (Math.floor(c / CH) + 1) * CH), k = p + '\0' + Math.floor(c / CH);
+      if (!asked.has(k)) { asked.add(k); out.push(p + '\t' + c + '\t' + (e - c)); }
+      c = e;
+    }
+  }
+  return out;
 }
 let held = new Map(); // mounted files read into memory: path -> size (oldest first)
 function mount(d) {
