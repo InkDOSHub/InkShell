@@ -27,7 +27,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - name: Playwright
-        run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit'
+        run: for i in 1 2 3; do timeout 240 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit' && break; done
       - name: Sparse file
         run: truncate -s 10G $RUNNER_TEMP/micro.bin
       - name: RSS micro benchmark
@@ -56,7 +56,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - name: Playwright
-        run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit'
+        run: for i in 1 2 3; do timeout 240 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit' && break; done
       - name: hashsum from the WebAssembly catalog
         run: |
           e=$(awk -F '\t' '$1 == "hashtools"' overlay/etc/inksoc/wasm-catalog); f=tests/hashsum.wasm
