@@ -1,0 +1,14 @@
+#!/bin/sh
+# pip / pip3 for the WebAssembly python3 of the catalog (apk add python3 also installs py3-pip: the pip
+# wheel in /var/lib/inksoc-python). Same as "python3 -m pip": downloads go through the terminal's
+# network helper (/etc/inksoc/python/inksoc_pip.py) and packages install for the user (~/.local).
+# Only pure Python packages (wheels py3-none-any): there are no compilers, so packages with C code
+# (numpy, Pillow...) do not install. Without the WebAssembly python3 this runs Alpine's pip (x86), if any.
+n=${0##*/}
+if [ -x /usr/local/bin/python3 ] && ls /var/lib/inksoc-python/pip-*.whl > /dev/null 2>&1; then
+  case ":$PYTHONPATH:" in *:/etc/inksoc/python:*) ;; *) export PYTHONPATH="/etc/inksoc/python${PYTHONPATH:+:$PYTHONPATH}" ;; esac
+  exec /usr/local/bin/python3 -m pip "$@"
+fi
+for p in "/usr/bin/$n" /usr/bin/pip3; do [ -x "$p" ] && exec "$p" "$@"; done
+echo "$n: no pip yet. WebAssembly python3 with pip: apk add python3 (or apk add py3-pip); x86: apk add --x86 py3-pip" >&2
+exit 127

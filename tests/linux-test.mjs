@@ -61,6 +61,19 @@ const pyBytes = hasPy ? fs.readFileSync(pyWasm) : null;
 if (hasPy) add('python.wasm', pyBytes);
 if (hasPy) add('pynet.py', fs.readFileSync(new URL('./src/pynet.py', import.meta.url))); // item 76 (INK_NET_PY)
 if (hasPy) add('pyproc.py', fs.readFileSync(new URL('./src/pyproc.py', import.meta.url))); // item 78 (INK_SPAWN)
+// item 83 (INK_PIP): the catalog's pip wheel (test.yml downloads it to tests/pip.whl, sha256 checked) and a local
+// catalog with python3 + py3-pip from /root (apk add python3 brings py3-pip); six for a local index if PyPI fails
+const pipWhl = new URL('./pip.whl', import.meta.url), sixWhl = new URL('./six.whl', import.meta.url);
+const hasPip = hasPy && fs.existsSync(pipWhl);
+if (hasPip) {
+  const pb = fs.readFileSync(pipWhl), cat = fs.readFileSync('overlay/etc/inksoc/wasm-catalog', 'utf8').split('\n');
+  const line = (n) => cat.find((l) => l.startsWith(n + '\t')).split('\t');
+  const py = line('python3'), pp = line('py3-pip'), sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
+  add('pip.whl', pb);
+  add('pycat.txt', Buffer.from(['python3', 'file:///root/python.wasm', sha(pyBytes), pyBytes.length, ...py.slice(4)].join('\t') + '\n' +
+    ['py3-pip', 'file:///root/pip.whl', sha(pb), pb.length, ...pp.slice(4)].join('\t') + '\n'));
+  if (fs.existsSync(sixWhl)) add('six.whl', fs.readFileSync(sixWhl));
+}
 add('procs.sh', fs.readFileSync(new URL('./src/procs.sh', import.meta.url))); // item 78 (INK_SPAWN): awk, lua, find
 add('curl-e.cgi', enc.encode('#!/bin/sh\nprintf \'Content-Type: text/plain\\r\\n\\r\\n\'\necho "m=$REQUEST_METHOD ua=$HTTP_USER_AGENT"\nhead -c "${CONTENT_LENGTH:-0}"\necho\n')); // item 82 (INK_CURL): a CGI of busybox httpd that echoes a POST
 // tools from the catalog (test.yml downloads them to tests/NAME.wasm, sha256 checked): [catalog name, file, programs]
@@ -281,6 +294,31 @@ if (process.env.INK_NET) { // item 62: real network through the wisp tunnels, li
     }
     return null;
   };
+  if (process.env.INK_PIP) { // item 83: apk add python3 (+ py3-pip), pip install six from PyPI (local index if PyPI fails), import six
+    if (!hasPip) { console.log('FAIL INK_PIP: no tests/python.wasm or tests/pip.whl'); process.exit(1); }
+    const t1 = Date.now();
+    send("su root -c 'cp /root/pycat.txt /etc/inksoc/wasm-catalog.local && apk add python3'; echo ins-$?\n");
+    await until(/Password/, 30000);
+    send('pw1\n');
+    const g0 = await until(/ins-\d/, 120000, { at: 30000 }) || out.slice(-800);
+    const insOk = /OK: py3-pip installed[\s\S]*ins-0/.test(g0);
+    console.log((insOk ? 'PASS ' : 'FAIL ') + 'apk add python3 also installs py3-pip (' + ((Date.now() - t1) / 1000).toFixed(1) + ' s)\n' + g0.slice(-500));
+    const t2 = Date.now();
+    send(`cd /tmp && pip install six; echo pi=$?; python3 -c "import six; print('six-ok', six.__version__, six.__file__)"; echo done-pip-$((1+1))\n`);
+    const g1 = await until(/done-pip-2/, 200000, { at: 30000 }) || out.slice(-3000);
+    const pypi = /pi=0[\s\S]*six-ok 1\.\d+/.test(g1);
+    console.log((pypi ? 'PASS ' : 'INFO no ') + 'pip install six from PyPI + import (' + ((Date.now() - t2) / 1000).toFixed(1) + ' s)\n' + g1.slice(-3000));
+    let local = false;
+    if (!pypi && fs.existsSync(sixWhl)) { // tolerant: PyPI unreachable from CI -> a local index on busybox httpd
+      const t3 = Date.now(), W = 'six-1.17.0-py2.py3-none-any.whl';
+      send(`mkdir -p /tmp/idx/simple/six && cp /root/six.whl /tmp/idx/${W} && echo '<a href="/${W}">${W}</a>' > /tmp/idx/simple/six/index.html && busybox httpd -p 127.0.0.1:8089 -h /tmp/idx; ` +
+        `pip install --index-url http://127.0.0.1:8089/simple/ six; echo pl=$?; python3 -c "import six; print('six-ok', six.__version__)"; echo done-pl-$((1+1))\n`);
+      const g2 = await until(/done-pl-2/, 150000, { at: 30000 }) || out.slice(-3000);
+      local = /pl=0[\s\S]*six-ok 1\.\d+/.test(g2);
+      console.log((local ? 'PASS ' : 'FAIL ') + 'pip install six from a local index (http) + import (' + ((Date.now() - t3) / 1000).toFixed(1) + ' s)\n' + g2.slice(-3000));
+    }
+    process.exit(insOk && (pypi || local) ? 0 : 1);
+  }
   if (process.env.INK_NET_PY) { // item 76: urllib http/https in the WebAssembly python3 (network helper inksoc-net)
     if (!hasPy) { console.log('FAIL INK_NET_PY: no tests/python.wasm'); process.exit(1); }
     const t1 = Date.now(); send('/root/python.wasm /root/pynet.py; echo done-$?\n');
