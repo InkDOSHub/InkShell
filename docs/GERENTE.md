@@ -61,7 +61,7 @@ InkShell = terminal Alpine Linux no navegador (WebKit do iPad/XeOS primeiro, iPh
 
 ## 6. Catálogo WASM (como se adiciona programa)
 - `overlay/etc/inksoc/wasm-catalog`, separado por TAB: nome, url, sha256, tamanho, licença, arquivos, descrição.
-- Cada item publica sua própria release `wasm-tools-N` só com os seus arquivos (usados: 15 bzip2/zstd, 16 diffutils sem uso, 17 bc/file, 19 sem uso, 20 awk/lua/find (item 78), 22 qjs (item 79); reservados: 18 less, 21 vim).
+- Cada item publica sua própria release `wasm-tools-N` só com os seus arquivos (usados: 15 bzip2/zstd, 16 diffutils sem uso, 17 bc/file, 18 less, 19 sem uso, 20 awk/lua/find (item 78), 22 qjs (item 79), 23 grep (item 80); reservado: 21 vim).
 - Build: `tools/wasm-tools/build.sh` (funções `b_<nome>`), `.github/workflows/wasm-tools.yml` (TAG/PREV, matriz), licença em `THIRD_PARTY_LICENSES.md`.
 - GPL: nunca no motor/página/worker; permitido só como programa separado do catálogo, com fonte publicado (Paulo autorizou 26/11).
 - `apk add NOME` instala a versão WASM; `apk add --x86 NOME` instala a do Alpine.
@@ -76,12 +76,12 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; até 2 it
 - Limite de 5 horas da conta pode parar workers no meio: retomar depois que liberar.
 
 ## 9. Estado atual (atualizar a cada merge)
-- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73 feitos; 62, 65, 66, 71 travados.
+- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 80 feitos; 62, 65, 66, 71 travados.
 - **Rodando**: 74 vim (WASM).
 - **Fila por uso (Paulo 26/11: "siga essa ordem"; apps mais usados no terminal Linux que ainda estão incompletos aqui)**:
   1. 74 vim (2) — rodando
-  2. 80 grep GNU em WASM (2; hoje só busybox x86 e rg)
-  3. 81 nano em WASM (2; hoje só x86)
+  2. ~~80 grep GNU em WASM~~ feito (#116)
+  3. 81 nano em WASM (2; hoje só x86) — próximo
   4. 82 curl em WASM pela ponte de rede (2; hoje só x86)
   5. 75 git oficial em WASM (3,5; hoje só x86, lento)
   6. 83 pip no python WASM (2; pip usa socket, a ponte do 76 só cobre urllib)
@@ -96,6 +96,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; até 2 it
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
+- 2026-11-26 | #116 | 80 grep GNU em WASM | wasm-tools-23 só com grep 3.12 + fonte (GPL-3.0 como programa separado, catálogo aceita GPL só p/ grep); grep/egrep/fgrep antes do busybox; 10,9 MB: 216–400x vs busybox x86 (Chromium); 2 rodadas de CI | 81 nano
 - 2026-11-26 | #115 | fila por uso | ordem do Paulo: vim, grep, nano, curl, git, pip, diff, clang, Pillow | 80 grep
 - 2026-11-26 | #106 | 73 less em WASM | merge com aval do Paulo ("autorizo quebrar a regra teto de rodadas no 73"), 3ª rodada verde; less 692 completo, teclas sem Enter, janela; sem ganho de velocidade (4 → 32 ms) | 74 vim
 - 2026-11-26 | #114 | fazer completo, testar 1x no fim | WIP com [skip ci], teste tolerante | —

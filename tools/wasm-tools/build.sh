@@ -1,9 +1,9 @@
 #!/bin/sh
 # Builds WebAssembly (WASI preview1) command-line tools for the catalog (apk add) from upstream sources.
-# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | bzip2 | zstd | bc | file | less
+# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | bzip2 | zstd | bc | file | less | grep
 # env: WASI_SDK (wasi-sdk-33 or later: C++ exceptions), WORK (sources, build dirs), OUT (the .wasm files)
 # CI: .github/workflows/wasm-tools.yml builds them and publishes a GitHub release; the catalog points at it.
-# No GPL: ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
+# No GPL except GNU grep (GPL-3.0-or-later, item 80, a separate catalog program with its source release and these changes published; see THIRD_PARTY_LICENSES.md): ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
 # 7-Zip without the unRAR code (LGPL-2.1+ and BSD-3-Clause), qpdf (Apache-2.0), ImageMagick (its own Apache-style license),
 # SQLite (public domain), jq (MIT), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense), hashsum (InkShell's own code, MIT), uutils coreutils (MIT), QuickJS-ng (MIT), uutils sed (MIT), uutils findutils find (MIT; oniguruma BSD-2-Clause inside), one-true-awk (MIT-style Bell Labs license), xz 5.8 (0BSD; liblzma public domain/0BSD), libarchive bsdtar (BSD-2-Clause, BSD-3-Clause; zlib license for zlib, 0BSD for liblzma), gzip (InkShell's own code on zlib, MIT), bzip2 1.0.8 (bzip2 license, BSD-style), zstd 1.5.7 (BSD-3-Clause option of its dual license), Gavin Howard's bc 7.0.3 (BSD-2-Clause; not GNU bc), file/libmagic 5.46 (BSD-2-Clause), less 692 (the BSD-2-Clause style Less License option of its dual license; the GPL-3.0 option is not used).
 set -eu
@@ -26,7 +26,7 @@ CWDL="-Wl,--undefined=chdir"
 STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
-SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692
+SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12
 
 fetch() { # github repo, tag, dir name: shallow clone once into $WORK/dir; a source tarball goes next to the binaries (LGPL)
   [ -d "$WORK/$3" ] && return 0
@@ -39,7 +39,7 @@ dl() { # tarball url, dir name: download and unpack once into $WORK/dir; the tar
   [ -d "$WORK/$2" ] && return 0
   echo "download $1"
   curl -fsSL --retry 3 -o "$OUT/src-${1##*/}" "$1"
-  mkdir -p "$WORK/$2" && tar -xzf "$OUT/src-${1##*/}" -C "$WORK/$2" --strip-components=1
+  mkdir -p "$WORK/$2" && tar -xf "$OUT/src-${1##*/}" -C "$WORK/$2" --strip-components=1
 }
 
 compat() { # stub headers + libcompat.a for what WASI lacks (sys/wait.h, pwd.h, fork/exec/popen...)
@@ -339,6 +339,24 @@ b_less() { # less 692 (Less License, BSD-2-Clause style; the GPL-3.0 option of i
     ../configure --host=$T --with-regex=posix --with-secure >/dev/null && make -j"$J" less LDFLAGS="-L$tc/lib $STACK" && cp less "$OUT/less.wasm")
 }
 
+b_grep() { # GNU grep 3.12 (GPL-3.0-or-later; a separate catalog program, source release in the GitHub release): grep, egrep, fgrep by argv[0]; no PCRE (-P), no NLS; gnulib's own regex/dfa
+  compat; dl "https://ftp.gnu.org/gnu/grep/grep-$GREP.tar.xz" grep
+  # gnulib needs config.h before any system header: no -include compat.h here. What WASI lacks and gnulib calls: dup, dup2, fchdir, pipe (ENOSYS stubs;
+  # grep -r walks with openat/fts without them), getdtablesize, flockfile/funlockfile (no threads); wasi-libc's own opendirat (2 args) clashes with gnulib's (4 args): gnulib's is renamed in its three files
+  printf 'int dup(int);\nint dup2(int, int);\nint fchdir(int);\nint getdtablesize(void);\nint pipe(int[2]);\n#define flockfile(f) ((void)0)\n#define funlockfile(f) ((void)0)\n' > "$WORK/grep/ink_grep.h"
+  printf '#include <errno.h>\nint dup(int f) { (void)f; errno = ENOSYS; return -1; }\nint dup2(int f, int g) { (void)f; (void)g; errno = ENOSYS; return -1; }\nint fchdir(int f) { (void)f; errno = ENOSYS; return -1; }\nint getdtablesize(void) { return 1024; }\nint pipe(int p[2]) { (void)p; errno = ENOSYS; return -1; }\n' > "$WORK/grep/ink_grep.c"
+  $CC -O2 -c "$WORK/grep/ink_grep.c" -o "$WORK/grep/ink_grep.o"
+  sed -i "s/\\bopendirat\\b\\([^.]\\)/ink_opendirat\\1/g" "$WORK/grep/lib/fts.c" "$WORK/grep/lib/opendirat.c" "$WORK/grep/lib/opendirat.h"
+  # fts: no FTS_CWDFD (it duplicates descriptors with fcntl F_DUPFD_CLOEXEC, which WASI lacks): FTS_NOCHDIR, paths relative to the working directory
+  sed -i 's#FTS_CWDFD | FTS_NOSTAT#FTS_NOCHDIR | FTS_NOSTAT#' "$WORK/grep/src/grep.c"
+  # program name (wasi-libc leaves program_invocation_short_name empty: "(null): file: error"); egrep/fgrep links run -E/-F
+  sed -i 's#^  initialize_main (&argc, &argv);#&\n  { char *b = strrchr (argv[0], 0x2f); b = b ? b + 1 : argv[0]; program_invocation_name = argv[0]; program_invocation_short_name = b;\n    if (!strcmp (b, "egrep")) matcher = setmatcher ("egrep", matcher); else if (!strcmp (b, "fgrep")) matcher = setmatcher ("fgrep", matcher); }#' "$WORK/grep/src/grep.c"
+  rm -rf "$WORK/grep/b" && mkdir -p "$WORK/grep/b" && (cd "$WORK/grep/b" && CFLAGS="-O2 -DCOMPAT_CHMOD_OK $EMU -I$P/compat -include $WORK/grep/ink_grep.h" LDFLAGS="-L$P/lib $STACK" LIBS="$WORK/grep/ink_grep.o -lcompat $EMUL" \
+    ac_cv_func_fchdir=yes ac_cv_func_getdtablesize=yes ac_cv_func_pipe=yes gl_cv_func_fcntl_f_dupfd_cloexec=yes gl_cv_func_dup2_works=yes gl_cv_func_fdopendir_works=yes \
+    ../configure --host=$T --disable-nls --disable-perl-regexp --disable-threads --disable-assert >/dev/null &&
+    make -j"$J" -C lib GL_CFLAG_GNULIB_WARNINGS= >/dev/null && make -j"$J" -C src grep GL_CFLAG_GNULIB_WARNINGS= && cp src/grep "$OUT/grep.wasm")
+}
+
 # b_ prefix: functions named zip, unzip... would hide those commands
-for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd|bc|file|less) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
+for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd|bc|file|less|grep) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
 ls -l "$OUT"

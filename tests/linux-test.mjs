@@ -69,7 +69,7 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
   ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat'],
   ['bzip2', 'bzip2', 'bzip2,bunzip2,bzcat'], ['zstd', 'zstd', 'zstd,unzstd,zstdcat'],
-  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less']]
+  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -556,6 +556,13 @@ if (hasWasi) {
     // the harness runs a WebAssembly program to its end inside one step, so the keys go in with the command: space (a page, no Enter) and q
     await step('less /tmp/t/l.txt\n q', /\x1b\[\?1049h[\s\S]*\b1\r?\n[\s\S]*\b3\r?\n[\s\S]*\b20\r?\n[\s\S]*\b40\r?\n[\s\S]*\x1b\[\?1049l/, 'less on the terminal: alternate screen, first lines, a page of rows (window size), space scrolls a page and q leaves, both without Enter (raw mode)');
     await step('echo less-back $?\n', /less-back 0/, 'less: the shell works again (cooked mode restored)');
+  }
+  if (hasTool('grep')) { // item 80: GNU grep 3.12 (GPL-3.0, separate catalog program), WebAssembly, ahead of busybox in PATH; egrep/fgrep are links (argv[0])
+    const E = (l) => l.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
+    const lines = (...ls) => new RegExp(ls.map(E).join('\\s+^'), 'm');
+    await step(`cd /tmp && rm -rf gr1 && mkdir -p gr1/d/sub && cd gr1 && printf 'Hello\\nworld foo\\nfoo bar\\nHELLO x\\n' > d/a.txt && printf 'foo in sub\\nnothing\\n' > d/sub/b.txt && hash -r && for c in grep egrep fgrep; do command -v $c; done | busybox tr '\\n' ' '; echo; grep -n foo d/a.txt; grep -rc foo d | busybox sort; grep -rl foo d | busybox sort; grep -ic hello d/a.txt; grep -v foo d/a.txt; grep -E 'fo+$|HEL' d/a.txt; grep -F 'o b' d/a.txt; grep -o 'fo*' d/a.txt; grep -q zzz d/a.txt; echo rc1=$?; grep foo nofile 2>/dev/null; echo rc2=$?; grep -qi hello d/a.txt; echo rc0=$?; egrep -c 'fo+$' d/a.txt; fgrep -c 'fo+' d/a.txt; echo foo | grep -c foo; echo gr-done\n`,
+      lines('/usr/local/bin/grep /usr/local/bin/egrep /usr/local/bin/fgrep ', '2:world foo', '3:foo bar', 'd/a.txt:2', 'd/sub/b.txt:1', 'd/a.txt', 'd/sub/b.txt', '2', 'Hello', 'HELLO x', 'world foo', 'HELLO x', 'foo bar', 'foo', 'foo', 'rc1=1', 'rc2=2', 'rc0=0', '1', '0', '1', 'gr-done'),
+      'grep: GNU grep in /usr/local/bin before busybox: -n, -r, -c, -l, -i, -v, -E, -F, -o, stdin; exit codes 0/1/2; egrep and fgrep links');
   }
   if (hasTool('file')) { // item 72: file/libmagic, the compiled magic database is inside the program
     const E = (l) => l.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
