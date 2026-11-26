@@ -1,5 +1,5 @@
 # WebAssembly catalog: "apk add NAME" installs these WebAssembly (WASI) builds instead of the x86 package.
-# They run directly in the browser's WebAssembly engine, much faster than x86 code. No GPL code here, except grep (GPL-3.0 separate program, Paulo 26/11).
+# They run directly in the browser's WebAssembly engine, much faster than x86 code. No GPL code here, except grep (GPL-3.0 separate program, owner 26/11).
 # One line per package, fields separated by TABs:
 # name	url	sha256	size	license	files (first = the program, others = links to it)	description	[with: more names installed along, by commas]
 # CI (test.yml, job catalog) downloads every URL and checks sha256 and size.
