@@ -201,10 +201,12 @@ b_coreutils() { # uutils coreutils 0.8.0 (Rust, wasm32-wasip1), multicall "coreu
   cp "$WORK/uutils/target/wasm32-wasip1/release/coreutils.wasm" "$OUT/coreutils.wasm"
 }
 
-b_qjs() { # QuickJS-ng (MIT) `qjs`: JavaScript (ES2023+, modules, std/os libs, REPL), WASI build upstream supports (no threads, no atomics); compiled directly, no CMake
-  fetch quickjs-ng/quickjs $QJS quickjs
-  (cd "$WORK/quickjs" && $CC -O2 -fwrapv -D_GNU_SOURCE -DQJS_BUILD_LIBC $EMU dtoa.c libregexp.c libunicode.c quickjs.c quickjs-libc.c gen/repl.c gen/standalone.c qjs.c \
-    -o "$OUT/qjs.wasm" $EMUL $STACK -lm)
+b_qjs() { # QuickJS-ng (MIT) `qjs`: JavaScript (ES2023+, modules, std/os libs, REPL), WASI build upstream supports (no threads, no atomics); compiled directly, no CMake; std.popen/pclose and os.exec (blocking) through compat's popen/system (host channel, item 79)
+  compat; fetch quickjs-ng/quickjs $QJS quickjs
+  # upstream leaves popen and os.exec out of WASI builds: the patch turns them on (std.popen, File.close of a pipe; os.exec -> system())
+  grep -q 'InkShell' "$WORK/quickjs/quickjs-libc.c" || (cd "$WORK/quickjs" && patch -p1 < "$here/patches/quickjs/exec-wasi.patch")
+  (cd "$WORK/quickjs" && $CC -O2 -fwrapv -D_GNU_SOURCE -DQJS_BUILD_LIBC $EMU -I"$P/compat" -include compat.h dtoa.c libregexp.c libunicode.c quickjs.c quickjs-libc.c gen/repl.c gen/standalone.c qjs.c \
+    -o "$OUT/qjs.wasm" -L"$P/lib" -lcompat $EMUL $STACK -lm)
 }
 
 b_sed() { # uutils sed 0.3.0 (MIT, Rust, wasm32-wasip1): -n -e -f -E -i -s -z, y///, hold space, w files; one thread (WASI has none)
