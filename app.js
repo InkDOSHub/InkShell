@@ -53,7 +53,7 @@ $('calib').onclick = async () => {
   $('calib').disabled = true;
   await stop(true);
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=73');
+  const c = new Worker('worker.js?v=71');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -78,7 +78,7 @@ showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
   stop(false).then(() => {
-    const r = new Worker('worker.js?v=73');
+    const r = new Worker('worker.js?v=71');
     r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
     r.postMessage({ type: 'reset' });
   });
@@ -115,7 +115,7 @@ if (navigator.serviceWorker) {
 }
 function wasiEnd(pid) { const b = wasiWorkers.get(pid); if (b) { b.terminate(); wasiWorkers.delete(pid); } }
 function wasiStart(m) {
-  const b = new Worker('wasi-worker.js?v=73', { type: 'module' });
+  const b = new Worker('wasi-worker.js?v=70', { type: 'module' });
   wasiWorkers.set(m.pid, b);
   b.onmessage = (ev) => {
     if (ev.data.type === 'done') wasiEnd(m.pid);
@@ -137,7 +137,7 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=73');
+  w = new Worker('worker.js?v=71');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;
@@ -146,7 +146,6 @@ function start() {
     else if (m.type === 'ls') dlShow(m);
     else if (m.type === 'store') stShow(m);
     else if (m.type === 'mfetch') mountFetch(m.paths);
-    else if (m.type === 'dbg') window.__dbg = m; // byte counters of the worker (tests)
     else if (m.type === 'msync') { syncQ = syncQ.then(() => mountSync(m.root, m.ops)); } // one after another: a big file is written in many steps
     else if (m.type === 'range') { const r = ranges.get(m.id); if (r) { ranges.delete(m.id); r(m); } }
     else if (m.type === 'saved') term.write('\r\n\x1b[2m[files saved]\x1b[0m\r\n');
@@ -162,7 +161,7 @@ function start() {
     }
   };
   fit();
-  w.postMessage({ type: 'start', rows: term.rows, cols: term.cols, network, poolMb: budget().pool, targetMb: 8192, sw: swOn(), rd: +new URLSearchParams(location.search).get('rd') || 0 });
+  w.postMessage({ type: 'start', rows: term.rows, cols: term.cols, network, poolMb: budget().pool, targetMb: 8192, sw: swOn() });
   for (const [root, m] of mounted) { w.postMessage({ type: 'mount', root, list: m.list }); shareFiles(m); } // mounted before a restart
 }
 

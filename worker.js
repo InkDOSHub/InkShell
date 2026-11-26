@@ -16,8 +16,6 @@ function mark(n) { bootT[n] = performance.timeOrigin + performance.now(); postMe
 let x, mem, lx = null, keys = [], net = 'wisp';
 const pendingPuts = []; // files sent before Linux is up (from InkOS or the upload button)
 const enc = new TextEncoder(), dec = new TextDecoder();
-let dbgSwap = null;
-const dbg = { mdata: 0, pieces: 0, swapw: 0, swapr: 0 }; // byte counters (item 65): read by the page's 'dbg' message
 const put = (b) => { const p = x.buffer(b.length); new Uint8Array(mem.buffer, p, b.length).set(b); };
 
 async function opfs() { try { return await navigator.storage.getDirectory(); } catch (e) { return null; } }
@@ -115,34 +113,28 @@ function info(bytes) {
   postMessage({ type: 'info', user: u ? dec.decode(u).trim() : '', bytes });
 }
 
-async function run({ rows, cols, network, poolMb, targetMb, sw, rd }) {
-  if (rd > 0) CH = rd << 10;
+async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   if (network in NETS) net = network;
   mark('run');
   wasiSw = !!sw; wasiOpen(Math.random().toString(36).slice(2));
-  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=15'); } catch (e) { wasiInline = null; } }
-  const swap = await openSwap(), ram = new Map(); dbgSwap = swap;
-  // no OPFS (private window, Playwright WebKit): the swap is RAM, in chunks of 256 slots (1 MB) written in place. One small
-  // array per 4 KB slot (the old way) left garbage that WebKit never gave back: 2.5 GB of RSS per GB of swap writes (item 65)
-  const rch = (s) => { let c = ram.get(s >> 8); if (!c) ram.set(s >> 8, c = new Uint8Array(256 * 4096)); return c; };
+  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=14'); } catch (e) { wasiInline = null; } }
+  const swap = await openSwap(), ram = new Map();
   const page = (p) => new Uint8Array(mem.buffer, p, 4096);
   const env = {
     host_console: (p, n) => out(dec.decode(new Uint8Array(mem.buffer, p, n).slice(), { stream: true })),
     host_now_ms: () => performance.now(),
     host_epoch_ms: () => Date.now(),
-    host_swap_write: (slot, p) => { dbg.swapw += 4096; if (swap) swap.write(page(p), { at: slot * 4096 }); else rch(slot).set(page(p), (slot & 255) * 4096); },
-    host_swap_read: (slot, p) => { if (swap) swap.read(page(p), { at: slot * 4096 }); else { const c = ram.get(slot >> 8), o = (slot & 255) * 4096; if (c) page(p).set(c.subarray(o, o + 4096)); else page(p).fill(0); } },
+    host_swap_write: (slot, p) => { if (swap) swap.write(page(p), { at: slot * 4096 }); else ram.set(slot, page(p).slice()); },
+    host_swap_read: (slot, p) => { if (swap) swap.read(page(p), { at: slot * 4096 }); else page(p).set(ram.get(slot) || new Uint8Array(4096)); },
     // n contiguous slots in one call (64 KB extents of big Linux files); never-written ones read as zeros
     host_swap_writev: (slot, n, p) => {
-      dbg.swapw += n * 4096;
       const b = new Uint8Array(mem.buffer, p, n * 4096);
-      if (swap) swap.write(b, { at: slot * 4096 }); else for (let i = 0, k; i < n; i += k) { k = Math.min(n - i, 256 - ((slot + i) & 255)); rch(slot + i).set(b.subarray(i * 4096, (i + k) * 4096), ((slot + i) & 255) * 4096); }
+      if (swap) swap.write(b, { at: slot * 4096 }); else for (let i = 0; i < n; i++) ram.set(slot + i, b.slice(i * 4096, (i + 1) * 4096));
     },
     host_swap_readv: (slot, n, p) => {
-      dbg.swapr += n * 4096;
       const b = new Uint8Array(mem.buffer, p, n * 4096);
       if (swap) { const k = swap.read(b, { at: slot * 4096 }); if (k < b.length) b.fill(0, k); }
-      else for (let i = 0, k; i < n; i += k) { k = Math.min(n - i, 256 - ((slot + i) & 255)); const c = ram.get((slot + i) >> 8), o = ((slot + i) & 255) * 4096; if (c) b.set(c.subarray(o, o + k * 4096), i * 4096); else b.fill(0, i * 4096, (i + k) * 4096); }
+      else for (let i = 0; i < n; i++) { const r = ram.get(slot + i); if (r) b.set(r, i * 4096); else b.fill(0, i * 4096, (i + 1) * 4096); }
     },
     wine_call: () => 0,
     host_random: (p, n) => { const b = new Uint8Array(n); crypto.getRandomValues(b); new Uint8Array(mem.buffer, p, n).set(b); },
@@ -199,7 +191,6 @@ async function run({ rows, cols, network, poolMb, targetMb, sw, rd }) {
     put(name, data) { const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 1 + d.length); b.set(nm); b.set(d, nm.length + 1); put(b); x.linux_put_file(); },
     // a piece of a big mounted file (offset, length asked; the bytes may be fewer)
     mdata(name, off, len, data) {
-      dbg.mdata += data.byteLength; dbg.pieces++;
       const nm = enc.encode(name), d = new Uint8Array(data), b = new Uint8Array(nm.length + 17 + d.length), v = new DataView(b.buffer);
       b.set(nm); v.setBigUint64(nm.length + 1, BigInt(off), true); v.setBigUint64(nm.length + 9, BigInt(len), true); b.set(d, nm.length + 17); put(b); x.linux_mount_data();
     },
@@ -249,7 +240,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw, rd }) {
     st = x.run(2000000);
     pumpNet();
     if (x.wasi_next) wasiPump();
-    { const n = x.linux_mount_fetch(); if (n) { const paths = lx.text(n).split('\n').filter((p) => p !== SREQ || !(storeIdle = true)); const reqs = chunkReqs(paths); if (reqs.length) postMessage({ type: 'mfetch', paths: reqs }); } }
+    { const n = x.linux_mount_fetch(); if (n) { const paths = lx.text(n).split('\n').filter((p) => p !== SREQ || !(storeIdle = true)); if (paths.length) postMessage({ type: 'mfetch', paths }); } }
     storePump();
     if (st === 1 || st === 2) break;
     if (st === 3) {
@@ -307,7 +298,7 @@ function wasiServe() {
     if (!p) continue;
     if (p === SREQ) { storeIdle = true; continue; }
     const f = mfiles.get(p);
-    if (len !== undefined) { const a = +off; for (let c = a; c < a + +len; c += CH) { const m = Math.min(CH, a + +len - c), d = rd(f, c, c + m); lx.mdata(p, c, m, d); loaded(p, (held.get(p) || 0) + d.byteLength); } }
+    if (len !== undefined) { const a = +off, d = rd(f, a, a + +len); lx.mdata(p, a, +len, d); loaded(p, (held.get(p) || 0) + d.byteLength); }
     else { const d = rd(f); lx.put(p, d); loaded(p, d.byteLength); }
   }
 }
@@ -320,8 +311,8 @@ function wasiPump() {
       const g = x.wasi_module_gen ? x.wasi_module_gen(pid) : 0;
       const z = info.indexOf(0), key = g ? `${wasiSid}:${g}:${m}:${new TextDecoder().decode(info.subarray(0, z < 0 ? info.length : z))}` : null;
       wasiLive.add(pid);
-      postMessage({ type: 'wasi-start', pid, sid: wasiSid, info, bytes, key, base: x.wasi_base(), size: Math.min(x.wasi_buf_size(), CH) }, [bytes.buffer]);
-    } else if (wasiInline) wasiInline.runWasi(x, pid, { serve: wasiServe, size: CH });
+      postMessage({ type: 'wasi-start', pid, sid: wasiSid, info, bytes, key, base: x.wasi_base(), size: x.wasi_buf_size() }, [bytes.buffer]);
+    } else if (wasiInline) wasiInline.runWasi(x, pid, { serve: wasiServe });
     else { out('\r\n\x1b[2m[WebAssembly programs need a newer browser]\x1b[0m\r\n'); put(new Uint8Array(0)); x.wasi_call(pid, 231, 126, 0, 0, 0, 0, 0, 0); }
   }
   for (const [pid, q] of wasiWait) {
@@ -339,8 +330,7 @@ onmessage = async (ev) => {
   if (d.type === 'key') { keys.push(d.data); return; }
   if (d.type === 'resize') { if (lx) lx.resize(d.rows, d.cols); return; }
   if (d.type === 'put') { if (lx) { lx.put(d.name, d.data); loaded(d.name, d.data.byteLength); } else pendingPuts.push({ name: d.name, data: d.data }); return; }
-  if (d.type === 'mdata') { asked.delete(d.name + '\0' + Math.floor(d.off / CH)); if (lx && x.linux_mount_data) { lx.mdata(d.name, d.off, d.len, d.data); loaded(d.name, (held.get(d.name) || 0) + d.len); } return; }
-  if (d.type === 'dbg') { postMessage({ type: 'dbg', ...dbg, swapSize: dbgSwap ? dbgSwap.getSize() : 0 }); return; }
+  if (d.type === 'mdata') { if (lx && x.linux_mount_data) { lx.mdata(d.name, d.off, d.len, d.data); loaded(d.name, (held.get(d.name) || 0) + d.len); } return; }
   if (d.type === 'mfiles') { for (const [p, f] of d.files) { if (f) mfiles.set(p, f); else mfiles.delete(p); } return; }
   if (d.type === 'mount') { if (lx) mount(d); else pendingMounts.push(d); return; }
   if (d.type === 'get') {
@@ -486,26 +476,6 @@ async function readAll(path) { // a big file as a Blob, read piece by piece (the
     parts.push(new Blob([r.data])); off += r.data.length;
   }
   return new Blob(parts);
-}
-/* Big mounted files are read from the device in pieces of at most CH bytes. WebKit never gives back the memory of ArrayBuffers
-   of 4 MB or more (item 65: reading 4 MB pieces grew the web process by 1.4 GB per GB read; 2 MB and smaller by 0.07 GB),
-   so the kernel's requests (up to 4 MB) are cut here into CH-aligned pieces. `asked` holds the pieces the page was asked for and
-   has not answered yet, so the kernel asking again while they arrive does not read them twice. */
-let CH = 1 << 20; // also the largest WebAssembly read/write per call (rd=KB in the page URL changes it: tests)
-const asked = new Set();
-function chunkReqs(lines) {
-  const out = [];
-  for (const ln of lines) {
-    const [p, off, len] = ln.split('\t');
-    if (len === undefined) { out.push(ln); continue; }
-    const a = +off, z = a + +len;
-    for (let c = a; c < z;) {
-      const e = Math.min(z, (Math.floor(c / CH) + 1) * CH), k = p + '\0' + Math.floor(c / CH);
-      if (!asked.has(k)) { asked.add(k); out.push(p + '\t' + c + '\t' + (e - c)); }
-      c = e;
-    }
-  }
-  return out;
 }
 let held = new Map(); // mounted files read into memory: path -> size (oldest first)
 function mount(d) {
