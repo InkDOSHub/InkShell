@@ -39,7 +39,7 @@ pub enum Fd {
 
 /// What a waiting Linux thread waits for.
 #[derive(Clone)]
-pub enum Cond { PipeRead(u32), Child { parent: u32, pid: i64 }, Stdin, Until, Socks(Vec<u32>), Fds(Vec<(Fd, u16)>), Futex { addr: u64 }, Signal, SigWait(u64), Fetch(String), Range(String, u32), Wasi(u32) }
+pub enum Cond { PipeRead(u32), Child { parent: u32, pid: i64 }, Stdin, Until, Socks(Vec<u32>), Fds(Vec<(Fd, u16)>), Futex { addr: u64 }, Signal, SigWait(u64), Fetch(String), Range(String, u32), Wasi(u32), Vfork(u32) }
 
 /// A process that is not running right now keeps its state here.
 pub struct Saved {
@@ -125,6 +125,11 @@ pub struct Lx {
     pub dirt: BTreeMap<String, Option<BTreeSet<u64>>>,
     pub fetch: Vec<String>,
     pub unknown: BTreeMap<u64, u64>, // system calls answered ENOSYS: number -> times (/proc/inksoc/enosys, linux_enosys)
+    // strace-like log of the last system calls (opening /proc/inksoc/trace-on starts it, /proc/inksoc/trace reads it)
+    trace_on: bool,
+    trace: std::collections::VecDeque<String>,
+    // vfork children that have not run execve yet: child -> parent (the parent waits; see `vfork`)
+    vfork: BTreeMap<u32, u32>,
     want: Option<Cond>,
     // network: sockets go out through the page (wisp tunnel on our server)
     pub socks: BTreeMap<u32, Sock>,
@@ -659,6 +664,8 @@ fn proc_file(e: &mut Engine, p: &str) {
         "/proc/version" => "Linux version 6.6.0-inksoc (InkSoC engine in WebAssembly) #1 SMP\n".to_string(),
         "/proc/stat" => format!("cpu  {u} 0 0 0 0 0 0 0 0 0\ncpu0 {u} 0 0 0 0 0 0 0 0 0\nbtime 0\nprocesses 1\nprocs_running 1\n", u = (up * 100.0) as u64),
         "/proc/inksoc/enosys" => lx(e).unknown.iter().map(|(n, k)| format!("{n}\t{k}\n")).collect(),
+        "/proc/inksoc/trace-on" => { let l = lx(e); l.trace_on = true; l.trace.clear(); String::new() }
+        "/proc/inksoc/trace" => { let l = lx(e); l.trace_on = false; l.trace.iter().map(|t| format!("{t}\n")).collect() }
         _ => return,
     };
     let _ = frames_kb;
@@ -934,7 +941,8 @@ pub fn syscall(e: &mut Engine) {
             0
         }
         56 if a0 & 0x100 != 0 && a0 & 0x4000 == 0 => clone_thread(e, a0, a1, a2, a3, a4), // a thread (CLONE_VM)
-        56 | 57 | 58 => fork(e),
+        58 => vfork(e),
+        56 | 57 => fork(e),
         59 | 322 => {
             let path = if nr == 59 { e.read_cstr(a0, 4096) } else { path_at(e, a0, a1) };
             let (av, ev) = if nr == 59 { (a1, a2) } else { (a2, a3) };
@@ -1438,6 +1446,14 @@ pub fn syscall(e: &mut Engine) {
         }
     };
     if v == -ENOSYS { *lx(e).unknown.entry(nr).or_insert(0) += 1; }
+    if lx(e).trace_on {
+        let what = if matches!(nr, 59 | 2 | 257 | 21 | 4 | 6) { let p = if nr == 257 { a1 } else { a0 }; format!(" \"{}\"", e.read_cstr(p, 200)) } else { String::new() };
+        let res = match v { BLOCKED => "wait".to_string(), NORET => "-".to_string(), _ => v.to_string() };
+        let l = lx(e);
+        let t = format!("{} {}({:#x}, {:#x}, {:#x}, {:#x}){} = {}", l.pid, nr, a0, a1, a2, a3, what, res);
+        l.trace.push_back(t);
+        if l.trace.len() > 3000 { l.trace.pop_front(); }
+    }
     if v == BLOCKED {
         let c = lx(e).want.take().unwrap_or(Cond::Until);
         e.cpu.regs[0] = nr; // runs again from the start when woken
@@ -1776,6 +1792,7 @@ pub fn ready(e: &mut Engine, c: &Cond, pid: u32, tid: u32) -> bool {
         Cond::Fetch(p) => !l.stubs.contains_key(p), // the page sent the file of a mounted folder
         Cond::Range(p, j) => !hole(l, p, *j), // the page sent that piece of a mounted file
         Cond::Wasi(p) => l.wasi.get(p).map_or(true, |w| w.req.is_some()),
+        Cond::Vfork(c) => !l.vfork.contains_key(c),
     }
 }
 
@@ -1830,6 +1847,21 @@ fn fork(e: &mut Engine) -> i64 {
     pid as i64
 }
 
+/// vfork: like fork, but the parent waits until the child runs execve or ends, and a child that
+/// ends without execve leaves its memory to the parent, as the shared memory of a real vfork does.
+/// busybox wget counts on it: its child sets `child_failed` when `openssl` is not there, and the
+/// parent then falls back to ssl_client (without it the parent read EOF: "error getting response").
+fn vfork(e: &mut Engine) -> i64 {
+    let pid = fork(e);
+    if pid <= 0 { return pid; }
+    let l = lx(e);
+    let me = l.pid;
+    l.vfork.insert(pid as u32, me);
+    e.cpu.regs[0] = pid as u64; // the call is done; the parent goes on after the syscall when woken
+    e.block_linux(Cond::Vfork(pid as u32), None);
+    NORET
+}
+
 /// The running process ends with wait status `status`.
 fn exit_proc(e: &mut Engine, status: i32) {
     let l = lx(e);
@@ -1839,11 +1871,25 @@ fn exit_proc(e: &mut Engine, status: i32) {
         e.s.exited = true;
         return;
     }
+    if l.trace_on { l.trace.push_back(format!("{} exit status {:#x}", pid, status)); }
     l.fds.clear(); l.cloexec.clear();
     for p in l.procs.values_mut() { if p.ppid == pid { p.ppid = 1; } }
     if let Some(p) = l.procs.get_mut(&pid) { p.zombie = Some(status); }
     gone(e, pid);
-    e.mmu.free_space();
+    let l = lx(e);
+    let heap = (l.brk_start, l.brk, l.mmap_next);
+    match l.vfork.remove(&pid) {
+        // a vfork child that did not run execve: its memory becomes the waiting parent's
+        Some(pp) if l.procs.get(&pp).map_or(false, |p| p.saved.is_some()) => {
+            let sp = e.mmu.take_space();
+            e.mmu.set_asid(0); // the dead process's slot gets a fresh id, so parking it later keeps this space
+            let s = lx(e).procs.get_mut(&pp).unwrap().saved.as_mut().unwrap();
+            let old = std::mem::replace(&mut s.space, sp);
+            (s.brk_start, s.brk, s.mmap_next) = heap;
+            e.mmu.free_saved(old);
+        }
+        _ => e.mmu.free_space(),
+    }
     { let on = e.jit.on; e.jit = Default::default(); e.jit.on = on; }
     e.end_linux(pid);
 }
@@ -1854,6 +1900,7 @@ fn kill_proc(e: &mut Engine, pid: u32, sig: i32) {
     p.zombie = Some(sig);
     let saved = p.saved.take();
     for q in l.procs.values_mut() { if q.ppid == pid { q.ppid = 1; } }
+    l.vfork.remove(&pid);
     if let Some(s) = saved { e.mmu.free_saved(s.space); }
     gone(e, pid);
     e.end_linux(pid);
@@ -1925,6 +1972,7 @@ fn execve(e: &mut Engine, path: &str, mut args: Vec<String>, env: Vec<String>) -
     l.cloexec.clear();
     let me = l.pid;
     if let Some(a) = l.acts.get_mut(&me) { for x in a.iter_mut() { if x[0] != 1 { *x = [0; 4]; } } }
+    l.vfork.remove(&me); // a vfork parent goes on now
     e.mmu.free_space();
     { let on = e.jit.on; e.jit = Default::default(); e.jit.on = on; }
     match e.load_elf(&data, &p, &args, &env) {

@@ -41,6 +41,7 @@ add('stage1', fs.readFileSync(new URL('./stage1', import.meta.url))); // tests/s
 add('x86string', fs.readFileSync(new URL('./x86string', import.meta.url))); // tests/src/x86string.c, built static in CI (Alpine)
 add('x86bmi', fs.readFileSync(new URL('./x86bmi', import.meta.url))); // tests/src/x86bmi.c, built static in CI (Alpine)
 add('x86pwrite', fs.readFileSync(new URL('./x86pwrite', import.meta.url))); // tests/src/x86pwrite.c, built static in CI (Alpine)
+add('x86vfork', fs.readFileSync(new URL('./x86vfork', import.meta.url))); // tests/src/x86vfork.c, built static in CI (Alpine)
 add('x86sha', fs.readFileSync(new URL('./x86sha', import.meta.url))); // tests/src/x86sha.c, built static in CI (Alpine)
 add('x86ssl', fs.readFileSync(new URL('./x86ssl', import.meta.url))); // tests/src/x86ssl.c, built in CI (Alpine), uses the rootfs libcrypto
 add('x86v2', fs.readFileSync(new URL('./x86v2', import.meta.url))); // tests/src/x86v2.c, built static in CI (Alpine)
@@ -60,7 +61,8 @@ if (hasPy) add('python.wasm', pyBytes);
 // tools from the catalog (test.yml downloads them to tests/NAME.wasm, sha256 checked): [catalog name, file, programs]
 const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagick', 'magick', 'magick,convert,identify'], ['ffmpeg', 'ffmpeg', 'ffmpeg'], ['ffprobe', 'ffprobe', 'ffprobe'],
   ['sqlite', 'sqlite3', 'sqlite3'], ['jq', 'jq', 'jq'], ['lua5.4', 'lua', 'lua5.4,lua'], ['zip', 'zip', 'zip'], ['unzip', 'unzip', 'unzip'], ['ripgrep', 'rg', 'rg'],
-  ['hashtools', 'hashsum', 'sha256sum,sha1sum,sha224sum,sha384sum,sha512sum,md5sum,b2sum'], ['quickjs', 'qjs', 'qjs']]
+  ['hashtools', 'hashsum', 'sha256sum,sha1sum,sha224sum,sha384sum,sha512sum,md5sum,b2sum'], ['quickjs', 'qjs', 'qjs'],
+  ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -238,17 +240,18 @@ if (process.env.INK_NET) { // item 62: real network through the wisp tunnels, li
     return null;
   };
   const all = [];
-  for (const [name, cmd, ms] of [['plain http (example.com, no TLS)', 'wget -O /dev/null http://example.com/ 2>&1 | tr "\\r" "\\n" | tail -n 3', 60000],
+  for (const [name, cmd, ms, want] of [['plain http (example.com, no TLS)', 'wget -O /dev/null http://example.com/ 2>&1 | tr "\\r" "\\n" | tail -n 3', 60000],
       ['https (example.com, ssl_client)', 'wget -O /dev/null https://example.com/ 2>&1 | tr "\\r" "\\n" | tail -n 3', 60000],
       ['apk fetch over https (apk uses ssl_client too)', 'cd /tmp && apk fetch --no-cache --repository https://dl-cdn.alpinelinux.org/alpine/v3.21/main --allow-untrusted busybox-extras 2>&1 | tail -n 3; ls -l /tmp/*.apk | head -2; cd ~ && true', 120000],
-      ['hashtools (small, InkShell release)', 'wget -O /dev/null https://github.com/InkDOSHub/InkShell/releases/download/wasm-tools-7/hashsum.wasm 2>&1 | tr "\\r" "\\n" | tail -n 3', 120000],
+      // item 64: busybox wget https (openssl helper missing -> ssl_client) + sha256 of the file
+      ['hashtools (small, InkShell release, sha256)', 'wget -O /tmp/h.wasm https://github.com/InkDOSHub/InkShell/releases/download/wasm-tools-7/hashsum.wasm 2>&1 | tr "\\r" "\\n" | tail -n 3; sha256sum /tmp/h.wasm', 120000, /06b833ca3ad90fb715b30f4f7787ad02d25b40792b1075cbb6de7bd196cb65b1/],
       ['python3 (26 MB, vmware release)', 'wget -O /dev/null "$(grep ^python3 /etc/inksoc/wasm-catalog | cut -f2)" 2>&1 | tr "\\r" "\\n" | tail -n 3', 600000]]) {
     const t1 = Date.now(); send(cmd + '; echo done-$?\n');
     const got1 = await until(/done-\d/, ms, { at: 30000 });
-    const ok = !!got1 && /saved|\.apk/.test(got1);
+    const ok = !!got1 && /saved|\.apk/.test(got1) && (!want || want.test(got1));
     all.push(ok); console.log((ok ? 'PASS ' : 'FAIL ') + 'wget through wisp: ' + name + ' in ' + ((Date.now() - t1) / 1000).toFixed(1) + ' s\n' + (got1 || out.slice(-300)).slice(-500));
   }
-  process.exit(all.slice(3).every(Boolean) ? 0 : 1);
+  process.exit(all.every(Boolean) ? 0 : 1);
 }
 await step('id -un; echo $HOME\n', /tester\s+\/home\/tester/, 'id and home');
 await step('sudo id -u\n', /Password/, 'sudo asks the password');
@@ -295,6 +298,7 @@ await step('stat -c %s /mnt/t/sub/b.txt; cat /mnt/t/a.txt; echo new > /mnt/t/n.t
   const ok = /F\t\/mnt\/t\/n\.txt\t4\t1/.test(sc) && /F\t\/mnt\/t\/c\.txt\t1\t0/.test(sc) && !/a\.txt/.test(sc);
   results.push(ok); console.log((ok ? 'PASS' : 'FAIL') + ' device folder: changes listed for the page' + (ok ? '' : '\n' + sc));
 }
+await step('/root/x86vfork\n', /x86vfork ok 11/, 'vfork: parent waits; child that does not exec leaves its writes (busybox wget https); socketpair + execvp + shutdown');
 await step('/root/x86pwrite && /root/x86pwrite /mnt/t/pw.bin\n', /x86pwrite ok 26\s[\s\S]*x86pwrite ok 26/, 'pwrite64, preadv/pwritev(2): offset kept, 3 MB file, 2 iovecs, pipe ESPIPE (also in a device folder)');
 await step('/root/stage1 epoll\n', /epoll 0 1 22 1 11 5 select 0 1/, 'epoll, eventfd, select');
 await step('/root/stage1 timers\n', /timers 14 1 fd 10 14/, 'alarm, setitimer, timerfd, timer_create; SIGALRM ends a process');
@@ -403,6 +407,14 @@ if (hasWasi) {
     // real cwd: no path lists the shell folder (relative names); /etc/passwd and ./etc/passwd in one command are two files
     await step("rm -rf /tmp/rq && mkdir -p /tmp/rq/etc/d && cd /tmp/rq && printf 'root:x:0\\nroot:x:0\\n' > etc/passwd && printf 'xmark\\n' > a.txt && printf 'xmark\\n' > etc/d/b.txt && rg --color never -l xmark | sort; rg --color never -c '^root:x:0' /etc/passwd ./etc/passwd; cd /tmp && rg --color never -l xmark /etc/passwd ./rq/a.txt; echo rg-same-done; cd\n",
       /^(\.\/)?a\.txt\s+^(\.\/)?etc\/d\/b\.txt\s+^\/etc\/passwd:1\s+^\.\/etc\/passwd:2\s+^\.\/rq\/a\.txt\s+^rg-same-done/m, 'ripgrep: lists the shell folder relative to it; absolute and relative paths in the same command each go to the right place');
+  }
+  if (hasTool('sed') && hasTool('findutils') && hasTool('onetrue-awk')) { // item 67: uutils sed, uutils find, one-true-awk (WebAssembly, ahead of busybox in PATH)
+    await step(`cd /tmp && printf 'a b\\nc d\\ne f\\n' > sed-in.txt && sed -E 's/(\\w) (\\w)/\\2 \\1/' sed-in.txt | busybox tr '\\n' ,; echo; sed -n 2p sed-in.txt; sed -i 's/e/E/' sed-in.txt && busybox cat sed-in.txt | busybox tr '\\n' ,; echo; printf 'x\\n' | sed 's/x/y/;s/y/z/'; sed p nofile-sed; echo sed-rc=$?; echo sed-done\n`,
+      /^b a,d c,f e,\s+^c d\s+^a b,c d,E f,\s+^z\s+.*nofile-sed.*\s+^sed-rc=[1-9]\s+^sed-done/m, 'sed: -E, -n, -i on a relative path in the shell folder, two commands, error exit code');
+    await step(`cd /tmp && printf '1,x\\n2,y\\n3,x\\n' > awk-in.csv && awk -F, '{s += $1; c[$2]++} END {print s, c["x"], length("hello"), toupper("ab")}' awk-in.csv; printf 'a b c\\n' | awk '{print $2, NF; printf "%5.2f|%d\\n", 3.14159, "12ab"}'; awk 'BEGIN { exit 3 }'; echo awk-rc=$?; echo awk-done\n`,
+      /^6 2 5 AB\s+^b 3\s+^ 3\.14\|12\s+^awk-rc=3\s+^awk-done/m, 'awk: -F, sums and arrays on a relative file, length, fields, printf, exit status');
+    await step(`cd /tmp && rm -rf ft && mkdir -p ft/a/b ft/c && touch ft/a/one.txt ft/a/b/two.txt ft/c/three.log && find ft -name '*.txt' | sort | busybox tr '\\n' ' '; echo; find ft -type d | sort | busybox tr '\\n' ' '; echo; find ft -type f | busybox wc -l; find /tmp/ft -name 'three*' ; cd ft && find . -name '*.log'; cd; echo find-done\n`,
+      /^ft\/a\/b\/two\.txt ft\/a\/one\.txt\s+^ft ft\/a ft\/a\/b ft\/c\s+^3\s+^\/tmp\/ft\/c\/three\.log\s+^\.\/c\/three\.log\s+^find-done/m, 'find: -name, -type d/f, relative and absolute paths, from inside a folder');
   }
   if (hasTool('hashtools')) { // md5sum, sha1sum, sha224/256/384/512sum, b2sum (one WebAssembly program, picked by its name)
     const abc = Buffer.from('abc');

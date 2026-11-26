@@ -1,0 +1,43 @@
+name: Text tools bench
+# Item 67 (proof of gain): busybox x86 (JIT) vs WebAssembly sed (uutils), awk (one-true-awk), find (uutils findutils) and
+# rg (ripgrep, the catalog's grep), same run, in Chromium (V8) and WebKit (JavaScriptCore, the iPad's engine): grep/sed/awk over a
+# 64 MB csv in /mnt and a 10 MB copy in /tmp, find over 4000 files, start cold and warm. 3 reps, median. Runs when started
+# by hand or when a PR touches these files.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/textools-bench.yml'
+      - 'tests/bench/browser-textools*'
+      - 'overlay/etc/inksoc/wasm-catalog'
+permissions:
+  contents: read
+concurrency:
+  group: textools-bench-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: The catalog's sed, awk, find, rg (sha256 checked) at /usr/local/bin
+        run: |
+          mkdir -p out/tools $RUNNER_TEMP/pw/usr/local/bin
+          for pair in sed:sed onetrue-awk:awk findutils:find ripgrep:rg; do
+            pkg=${pair%%:*}; n=${pair##*:}
+            e=$(awk -F '\t' -v p="$pkg" '$1 == p' overlay/etc/inksoc/wasm-catalog); f=out/tools/$n
+            [ -n "$e" ] || { echo "no catalog entry $pkg"; exit 1; }
+            timeout 300 curl -fsSL --retry 3 -o "$f" "$(printf '%s' "$e" | cut -f2)"
+            echo "$(printf '%s' "$e" | cut -f3)  $f" | sha256sum -c
+            install -m 755 "$f" $RUNNER_TEMP/pw/usr/local/bin/$n
+          done
+          tar --format=ustar -C $RUNNER_TEMP/pw -cf out/ztools.tar usr
+          cp tests/bench/browser-textools.sh out/
+          ls -la out out/tools; tar tvf out/ztools.tar
+      - name: Playwright (Chromium + WebKit)
+        run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium webkit'
+      - name: busybox vs WebAssembly in both browsers
+        run: timeout 2400 node tests/bench/browser-textools.mjs

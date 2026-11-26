@@ -5,7 +5,7 @@ name: Store download over wisp
 on:
   push:
     branches: ['claude/**']
-    paths: ['tests/wisp-download.mjs', 'tests/linux-test.mjs', 'overlay/usr/local/bin/apk', '.github/workflows/wisp-net.yml', 'overlay/etc/inksoc/wasm-catalog']
+    paths: ['engine-src/src/linux.rs', 'overlay.tar', 'tests/wisp-download.mjs', 'tests/linux-test.mjs', 'overlay/usr/local/bin/apk', '.github/workflows/wisp-net.yml', 'overlay/etc/inksoc/wasm-catalog']
   workflow_dispatch:
     inputs:
       names: { description: 'catalog names', default: 'python3 ruby hashtools', required: false }
@@ -19,8 +19,12 @@ jobs:
         with: { node-version: 22 }
       - name: Download through wisp (python3 is the big one, 26 MB; hashtools a small InkShell asset)
         run: timeout 600 node tests/wisp-download.mjs ${{ github.event.inputs.names || 'python3 hashtools' }}
-      - name: wget inside the engine (published engine.wasm, Alpine busybox 1.37 + ssl_client) through wisp, like the page
+      - name: Build the engine
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cd engine-src && cargo build --release --target wasm32-unknown-unknown
+      - name: wget inside the engine (fresh build, Alpine busybox 1.37 + ssl_client) through wisp, like the page
         # tests/linux-test.mjs with INK_NET=1 stops after the first steps; its test programs are empty placeholders here
         run: |
-          touch tests/x86string tests/x86bmi tests/x86pwrite tests/x86sha tests/x86ssl tests/x86v2 tests/x86aes tests/wasihello.wasm
-          INK_NET=1 timeout 900 node tests/linux-test.mjs engine.wasm
+          touch tests/x86string tests/x86bmi tests/x86pwrite tests/x86vfork tests/x86sha tests/x86ssl tests/x86v2 tests/x86aes tests/wasihello.wasm
+          INK_NET=1 timeout 900 node tests/linux-test.mjs engine-src/target/wasm32-unknown-unknown/release/inksoc.wasm
