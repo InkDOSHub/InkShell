@@ -8,7 +8,10 @@ function mdata(d) {
   new Uint8Array(mem.buffer, 0, b.length).set(b);
   sum += d.length; return b.length;
 }
-function swapWrite(n) { if (h) h.write(new Uint8Array(mem.buffer, 0, n), { at: swapAt }); swapAt += n; }
+const ramMap = new Map();
+function swapWrite(n) {
+  if (cfg.ram) { const b = new Uint8Array(mem.buffer, 0, n); for (let i = 0; i * 4096 < n; i++) ramMap.set((swapAt / 4096 + i) % 262144, b.slice(i * 4096, (i + 1) * 4096)); swapAt += n; return; }
+  if (h) h.write(new Uint8Array(mem.buffer, 0, n), { at: swapAt }); swapAt += n; }
 onmessage = async (ev) => {
   const m = ev.data;
   try {
@@ -20,9 +23,9 @@ onmessage = async (ev) => {
       }
       postMessage({ ok: true });
     } else if (m.type === 'piece') {
-      const n = mdata(new Uint8Array(m.d)); if (cfg.opfs) swapWrite(n); postMessage({ ok: true });
+      const n = mdata(new Uint8Array(m.d)); if (cfg.opfs || cfg.ram) swapWrite(n); postMessage({ ok: true });
     } else if (m.type === 'blob') {
-      const n = mdata(new Uint8Array(new FileReaderSync().readAsArrayBuffer(m.b))); if (cfg.opfs) swapWrite(n); postMessage({ ok: true });
+      const n = mdata(new Uint8Array(new FileReaderSync().readAsArrayBuffer(m.b))); if (cfg.opfs || cfg.ram) swapWrite(n); postMessage({ ok: true });
     } else if (m.type === 'run') {
       const v = cfg.variant, total = cfg.total, frs = new FileReaderSync();
       for (let a = 0; a < total; a += PIECE) {
@@ -32,13 +35,13 @@ onmessage = async (ev) => {
         else if (v === 'w-resp') n = mdata(new Uint8Array(await new Response(s).arrayBuffer()));
         else if (v === 'w-stream') {
           const rd = s.stream().getReader();
-          for (;;) { const { done, value } = await rd.read(); if (done) break; new Uint8Array(mem.buffer, 0, value.length).set(value); sum += value.length; if (cfg.opfs) swapWrite(value.length); }
+          for (;;) { const { done, value } = await rd.read(); if (done) break; new Uint8Array(mem.buffer, 0, value.length).set(value); sum += value.length; if (cfg.opfs || cfg.ram) swapWrite(value.length); }
         } else if (v === 'opfs-only') {
           new Uint8Array(mem.buffer, 0, 1 << 20).fill(a & 255);
           for (let k = 0; k < 4; k++) h.write(new Uint8Array(mem.buffer, 0, 1 << 20), { at: swapAt + k * (1 << 20) });
           swapAt += PIECE;
         }
-        if (cfg.opfs && v !== 'w-stream' && v !== 'opfs-only') swapWrite(n);
+        if ((cfg.opfs || cfg.ram) && v !== 'w-stream' && v !== 'opfs-only') swapWrite(n);
         if (DELAY) await new Promise((r) => setTimeout(r, DELAY));
       }
       postMessage({ ok: true, extra: { sum, swap: h ? h.getSize() : 0 } });
