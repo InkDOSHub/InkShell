@@ -76,16 +76,17 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; até 2 it
 - Limite de 5 horas da conta pode parar workers no meio: retomar depois que liberar.
 
 ## 9. Estado atual (atualizar a cada merge)
-- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79 feitos; 62, 65, 66, 71 travados.
+- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79 feitos; 73 (less) parado no teto de rodadas, PR #106 só falta CI verde + merge; 62, 65, 66, 71 travados.
 - **Rodando**: —
 - **Fila desta semana**: vazia (79 feito); próxima: fila da semana 4 (ver ROADMAP).
 - **Fora**: teste do ruby (Paulo: não fazer).
-- **Semana que vem**: 73 less (1), 74 vim (2), 75 git oficial GPL (3,5), 77 clang (3,5), retomada do 71 diff (GNU diffutils ou uutils mais novo + pilha maior).
+- **Semana que vem**: merge do #106 (73), 74 vim (2), 75 git oficial GPL (3,5), 77 clang (3,5), retomada do 71 diff (GNU diffutils ou uutils mais novo + pilha maior).
 - **PRs abertos de propósito**: #80 (não dar merge), #38 (teste iPad).
 - **Contorno para o usuário**: comando WASM sem uma função → chamar a versão x86 pelo caminho completo (`busybox find ...`, `/usr/bin/python3` após `apk add --x86 python3`).
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
+- 2026-11-26 | #106 | 73 less em WASM PARADO (teto de 2 rodadas) | less funciona no CI (teclas sem Enter, janela, q); só a regex do teste falhava, corrigida no PR; falta 1 CI verde + merge; wasm-tools-18 (less 692, 674 KB); host tty_get/tty_set/tty_size em wasi.js: teclas sem Enter e tamanho da janela; sem ganho de velocidade (busybox less copia 4 ms vs 32 ms), vale pelo less completo; sem shell/pipe/editor | 74 vim
 - 2026-11-26 | #112 | 79 qjs com ponte de processos | wasm-tools-22 só com qjs; std.popen e os.exec (bloqueante) pela ponte, filho WASM direto; teste leve procs.sh | semana 4
 - 2026-11-26 | #109 | 78 ponte de processos WASM | canal /dev/inksoc (spawn/wait/kill); python subprocess/os.system, awk/lua/find -exec; filho WASM direto; py sort 2571 → 694 ms vs x86 python, find -exec 200 195 → 182 ms | 79: só quickjs
 - 2026-11-26 | #111 | prompt de início | seção 0 com prompt pronto p/ sessão nova | —

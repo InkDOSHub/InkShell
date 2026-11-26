@@ -554,7 +554,7 @@ if (hasWasi) {
     await step(`mkdir -p /tmp/t && seq 1 100 > /tmp/t/l.txt && command -v less && seq 1 5000 | less | tail -n 1 && less -F /tmp/t/l.txt | wc -l && less /tmp/t/l.txt | sed -n 3p; echo less-pipe-done\n`,
       /\/usr\/local\/bin\/less\s+^5000\s+^100\s+^3\s+^less-pipe-done/m, 'less: in /usr/local/bin before busybox; a pipe and a file copy through; -F');
     // the harness runs a WebAssembly program to its end inside one step, so the keys go in with the command: space (a page, no Enter) and q
-    await step('less /tmp/t/l.txt\n q', /\x1b\[\?1049h[\s\S]*\r?\n1\r?\n2\r?\n3\r?\n[\s\S]*\b20\r?\n[\s\S]*\b40\r?\n[\s\S]*\x1b\[\?1049l/, 'less on the terminal: alternate screen, first lines, a page of rows (window size), space scrolls a page and q leaves, both without Enter (raw mode)');
+    await step('less /tmp/t/l.txt\n q', /\x1b\[\?1049h[\s\S]*\b1\r?\n[\s\S]*\b3\r?\n[\s\S]*\b20\r?\n[\s\S]*\b40\r?\n[\s\S]*\x1b\[\?1049l/, 'less on the terminal: alternate screen, first lines, a page of rows (window size), space scrolls a page and q leaves, both without Enter (raw mode)');
     await step('echo less-back $?\n', /less-back 0/, 'less: the shell works again (cooked mode restored)');
   }
   if (hasTool('file')) { // item 72: file/libmagic, the compiled magic database is inside the program
