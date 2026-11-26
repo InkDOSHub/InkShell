@@ -1,0 +1,207 @@
+diff --git a/quickjs-libc.c b/quickjs-libc.c
+index 42d7f03..1f196bb 100644
+--- a/quickjs-libc.c
++++ b/quickjs-libc.c
+@@ -1216,9 +1216,7 @@ static void safe_close(FILE *f, bool is_popen)
+     if (is_stdio(f))
+         return;
+     if (is_popen) {
+-#if !defined(__wasi__)
+-        pclose(f);
+-#endif
++        pclose(f); /* InkShell: compat.c popen on WASI */
+     } else {
+         fclose(f);
+     }
+@@ -1315,7 +1313,6 @@ static JSValue js_std_open(JSContext *ctx, JSValueConst this_val,
+     return JS_EXCEPTION;
+ }
+ 
+-#if !defined(__wasi__)
+ static JSValue js_std_popen(JSContext *ctx, JSValueConst this_val,
+                             int argc, JSValueConst *argv)
+ {
+@@ -1351,7 +1348,6 @@ static JSValue js_std_popen(JSContext *ctx, JSValueConst this_val,
+     JS_FreeCString(ctx, mode);
+     return JS_EXCEPTION;
+ }
+-#endif // !defined(__wasi__)
+ 
+ static JSValue js_std_fdopen(JSContext *ctx, JSValueConst this_val,
+                              int argc, JSValueConst *argv)
+@@ -1465,11 +1461,9 @@ static JSValue js_std_file_close(JSContext *ctx, JSValueConst this_val,
+         return JS_ThrowTypeError(ctx, "invalid file handle");
+     if (is_stdio(s->f))
+         return JS_ThrowTypeError(ctx, "cannot close stdio");
+-#if !defined(__wasi__)
+     if (s->is_popen)
+         err = js_get_errno(pclose(s->f));
+     else
+-#endif
+         err = js_get_errno(fclose(s->f));
+     s->f = NULL;
+     return JS_NewInt32(ctx, err);
+@@ -1955,8 +1949,8 @@ static const JSCFunctionListEntry js_std_funcs[] = {
+ 
+     /* FILE I/O */
+     JS_CFUNC_DEF("open", 2, js_std_open ),
+-#if !defined(__wasi__)
+     JS_CFUNC_DEF("popen", 2, js_std_popen ),
++#if !defined(__wasi__)
+     JS_CFUNC_DEF("tmpfile", 0, js_std_tmpfile ),
+ #endif
+     JS_CFUNC_DEF("fdopen", 2, js_std_fdopen ),
+@@ -3420,6 +3414,143 @@ static JSValue js_os_realpath(JSContext *ctx, JSValueConst this_val,
+ }
+ #endif
+ 
++#if defined(__wasi__)
++#include <ctype.h>
++#include <sys/wait.h> /* compat's wait status macros */
++/* InkShell: exec(args[, options]) -> exitcode, blocking only. WASI has no fork: the command goes through compat.c system()
++   (the /dev/inksoc channel), words quoted for sh. */
++static JSValue js_os_exec(JSContext *ctx, JSValueConst this_val,
++                          int argc, JSValueConst *argv)
++{
++    JSValueConst options, args = argv[0];
++    JSValue val;
++    bool block_flag = true;
++    uint32_t n, i;
++    size_t cap = 256, len = 0;
++    char *cmd = NULL;
++    const char *cwd = NULL;
++    int ret, st;
++
++    val = JS_GetPropertyStr(ctx, args, "length");
++    if (JS_IsException(val))
++        return JS_EXCEPTION;
++    ret = JS_ToUint32(ctx, &n, val);
++    JS_FreeValue(ctx, val);
++    if (ret)
++        return JS_EXCEPTION;
++    if (n < 1 || n > 65535)
++        return JS_ThrowTypeError(ctx, "invalid number of arguments");
++    if (argc >= 2) {
++        static const char *const no[] = { "stdin", "stdout", "stderr", "env", "uid", "gid", "groups", "file", NULL };
++        options = argv[1];
++        if (get_bool_option(ctx, &block_flag, options, "block"))
++            return JS_EXCEPTION;
++        for (i = 0; no[i]; i++) {
++            val = JS_GetPropertyStr(ctx, options, no[i]);
++            if (JS_IsException(val))
++                return JS_EXCEPTION;
++            ret = !JS_IsUndefined(val);
++            JS_FreeValue(ctx, val);
++            if (ret)
++                return JS_ThrowTypeError(ctx, "os.exec option '%s' is not supported on WebAssembly", no[i]);
++        }
++        val = JS_GetPropertyStr(ctx, options, "cwd");
++        if (JS_IsException(val))
++            return JS_EXCEPTION;
++        if (!JS_IsUndefined(val)) {
++            cwd = JS_ToCString(ctx, val);
++            JS_FreeValue(ctx, val);
++            if (!cwd)
++                return JS_EXCEPTION;
++        }
++    }
++    if (!block_flag) {
++        JS_FreeCString(ctx, cwd);
++        return JS_ThrowTypeError(ctx, "os.exec: block: false is not supported on WebAssembly");
++    }
++    cmd = js_malloc(ctx, cap);
++    if (!cmd) {
++        JS_FreeCString(ctx, cwd);
++        return JS_EXCEPTION;
++    }
++    cmd[0] = 0;
++    /* each word as 'text' with ' written as '\'' ; the optional cwd comes first: cd 'dir' && */
++    for (i = 0; i <= n; i++) {
++        const char *w;
++        size_t wl, j;
++        if (i == 0 && !cwd)
++            continue;
++        if (i == 0) {
++            w = cwd;
++        } else {
++            val = JS_GetPropertyUint32(ctx, args, i - 1);
++            if (JS_IsException(val))
++                goto fail;
++            w = JS_ToCString(ctx, val);
++            JS_FreeValue(ctx, val);
++            if (!w)
++                goto fail;
++        }
++        wl = strlen(w);
++        if (len + 4 * wl + 16 > cap) {
++            char *nb;
++            while (len + 4 * wl + 16 > cap)
++                cap *= 2;
++            nb = js_realloc(ctx, cmd, cap);
++            if (!nb) {
++                if (i)
++                    JS_FreeCString(ctx, w);
++                goto fail;
++            }
++            cmd = nb;
++        }
++        if (i == 0)
++            len += snprintf(cmd + len, cap - len, "cd ");
++        else if (len)
++            cmd[len++] = ' ';
++        for (j = 0; j < wl; j++)
++            if (!isalnum((unsigned char)w[j]) && !strchr("_./:@+,-", w[j]))
++                break;
++        if (i && wl && j == wl) { /* plain word: no quotes, so compat's system() can start it directly (a WebAssembly program) */
++            memcpy(cmd + len, w, wl);
++            len += wl;
++            cmd[len] = 0;
++            JS_FreeCString(ctx, w);
++            continue;
++        }
++        cmd[len++] = '\'';
++        for (j = 0; j < wl; j++) {
++            if (w[j] == '\'') {
++                memcpy(cmd + len, "'\\''", 4);
++                len += 4;
++            } else {
++                cmd[len++] = w[j];
++            }
++        }
++        cmd[len++] = '\'';
++        if (i == 0) {
++            memcpy(cmd + len, " && ", 4);
++            len += 4;
++        }
++        cmd[len] = 0;
++        if (i)
++            JS_FreeCString(ctx, w);
++    }
++    JS_FreeCString(ctx, cwd);
++    st = system(cmd);
++    js_free(ctx, cmd);
++    if (st < 0)
++        return JS_NewInt32(ctx, -1);
++    if (WIFEXITED(st))
++        return JS_NewInt32(ctx, WEXITSTATUS(st));
++    return JS_NewInt32(ctx, -WTERMSIG(st));
++ fail:
++    JS_FreeCString(ctx, cwd);
++    js_free(ctx, cmd);
++    return JS_EXCEPTION;
++}
++#endif
++
+ #if !defined(_WIN32) && !defined(__wasi__) && !(defined(__APPLE__) && (TARGET_OS_TV || TARGET_OS_WATCH))
+ static JSValue js_os_symlink(JSContext *ctx, JSValueConst this_val,
+                               int argc, JSValueConst *argv)
+@@ -4497,6 +4628,9 @@ static const JSCFunctionListEntry js_os_funcs[] = {
+     JS_CFUNC_MAGIC_DEF("stat", 1, js_os_stat, 0 ),
+     JS_CFUNC_DEF("utimes", 3, js_os_utimes ),
+     JS_CFUNC_DEF("sleep", 1, js_os_sleep ),
++#if defined(__wasi__)
++    JS_CFUNC_DEF("exec", 1, js_os_exec ),
++#endif
+ #if !defined(__wasi__)
+     JS_CFUNC_DEF("realpath", 1, js_os_realpath ),
+ #endif

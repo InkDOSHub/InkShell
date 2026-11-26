@@ -1,0 +1,92 @@
+--- a/src/find/matchers/exec.rs
++++ b/src/find/matchers/exec.rs
+@@ -13,6 +13,71 @@
+ 
+ use super::{Matcher, MatcherIO, WalkEntry};
+ 
++/// InkShell (WASI): std::process has no processes on WASI, so a command runs through the host's channel
++/// "/dev/inksoc" (InkShell wasi.js ctlCall: one JSON request line, one JSON answer line): spawn, then wait.
++/// A program with a WebAssembly build runs as WebAssembly, others as x86 Linux.
++struct InkStatus(i64);
++impl InkStatus {
++    fn success(&self) -> bool {
++        self.0 == 0
++    }
++}
++fn inksoc_status(c: &Command) -> std::io::Result<InkStatus> {
++    use std::io::Read;
++    fn js(s: &std::ffi::OsStr) -> String {
++        let mut o = String::from("\"");
++        for ch in s.to_string_lossy().chars() {
++            match ch {
++                '"' => o.push_str("\\\""),
++                '\\' => o.push_str("\\\\"),
++                c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
++                c => o.push(c),
++            }
++        }
++        o.push('"');
++        o
++    }
++    fn num(a: &str, k: &str) -> Option<i64> {
++        let key = format!("\"{}\":", k);
++        let i = a.find(&key)? + key.len();
++        let t: String = a[i..].chars().take_while(|c| *c == '-' || c.is_ascii_digit()).collect();
++        t.parse().ok()
++    }
++    let mut ch = std::fs::OpenOptions::new().read(true).write(true).open("/dev/inksoc")?;
++    let mut ask = |q: String| -> std::io::Result<String> {
++        ch.write_all(q.as_bytes())?;
++        ch.write_all(b"\n")?;
++        let (mut a, mut b) = (Vec::new(), [0u8; 4096]);
++        while !a.ends_with(b"\n") {
++            let n = ch.read(&mut b)?;
++            if n == 0 {
++                break;
++            }
++            a.extend_from_slice(&b[..n]);
++        }
++        let a = String::from_utf8_lossy(&a).into_owned();
++        match num(&a, "error") {
++            Some(e) => Err(std::io::Error::from_raw_os_error(e as i32)),
++            None => Ok(a),
++        }
++    };
++    let mut q = format!("{{\"op\":\"spawn\",\"argv\":[{}", js(c.get_program()));
++    for a in c.get_args() {
++        q.push(',');
++        q.push_str(&js(a));
++    }
++    q.push(']');
++    if let Some(d) = c.get_current_dir() {
++        q.push_str(",\"cwd\":");
++        q.push_str(&js(d.as_os_str()));
++    }
++    q.push('}');
++    let _ = std::io::stdout().flush();
++    let pid = num(&ask(q)?, "pid").unwrap_or(0);
++    let st = num(&ask(format!("{{\"op\":\"wait\",\"pid\":{}}}", pid))?, "status").unwrap_or(0);
++    Ok(InkStatus(st))
++}
++
+ enum Arg {
+     FileArg(Vec<OsString>),
+     LiteralArg(OsString),
+@@ -124,7 +189,7 @@
+                 }
+             }
+         }
+-        match command.status() {
++        match inksoc_status(&command) {
+             Ok(status) => status.success(),
+             Err(e) => {
+                 writeln!(
+@@ -175,7 +240,7 @@
+     }
+ 
+     fn run_command(&self, command: &mut argmax::Command, matcher_io: &mut MatcherIO) {
+-        match command.status() {
++        match inksoc_status(command) {
+             Ok(status) => {
+                 if !status.success() {
+                     matcher_io.set_exit_code(1);
