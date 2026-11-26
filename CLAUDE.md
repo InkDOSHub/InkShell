@@ -56,6 +56,7 @@ Bump query string: `engine.wasm?v=`, `worker.js?v=`, `app.js?v=`, `overlay.tar?v
 
 ## Testes proporcionais (obrigatório)
 - Teste proporcional ao item: só doc/UI → só teste Linux leve, sem bench. Bench só em item de desempenho.
+- Item de ganho de função (programa novo no catálogo etc.): só teste Linux leve + 1 comparativo pequeno (1 navegador, 1 tamanho, 1 rep; ex.: busybox x86 vs WASM). Bench amplo (2 navegadores, vários tamanhos, reps) só em item de desempenho ou rodada de debug (Paulo, 26/11).
 - Arquivo grande (1 GB/10 GB) só no item que mede isso. Nunca em todo PR.
 - Passo que pode travar (mount, hash, rede) = `timeout 300`. Todo job tem `timeout-minutes` curto.
 - Worker cancela run sem saída há 5 min (`gh api -X POST repos/InkDOSHub/InkShell/actions/runs/<id>/cancel`). Conta como rodada de CI.
