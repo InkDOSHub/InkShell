@@ -4,6 +4,7 @@
 #define INK_NANO_H
 #include <signal.h>
 #include <sys/types.h>
+#define access ink_access
 #ifndef SA_RESTART
 struct sigaction { void (*sa_handler)(int); unsigned long sa_flags; sigset_t sa_mask; };
 #define SA_RESTART 0x10000000
@@ -44,6 +45,7 @@ int kill(pid_t, int);
 #define P_tmpdir "/tmp"
 #endif
 int mkstemps(char *, int);
+int ink_access(const char *, int);
 int pipe(int[2]);
 int dup(int);
 int dup2(int, int);

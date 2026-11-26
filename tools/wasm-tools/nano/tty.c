@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <time.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include "termios.h"
 #include "ink_nano.h"
@@ -50,6 +51,7 @@ int sigaddset(sigset_t *s, int n) { *s |= 1u << (n & 7); return 0; }
 int sigdelset(sigset_t *s, int n) { *s &= ~(1u << (n & 7)); return 0; }
 int sigismember(const sigset_t *s, int n) { return (*s >> (n & 7)) & 1; }
 int sigprocmask(int how, const sigset_t *s, sigset_t *old) { (void)how; (void)s; if (old) *old = 0; return 0; }
+int ink_access(const char *p, int m) { struct stat st; (void)m; return stat(p, &st); } /* WASI stat has no permission bits: existence only */
 struct passwd *getpwent(void) { return NULL; } /* nano's ~user completion: no user database */
 void endpwent(void) {}
 char *getlogin(void) { return NULL; }

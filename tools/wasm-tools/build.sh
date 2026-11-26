@@ -26,7 +26,7 @@ CWDL="-Wl,--undefined=chdir"
 STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
-SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12 NANO=8.3 NCURSES=6.5
+SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12 VIM=9.1.1400 NANO=8.3 NCURSES=6.5
 
 fetch() { # github repo, tag, dir name: shallow clone once into $WORK/dir; a source tarball goes next to the binaries (LGPL)
   [ -d "$WORK/$3" ] && return 0
@@ -375,10 +375,42 @@ b_nano() { # GNU nano 8.3 (GPL-3.0-or-later; a separate catalog program, source 
     gl_cv_func_fcntl_f_dupfd_cloexec=yes gl_cv_func_fcntl_f_dupfd_works=yes gl_cv_func_getdtablesize_works=yes ac_cv_func_sigaction=yes ac_cv_func_sigprocmask=yes ac_cv_func_dup2=yes gl_cv_func_dup2_works=yes ac_cv_func_pipe=yes ac_cv_func_fchdir=yes ac_cv_func_getdtablesize=yes \
     ../configure --host=$T --disable-nls --disable-utf8 --disable-libmagic --disable-speller --disable-browser --disable-threads --disable-mouse >/dev/null &&
     make -j"$J" -C lib GL_CFLAG_GNULIB_WARNINGS= >/dev/null &&
-    printf '#include <compat.h>\n#include <ink_nano.h>\n' >> config.h && # after gnulib's config.h part: the system headers it wants first
+    printf '#define COMPAT_CHMOD_OK 1\n#include <compat.h>\n#include <ink_nano.h>\n' >> config.h && # after gnulib's config.h part: the system headers it wants first
     make -j"$J" -C src nano GL_CFLAG_GNULIB_WARNINGS= CFLAGS="-O2 $EMU -I$P/compat -I$tc/include" >/dev/null && cp src/nano "$OUT/nano.wasm")
 }
 
+b_vim() { # Vim 9.1 (Vim license: charityware, GPL-compatible; a separate catalog program): normal features, no GUI/X11/channels/jobs/terminal/scripting languages; builtin terminal entries (no termcap library); raw keys and window size through the host's "inksoc" imports (vim/ink_term.c); no fork: :! and :shell report failure; no runtime files (VIMINIT in the program turns nocompatible on)
+  compat
+  fetch vim/vim v$VIM vim
+  v=$WORK/vim/src
+  if [ ! -f "$P/lib/libtinfo.a" ]; then # configure insists on a terminal library to link with; HAVE_TGETENT is undone below, so this one is never used
+    echo 'int tgetent(char *b, const char *n) { (void)b; (void)n; return 0; }' > "$WORK/tinfo.c"
+    $CC -O2 -c "$WORK/tinfo.c" -o "$WORK/tinfo.o" && $AR rcs "$P/lib/libtinfo.a" "$WORK/tinfo.o"
+  fi
+  $CC -O2 -I"$here/vim/include" -I"$here/vim" -c "$here/vim/ink_term.c" -o "$WORK/ink_term.o" && $AR rcs "$P/lib/libinkterm.a" "$WORK/ink_term.o"
+  VCF="-O2 $EMU -I$here/vim/include -I$P/compat -include compat.h -include $here/vim/ink_vim.h"
+  (cd "$v" && make distclean >/dev/null 2>&1 || true
+    CFLAGS="$VCF" CPPFLAGS="$VCF" LDFLAGS="-L$P/lib $STACK" LIBS="-lcompat -linkterm $EMUL" \
+    vim_cv_toupper_broken=no vim_cv_terminfo=yes vim_cv_tgetent=zero vim_cv_getcwd_broken=no vim_cv_stat_ignores_slash=no \
+    vim_cv_memmove_handles_overlap=yes vim_cv_memcpy_handles_overlap=no vim_cv_bcopy_handles_overlap=no \
+    vim_cv_timer_create=no vim_cv_timer_create_with_lrt=no vim_cv_timer_create_works=no vim_cv_ipv4_networking=no vim_cv_ipv6_networking=no \
+    vim_cv_uname_output=Linux vim_cv_uname_r_output=6 vim_cv_uname_m_output=x86_64 \
+    ./configure --host=$T --build=x86_64-linux-gnu --with-features=normal --disable-gui --without-x --disable-channel --disable-terminal \
+      --disable-netbeans --disable-nls --disable-acl --disable-gpm --disable-sysmouse --disable-selinux --disable-canberra --disable-libsodium \
+      --disable-darwin --disable-smack --disable-xim --disable-fontset --disable-icon-cache-update --disable-desktop-database-update \
+      --disable-perlinterp --disable-pythoninterp --disable-python3interp --disable-rubyinterp --disable-luainterp --disable-tclinterp --disable-mzschemeinterp \
+      --disable-cscope --with-tlib=tinfo --enable-fail-if-missing=no >"$WORK/vim-configure.log" 2>&1 || { tail -60 "$WORK/vim-configure.log"; exit 1; }
+    # no termcap library (builtin terminal entries), no dlopen, no gettimeofday (that switches off reltime/timers/profile, which need setitimer);
+    # osdef.h (prototypes configure derives from the host's headers) is left empty: wasi-libc's headers are right
+    sed -i 's/^#define HAVE_TGETENT 1/\/* #undef HAVE_TGETENT *\//; s/^#define TERMINFO 1/\/* #undef TERMINFO *\//; s/^#define HAVE_DLOPEN 1/\/* #undef HAVE_DLOPEN *\//; s/^#define HAVE_DLSYM 1/\/* #undef HAVE_DLSYM *\//; s/^#define HAVE_GETTIMEOFDAY 1/\/* #undef HAVE_GETTIMEOFDAY *\//' auto/config.h
+    : > auto/osdef.h
+    sed -i 's/^    mch_early_init();$/    mch_early_init();\n    ink_defaults();/' main.c; grep -q ink_defaults main.c
+    sed -i 's/^    return statb.st_mode;$/    return statb.st_mode | 0600; \/* WASI stat has no permission bits: without this every file is read-only *\//' os_unix.c; grep -q '| 0600' os_unix.c
+    sed -i 's/\(define mch_stat(n, p)\)\tstat(/\1\tink_stat(/; s/\(define mch_fstat(n, p)\)\tfstat(/\1\tink_fstat(/' macros.h; grep -q ink_stat macros.h; grep -q ink_fstat macros.h
+    make -j"$J" vim LIBS="-lm -lcompat -linkterm $EMUL" CC="$CC" >"$WORK/vim-make.log" 2>&1 || { grep -n "error" "$WORK/vim-make.log" | head -30; tail -5 "$WORK/vim-make.log"; exit 1; }
+    cp vim "$OUT/vim.wasm")
+}
+
 # b_ prefix: functions named zip, unzip... would hide those commands
-for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd|bc|file|less|grep|nano) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
+for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd|bc|file|less|grep|vim|nano) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
 ls -l "$OUT"

@@ -76,10 +76,10 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; até 2 it
 - Limite de 5 horas da conta pode parar workers no meio: retomar depois que liberar.
 
 ## 9. Estado atual (atualizar a cada merge)
-- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 80 feitos; 62, 65, 66, 71 travados.
-- **Rodando**: 74 vim (WASM).
+- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 80, 74 feitos; 62, 65, 66, 71 travados.
+- **Rodando**: —
 - **Fila por uso (Paulo 26/11: "siga essa ordem"; apps mais usados no terminal Linux que ainda estão incompletos aqui)**:
-  1. 74 vim (2) — rodando
+  1. ~~74 vim (2)~~ feito (#113)
   2. ~~80 grep GNU em WASM~~ feito (#116)
   3. 81 nano em WASM (2; hoje só x86) — próximo
   4. 82 curl em WASM pela ponte de rede (2; hoje só x86)
@@ -96,6 +96,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; até 2 it
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
+- 2026-11-26 | #113 | 74 vim em WASM | wasm-tools-24 só com vim (Vim 9.1.1400, licença Vim, 3,7 MB), `apk add vim` = vim/vi/view; build de 1ª, teste Linux leve (abrir, G o texto Esc :wq); :! ainda sem fork (reporta falha); tty pelos imports `inksoc` do 73 | 73 less (#106), 75 git
 - 2026-11-26 | #116 | 80 grep GNU em WASM | wasm-tools-23 só com grep 3.12 + fonte (GPL-3.0 como programa separado, catálogo aceita GPL só p/ grep); grep/egrep/fgrep antes do busybox; 10,9 MB: 216–400x vs busybox x86 (Chromium); 2 rodadas de CI | 81 nano
 - 2026-11-26 | #115 | fila por uso | ordem do Paulo: vim, grep, nano, curl, git, pip, diff, clang, Pillow | 80 grep
 - 2026-11-26 | #106 | 73 less em WASM | merge com aval do Paulo ("autorizo quebrar a regra teto de rodadas no 73"), 3ª rodada verde; less 692 completo, teclas sem Enter, janela; sem ganho de velocidade (4 → 32 ms) | 74 vim
