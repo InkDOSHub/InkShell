@@ -336,6 +336,7 @@ if (process.env.INK_SPAWN) { // item 78: processes from WebAssembly programs (ho
     const got2 = out.slice(f2);
     for (const [re, name] of [[/awk-sys 4/, 'awk system() status'], [/awk-get piped/, 'awk "cmd" | getline'], [/\ba\r?\nz\r?\nawk-end/, 'awk print | "cmd"'],
         [/lua-x\s+nil\s+exit\s+5/, 'lua os.execute'], [/lua-p\s+lp/, 'lua io.popen read'], [/lua-c\s+true\s+exit\s+0/, 'lua pclose status'],
+        ...(hasTool('quickjs') ? [[/qjs-p\s+qh/, 'qjs std.popen read'], [/qjs-c\s+0/, 'qjs popen close status'], [/qjs-x\s+3/, 'qjs os.exec exit status'], [/"qj"/, 'qjs os.exec of a WebAssembly program (jq)']] : []),
         [/fe \/tmp\/fx\/a\r?\nfe \/tmp\/fx\/b/, 'find -exec ... \;'], [/fp \/tmp\/fx\/[ab] \/tmp\/fx\/[ab]/, 'find -exec ... {} +'], [/"fj \/tmp\/fx\/a"/, 'find -exec of a WebAssembly program (jq)'],
         [/procs-end[\s\S]*done-0/, 'script ends']]) {
       const k = re.test(got2); ok = ok && k; console.log((k ? 'PASS ' : 'FAIL ') + 'tool processes: ' + name);

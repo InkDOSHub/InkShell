@@ -6,4 +6,7 @@ mkdir -p /tmp/fx && touch /tmp/fx/a /tmp/fx/b
 /root/find.wasm /tmp/fx -type f -exec echo fe {} \; | sort
 /root/find.wasm /tmp/fx -type f -exec echo fp {} +
 /root/find.wasm /tmp/fx -name a -exec /root/jq.wasm -n '"fj " + "{}"' \;
+if [ -f /root/qjs.wasm ]; then
+/root/qjs.wasm --std -e 'let f = std.popen("echo qh", "r"); print("qjs-p", f.getline()); print("qjs-c", f.close()); print("qjs-x", os.exec(["sh", "-c", "exit 3"])); print("qjs-j", os.exec(["/root/jq.wasm", "-n", "\"qj\""]))'
+fi
 echo procs-end
