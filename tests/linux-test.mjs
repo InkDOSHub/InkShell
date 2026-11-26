@@ -371,8 +371,8 @@ if (process.env.INK_SPAWN) { // item 78: processes from WebAssembly programs (ho
   }
   if (hasTool('git')) { // item 75 (information only): git stash starts git children (update-index, diff-tree...) through /dev/inksoc
     const t3 = Date.now(), f3 = out.length;
-    send(`mkdir -p /tmp/gb && busybox cp /root/git.wasm /tmp/gb/git && busybox chmod +x /tmp/gb/git && cd /tmp && rm -rf gs && mkdir gs && cd gs && PATH=/tmp/gb:$PATH; git init -q && git config user.name T && git config user.email t@example.com && echo a > a && git add a && git commit -q -m one && echo b >> a && git stash -q; echo st1=$?; git status --short | busybox wc -l | busybox sed 's/^/st-dirty=/'; git stash pop -q; echo st2=$?; busybox wc -l < a | busybox sed 's/^/st-lines=/'; cd; echo done-git\n`);
-    while (!/done-git\r?\n/.test(out.slice(f3)) && Date.now() - t3 < 120000) await settle(5000);
+    send(`mkdir -p /tmp/gb && busybox cp /root/git.wasm /tmp/gb/git && busybox chmod +x /tmp/gb/git && cd /tmp && rm -rf gs && mkdir gs && cd gs && PATH=/tmp/gb:$PATH; git init -q && git config user.name T && git config user.email t@example.com && echo a > a && git add a && git commit -q -m one && echo b >> a && git stash -q; echo st1=$?; git status --short | busybox wc -l | busybox sed 's/^/st-dirty=/'; git stash pop -q; echo st2=$?; busybox wc -l < a | busybox sed 's/^/st-lines=/'; cd; echo done-git-$((1+1))\n`);
+    while (!/done-git-2/.test(out.slice(f3)) && Date.now() - t3 < 120000) await settle(5000);
     const got3 = out.slice(f3);
     console.log('INFO git stash through the bridge: ' + (/st1=0[\s\S]*st-dirty=0[\s\S]*st2=0[\s\S]*st-lines=2/.test(got3) ? 'works' : 'does not work') + ` (${((Date.now() - t3) / 1000).toFixed(1)} s)\n` + got3.slice(-1500));
   }

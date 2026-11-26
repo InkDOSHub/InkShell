@@ -395,6 +395,8 @@ b_git() { # git 2.47 (GPL-2.0-only; a separate catalog program, source release i
   # merge: "git stash create" (a child process) only when there are local changes to keep; with none it makes no stash anyway
   sed -i 's/^\tif (save_state(&stash))$/\tif ((has_unstaged_changes(the_repository, 1) || has_uncommitted_changes(the_repository, 1)) \&\& save_state(\&stash))/' "$g/builtin/merge.c"
   grep -q 'has_unstaged_changes(the_repository, 1) ||' "$g/builtin/merge.c"
+  # pager: only GIT_PAGER or core.pager start one (the terminal's $PAGER is less, a child process): by default git writes straight to the terminal
+  sed -i 's/^\t\tpager = getenv("PAGER");$/\t\tpager = NULL;/' "$g/pager.c"; ! grep -q 'getenv("PAGER")' "$g/pager.c"
   # init: no warning when the templates folder is missing (the catalog installs the program only)
   sed -i 's/^\t\twarning(_("templates not found in %s"), template_dir);$/\t\tif (errno != ENOENT)\n&/' "$g/setup.c"
   # 2.47's NO_UNIX_SOCKETS stand-in for credential-cache lacks the repository argument every builtin got
