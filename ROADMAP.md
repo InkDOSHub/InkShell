@@ -183,7 +183,7 @@ Metas: fim sem 2 → WASM 1,3–2x nativo, arquivo 10 GB sem estourar. Fim sem 3
 | 2026-11-25 | 3 | 60: perfil calls x86 pós-#83 | #86 | 1 |
 | 2026-11-25 | 3 | 62: loja: download do python3 falha (travado, queimado: wget https do motor dá EINVAL; apk repete/retoma + msg do wget) | #88 | 2 |
 | 2026-11-25 | 3 | 63: custo por instrução dentro do bloco JIT | #89 | 1 |
-| 2026-11-25 | 3 | 66: x86 JIT ret/call dentro da região | #N | 2 |
+| 2026-11-25 | 3 | 66: x86 JIT ret/call dentro da região | #91 | 2 |
 
 ## Fora (sem ponto até Paulo mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
