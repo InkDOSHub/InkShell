@@ -220,7 +220,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
     range(path, off, len) {
       if (!x.linux_get_range) return null;
       const nm = enc.encode(path), b = new Uint8Array(nm.length + 17), v = new DataView(b.buffer);
-      dbgc.mdata += d.byteLength; dbgc.pieces++; b.set(nm); v.setBigUint64(nm.length + 1, BigInt(off), true); v.setBigUint64(nm.length + 9, BigInt(len), true); put(b);
+      b.set(nm); v.setBigUint64(nm.length + 1, BigInt(off), true); v.setBigUint64(nm.length + 9, BigInt(len), true); put(b);
       const n = x.linux_get_range();
       if (n === -2) return 'wait';
       if (n < 8) return null;
