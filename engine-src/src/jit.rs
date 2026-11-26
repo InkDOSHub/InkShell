@@ -55,18 +55,6 @@ fn stack_on() -> bool {
     STACK.load(core::sync::atomic::Ordering::Relaxed)
 }
 
-static CALLRET: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
-/// Call/ret inside the region (item 66, on by default; 0 = off, to measure): the block after a
-/// direct call (its return address) joins the region, and a ret whose popped address is one of
-/// those return addresses jumps to that block inside the region instead of leaving it.
-#[no_mangle]
-pub extern "C" fn set_jit_callret(on: u32) {
-    CALLRET.store(on != 0, core::sync::atomic::Ordering::Relaxed);
-}
-fn callret_on() -> bool {
-    CALLRET.load(core::sync::atomic::Ordering::Relaxed)
-}
-
 /// jitprobe build only (item 63, measurement): A/B bits that emit one part of the block code twice,
 /// so the time difference prices that part: 1 register write-back (flush), 2 register reload from
 /// Cpu, 4 lazy-flag stores, 8 rip/icount stores at exits, 16 TLB check of plain loads/stores,
@@ -702,7 +690,6 @@ struct G {
     off_a2: Option<i64>,     // L_A2 holds entry rsp + this
     grp: Option<(i64, i64)>, // window [lo, hi) checked at the block start (L_GS, L_HB)
     helpers: bool,           // the module needs F_GRD / F_GWR
-    rets: Vec<(u64, usize)>, // item 66: return addresses of this region's direct calls that are blocks of it
 }
 
 macro_rules! off {
@@ -3816,18 +3803,12 @@ fn decode_block(e: &mut Engine, rip: u64) -> Option<Block> {
     Some(Block { list, end_rip, pc })
 }
 
-/// Constant places a block can go next (`cr`, item 66: a direct call's return address too, after its target).
-fn targets(b: &Block, cr: bool) -> Vec<u64> {
+/// Constant places a block can go next.
+fn targets(b: &Block) -> Vec<u64> {
     let mut t = Vec::new();
     for i in &b.list {
         match i.op {
-            0x70..=0x7F | 0x0F80..=0x0F8F | 0xE9 | 0xEB => t.push(i.next.wrapping_add(i.imm)),
-            0xE8 => {
-                t.push(i.next.wrapping_add(i.imm));
-                if cr {
-                    t.push(i.next);
-                }
-            }
+            0x70..=0x7F | 0x0F80..=0x0F8F | 0xE9 | 0xEB | 0xE8 => t.push(i.next.wrapping_add(i.imm)),
             _ => {}
         }
     }
@@ -3848,9 +3829,8 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
     let mut k = 0;
     let max_blocks = REGION.load(core::sync::atomic::Ordering::Relaxed) as usize;
     let max_ins = max_blocks * 20;
-    let cr = callret_on() && !e.cpu.mode32;
     while k < blocks.len() && blocks.len() < max_blocks && total < max_ins {
-        for t in targets(&blocks[k], cr) {
+        for t in targets(&blocks[k]) {
             if blocks.len() >= max_blocks || total >= max_ins {
                 break;
             }
@@ -3867,19 +3847,6 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
     }
     #[cfg(feature = "jitprobe")]
     probe::region(&heads, total);
-    // item 66: return addresses of direct calls that are blocks of this region (a ret compares with them)
-    let mut rets: Vec<(u64, usize)> = Vec::new();
-    if cr {
-        for b in &blocks {
-            if let Some(i) = b.list.last().filter(|i| i.op == 0xE8) {
-                if let Some(idx) = heads.iter().position(|&h| h == i.next) {
-                    if !rets.iter().any(|r| r.0 == i.next) && rets.len() < 8 {
-                        rets.push((i.next, idx));
-                    }
-                }
-            }
-        }
-    }
     let cpu = &e.cpu as *const _ as u32;
     let nb = blocks.len() as u32;
     let lic = opt();
@@ -3928,7 +3895,6 @@ fn compile(e: &mut Engine, rip: u64) -> Option<Vec<u8>> {
         off_a2: None,
         grp: None,
         helpers: false,
-        rets,
     };
     if lic {
         g.cpu_ld64(off!(icount));
@@ -4150,24 +4116,6 @@ fn emit_block(g: &mut G, b: Block) {
                 g.b(I64ADD);
                 g.set(R0 + 4);
                 g.dirty |= 1 << 4;
-                if !g.rets.is_empty() {
-                    // item 66: back to a call site of this region = internal jump. Registers and
-                    // flags go to Cpu once here; the jumps and the exit below then store nothing.
-                    g.flush();
-                    g.exit_flags();
-                    g.dirty = 0;
-                    g.prod = Prod::Unknown;
-                    for (r, idx) in g.rets.clone() {
-                        g.get(t);
-                        g.i64c(r);
-                        g.b(I64EQ);
-                        g.b(IF);
-                        g.b(VOID);
-                        g.cnt(18);
-                        g.internal(r, idx, n, 1);
-                        g.b(END);
-                    }
-                }
                 g.exit_dyn(t, n);
                 done_all = true;
                 break;
@@ -4360,8 +4308,7 @@ fn section(m: &mut Vec<u8>, id: u8, data: &[u8]) {
 /// 10 chained exits (the next cached block is called at once; 2 and 8 count only exits to the dispatcher),
 /// 11 stack window accesses, 12 of them slow (helper), 13 stack window checks,
 /// item 60 (measurement only): 14 rets run, 15 calls run (direct + indirect), 16 TLB-miss helper calls
-/// of plain loads/stores (rd/wr), 17 chained-exit attempts (budget left; 17 - 10 = target not in the cache),
-/// item 66: 18 rets that jumped inside the region (return address = a call site's block)
+/// of plain loads/stores (rd/wr), 17 chained-exit attempts (budget left; 17 - 10 = target not in the cache)
 #[cfg(any(feature = "prof", feature = "ophist"))]
 pub static mut DYN: [u64; 32] = [0; 32];
 

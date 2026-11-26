@@ -16,7 +16,6 @@ const HOTS = (process.env.HOTS || '').split(',').map(Number).filter((n) => n > 0
 const REGIONS = (process.env.REGIONS || '').split(',').map(Number).filter((n) => n > 0);
 const RS = REGIONS.length ? REGIONS : [0]; // 0 = engine default (no set_jit_region call)
 const STACKS = (process.env.STACKS || '').split(',').filter((v) => v !== '').map(Number);
-const AB_FN = process.env.AB_FN || 'stack'; // item 66: the STACKS A/B drives set_jit_<AB_FN> (stack, callret)
 const FIBS = (process.env.FIBS || '').split(',').filter((v) => v.includes(':')).map((v) => v.split(':').map(Number));
 const types = { '.js': 'text/javascript', '.mjs': 'text/javascript', '.html': 'text/html', '.wasm': 'application/wasm' };
 const srv = http.createServer((q, r) => {
@@ -41,8 +40,8 @@ async function run(type, name, r, hot = 0, region = 0, stack = 1, chain = 1) {
       const w = new Worker('/tests/bench/browser-worker.js', { type: 'module' });
       w.onmessage = (e) => ok(e.data);
       w.onerror = (e) => ok({ err: 'worker error: ' + e.message, lines: [], jit: {}, done: false });
-      w.postMessage({ files, cmd, pool, hot, region, stack, chain, abfn });
-    }), { files: r.files, cmd: r.cmd, pool: POOL, hot, region, stack, chain, abfn: AB_FN });
+      w.postMessage({ files, cmd, pool, hot, region, stack, chain });
+    }), { files: r.files, cmd: r.cmd, pool: POOL, hot, region, stack, chain });
     return { ...res, ver };
   } catch (e) {
     return { err: String(e), lines: [], jit: {}, done: false, ver: '?' };
@@ -102,7 +101,7 @@ if (HOTS.length) {
   }
 }
 if (STACKS.length) {
-  L.push('', `### x86 JIT A/B (set_jit_${AB_FN}; 1 = on, 0 = off; 2 alternated rounds)`, '',
+  L.push('', '### x86 JIT stack window A/B (set_jit_stack; 1 = on, 0 = off; 2 alternated rounds)', '',
     '| browser | stack | round | cpu calls | cpu sort | cpu float | cpu int | cpu total | py -c pass 1st | py -c pass 2nd | py 1M loop | JIT modules | JIT KB | compile ms |',
     '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|');
   for (const n of ['chromium', 'webkit']) for (const k of [1, 2]) for (const s of STACKS) {
