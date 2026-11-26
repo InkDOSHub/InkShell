@@ -11,17 +11,28 @@
 //   w-blobpost     page posts slice Blobs, worker FileReaderSync on them
 //   opfs-only      worker writes 4 MB to an OPFS sync handle (the swap), no reads
 // suffix +opfs: after each piece the worker also writes it (from wasm memory) to the OPFS sync handle
-const q = new URLSearchParams(location.search), V = q.get('v') || 'page-ab', MB = +(q.get('mb') || 1536), PIECE = 4 << 20;
+// extra knobs (?piece=KB &delay=ms between pieces &poke=MB: every MB read allocate+drop an ArrayBuffer of 32 MB to nudge the GC)
+//   page-stream    page: one f.slice(0,total).stream() read sequentially, chunks dropped
+const q = new URLSearchParams(location.search), V = q.get('v') || 'page-ab', MB = +(q.get('mb') || 1536), PIECE = (+(q.get('piece') || 4096)) << 10;
+const DELAY = +(q.get('delay') || 0), POKE = +(q.get('poke') || 0) * 1048576; let sincePoke = 0;
+const nap = () => DELAY ? new Promise((r) => setTimeout(r, DELAY)) : null;
+const poke = (n) => { if (POKE && (sincePoke += n) >= POKE) { sincePoke = 0; new Uint8Array(new ArrayBuffer(32 << 20))[0] = 1; } };
 window.__res = null;
 document.getElementById('f').onchange = async (ev) => {
   const f = ev.target.files[0], t0 = performance.now(), opfs = V.endsWith('+opfs'), base = V.replace('+opfs', '');
   const total = Math.min(f.size, MB * 1048576);
   try {
     if (base === 'page-ab') {
-      for (let a = 0; a < total; a += PIECE) { const d = await f.slice(a, a + PIECE).arrayBuffer(); if (d.byteLength !== Math.min(PIECE, f.size - a)) throw new Error('short'); }
+      for (let a = 0; a < total; a += PIECE) { const d = await f.slice(a, a + PIECE).arrayBuffer(); if (d.byteLength !== Math.min(PIECE, f.size - a)) throw new Error('short'); poke(d.byteLength); await nap(); }
       window.__res = { ok: true, ms: performance.now() - t0 }; return;
     }
-    const w = new Worker('rss-micro-worker.js');
+    if (base === 'page-stream') {
+      const rd = f.slice(0, total).stream().getReader(); let n = 0;
+      for (;;) { const { done, value } = await rd.read(); if (done) break; n += value.length; poke(value.length); }
+      if (n !== total) throw new Error('short ' + n);
+      window.__res = { ok: true, ms: performance.now() - t0 }; return;
+    }
+    const w = new Worker('rss-micro-worker.js?delay=' + DELAY + '&piece=' + (PIECE >> 10));
     const ack = () => new Promise((r) => { w.onmessage = (m) => r(m.data); });
     let p = ack();
     w.postMessage({ type: 'init', opfs, variant: base, total, file: base.startsWith('w-') && base !== 'w-blobpost' ? f : null });

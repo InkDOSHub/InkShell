@@ -1,7 +1,7 @@
 'use strict';
 // Worker of rss-micro.html (item 65): reads a File in 4 MB pieces in different ways, copies each into a WebAssembly.Memory
 let mem, h = null, cfg, file = null, sum = 0, swapAt = 0;
-const PIECE = 4 << 20, nm = new TextEncoder().encode('/mnt/x/big.bin');
+const Q = new URLSearchParams(self.location.search), PIECE = (+(Q.get('piece') || 4096)) << 10, DELAY = +(Q.get('delay') || 0), nm = new TextEncoder().encode('/mnt/x/big.bin');
 // like worker.js lx.mdata + put(): a buffer "name\0 off len data" is built, then copied into wasm memory
 function mdata(d) {
   const b = new Uint8Array(nm.length + 17 + d.length); b.set(nm); b.set(d, nm.length + 17);
@@ -39,6 +39,7 @@ onmessage = async (ev) => {
           swapAt += PIECE;
         }
         if (cfg.opfs && v !== 'w-stream' && v !== 'opfs-only') swapWrite(n);
+        if (DELAY) await new Promise((r) => setTimeout(r, DELAY));
       }
       postMessage({ ok: true, extra: { sum, swap: h ? h.getSize() : 0 } });
     }
