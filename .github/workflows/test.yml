@@ -39,7 +39,7 @@ jobs:
           echo "$(printf '%s' "$e" | cut -f3)  tests/python.wasm" | sha256sum -c
       - name: 7-Zip, qpdf, ImageMagick, ffmpeg, sqlite, jq, lua, zip, unzip, ripgrep, hashtools, sed, find, awk, tar, gzip, xz from the WebAssembly catalog (URL and sha256 from the catalog)
         run: |
-          for n in 7zip:7zz qpdf:qpdf imagemagick:magick ffmpeg:ffmpeg ffprobe:ffprobe sqlite:sqlite3 jq:jq lua5.4:lua zip:zip unzip:unzip ripgrep:rg hashtools:hashsum sed:sed findutils:find onetrue-awk:awk tar:bsdtar gzip:gzip xz:xz; do
+          for n in 7zip:7zz qpdf:qpdf imagemagick:magick ffmpeg:ffmpeg ffprobe:ffprobe sqlite:sqlite3 jq:jq lua5.4:lua zip:zip unzip:unzip ripgrep:rg hashtools:hashsum sed:sed findutils:find onetrue-awk:awk tar:bsdtar gzip:gzip xz:xz bzip2:bzip2 zstd:zstd; do
             e=$(awk -F '\t' -v n="${n%%:*}" '$1 == n' overlay/etc/inksoc/wasm-catalog); f=tests/${n#*:}.wasm
             curl -fsSL --retry 3 -o "$f" "$(printf '%s' "$e" | cut -f2)"
             echo "$(printf '%s' "$e" | cut -f3)  $f" | sha256sum -c
