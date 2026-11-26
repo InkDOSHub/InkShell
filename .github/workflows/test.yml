@@ -63,6 +63,12 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cd engine-src && cargo build --release --target wasm32-unknown-unknown
+      - name: python3 urllib http/https through the wisp tunnel (item 76, real network; WASM program in a worker thread)
+        timeout-minutes: 6
+        run: INK_NET=1 INK_NET_PY=1 timeout 300 node tests/linux-test.mjs engine-src/target/wasm32-unknown-unknown/release/inksoc.wasm
+      - name: python3 processes (item 78; subprocess/os.system through /dev/inksoc, WASM programs in worker threads)
+        timeout-minutes: 6
+        run: INK_SPAWN=1 INK_WASI_THREADS=1 timeout 300 node tests/linux-test.mjs engine-src/target/wasm32-unknown-unknown/release/inksoc.wasm
       - name: Test the fresh build
         run: node tests/linux-test.mjs engine-src/target/wasm32-unknown-unknown/release/inksoc.wasm
       - name: Test the published engine.wasm

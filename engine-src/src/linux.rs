@@ -49,7 +49,10 @@ pub struct Saved {
 }
 /// A WebAssembly program's process: the call the page asked for and the answer.
 #[derive(Default)]
-pub struct Wasi { pub info: Vec<u8>, req: Option<([u64; 7], Vec<u8>, u64)>, res: Option<(i64, Vec<u8>)>, out_len: u64 }
+/// `busy`: the stub took a call and its DONE is that call's answer (a fork's child runs DONE once with no call:
+/// ignored). Item 78: the child of a WebAssembly program's fork is a stub too, driven by the parent's host
+/// (dup2, chdir, execve through wasi_call with the child's pid): a process bridge without x86 code.
+pub struct Wasi { pub info: Vec<u8>, req: Option<([u64; 7], Vec<u8>, u64)>, res: Option<(i64, Vec<u8>)>, out_len: u64, busy: bool }
 
 /// Where the stub's data buffer lives and how big it is (the page reads and writes up to this much per call).
 pub const WBUF: u64 = 0x1000_0000;
@@ -149,6 +152,7 @@ pub struct Lx {
     // that makes the module's Linux calls with its own files (see `wasi_stub`)
     pub wasi: BTreeMap<u32, Wasi>,
     pub wasi_new: std::collections::VecDeque<u32>,
+    pub wasi_execd: BTreeSet<u32>, // driven children whose execve worked: their pending call answers 0
     // local sockets, eventfd, epoll
     us: BTreeMap<u32, Us>,
     us_names: BTreeMap<String, u32>,
@@ -915,6 +919,7 @@ pub fn syscall(e: &mut Engine) {
                 None if l.wasi.contains_key(&me) => { l.want = Some(Cond::Wasi(me)); BLOCKED }
                 None => -ENOSYS,
                 Some((a, data, _)) => {
+                    if let Some(w) = lx(e).wasi.get_mut(&me) { w.busy = true; }
                     let _ = e.mmu.write_bytes(WBUF, &data[..data.len().min(WBUF_SIZE as usize)]);
                     for (k, r) in [7usize, 6, 2, 10, 8, 9].into_iter().enumerate() { e.cpu.regs[r] = a[k + 1]; }
                     a[0] as i64
@@ -926,7 +931,7 @@ pub fn syscall(e: &mut Engine) {
             let n = lx(e).wasi.get(&me).map_or(0, |w| w.out_len.min(WBUF_SIZE));
             let mut d = vec![0u8; n as usize];
             let _ = e.mmu.read_bytes(WBUF, &mut d);
-            if let Some(w) = lx(e).wasi.get_mut(&me) { w.res = Some((a0 as i64, d)); }
+            if let Some(w) = lx(e).wasi.get_mut(&me) { if std::mem::take(&mut w.busy) { w.res = Some((a0 as i64, d)); } }
             0
         }
         22 | 293 => { // pipe / pipe2
@@ -1838,6 +1843,8 @@ fn fork(e: &mut Engine) -> i64 {
     let (pgid, ctty) = l.procs.get(&me).map_or((me, 0), |p| (p.pgid, p.ctty));
     l.procs.insert(pid, Proc { ppid: me, saved: Some(saved), zombie: None, pgid, ctty });
     if let Some(a) = l.acts.get(&me).cloned() { l.acts.insert(pid, a); }
+    // a WebAssembly program's stub forks: the child is a stub driven by the parent's host (see Wasi)
+    if let Some(w) = l.wasi.get(&me) { let info = w.info.clone(); l.wasi.insert(pid as u32, Wasi { info, ..Default::default() }); }
     let tid = e.cur_tid();
     let mask = lx(e).masks.get(&tid).copied().unwrap_or(0);
     let mut cpu = e.cpu.clone();
@@ -1959,10 +1966,11 @@ fn execve(e: &mut Engine, path: &str, mut args: Vec<String>, env: Vec<String>) -
         info.push(0);
         for v in &env { info.push(0); info.extend_from_slice(v.as_bytes()); }
         let me = l.pid;
+        if l.wasi.contains_key(&me) { l.wasi_execd.insert(me); } // a driven child's execve worked (wasi_take answers 0)
         l.wasi.insert(me, Wasi { info, ..Default::default() });
         l.wasi_new.push_back(me);
         data = wasi_stub();
-    }
+    } else if l.wasi.remove(&l.pid).is_some() { let me = l.pid; l.wasi_execd.insert(me); }
     // set-uid programs (no file modes here): these run with effective uid 0, as on Alpine
     let base = path.rsplit('/').next().unwrap_or("");
     if matches!(base, "su" | "passwd" | "login" | "ping" | "ping6" | "traceroute" | "crontab" | "doas" | "sudo" | "newgrp" | "chsh" | "chfn" | "gpasswd") { l.ids.2 = 0; }
@@ -3018,6 +3026,7 @@ fn unix_call(e: &mut Engine, nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u6
         e.w32(a3, f1 as u32); e.w32(a3 + 4, f2 as u32);
         return Some(0);
     }
+    if nr == 41 { return None; } // socket(AF_INET...): a0 is the family, not a descriptor (fd 2 being a local socket made it fail)
     // TCP on this machine: listen turns the socket into a local one; connect to 127.x finds it
     if let Some(Fd::Sock { id: sid }) = l.fds.get(&fd).cloned() {
         match nr {
@@ -3529,6 +3538,7 @@ pub extern "C" fn wasi_take(pid: u32) -> i32 {
     let _g = crate::lock::lock();
     let Some(l) = crate::eng().s.lx.as_mut() else { return -2 };
     let alive = l.procs.get(&pid).map_or(false, |p| p.zombie.is_none());
+    if l.wasi_execd.remove(&pid) { unsafe { WASI_RET = 0.0; } return 0; }
     match l.wasi.get_mut(&pid).and_then(|w| w.res.take()) {
         Some((v, d)) => { unsafe { WASI_RET = v as f64; } crate::set_out(d) as i32 }
         None if alive && l.wasi.contains_key(&pid) => -1,
@@ -3537,6 +3547,9 @@ pub extern "C" fn wasi_take(pid: u32) -> i32 {
 }
 #[no_mangle]
 pub extern "C" fn wasi_ret() -> f64 { unsafe { WASI_RET } }
+/// 1: a WebAssembly program may fork (its child is driven by wasi_call: dup2, chdir, execve), item 78.
+#[no_mangle]
+pub extern "C" fn wasi_spawn() -> i32 { 1 }
 
 /// Is WebAssembly process `pid` still running? (The page ends the module's Worker when not: Ctrl+C, kill.)
 #[no_mangle]

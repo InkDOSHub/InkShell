@@ -14,9 +14,19 @@ Terminal Alpine Linux no navegador (iPad XeOS principal, iPhone Safari). Motor =
 - **Worker**: 1 PR = 1 item (ou fatia). Branch `claude/<item>`, PR, espera CI verde. Após merge, se há cota na semana, segue p/ próximo item na mesma sessão (Paulo: semana inteira num dia ok).
   - Trabalho do terminal com CI verde = merge sozinho (squash). Hub UI continua pedindo Paulo.
 - Worker termina com 2–4 linhas: PR, CI, pontos.
+- **Continuidade (Paulo 26/11)**: `docs/GERENTE.md` = manual do gerente (critérios + estado). Todo PR com merge adiciona 1 linha no Log de lá (data | PR | item | resultado | próximo) e ajusta "Estado atual".
+
+## Troca de agente (obrigatório, Paulo 26/11)
+Projeto por esporte: nenhum agente/conta é dono do trabalho. Qualquer agente (Claude ou outro, qualquer conta) precisa poder parar a qualquer hora e outro continuar sem perder nada.
+- Nada só na sessão: worker faz commit + push no branch `claude/<item>` a cada passo que funcionou e SEMPRE antes de esperar CI ou build longo. WIP pode ir com "WIP" no título do commit.
+- PR aberto cedo (draft ok) com seção **"Estado p/ continuar"** no corpo: feito, falta, próximo comando, rodadas de CI gastas. Atualizar a cada rodada.
+- Ao parar sem terminar (limite, erro, travou): linha no Log do `docs/GERENTE.md` ("parado: <motivo>, branch X, próximo passo").
+- Assumir o trabalho: ler `CLAUDE.md` + `docs/GERENTE.md`, checar `CONTROLE:`, trocar a linha `CONTROLE:` do ROADMAP p/ `seguir (gerente: <conta/sessão>, <data>)` num PR pequeno, e continuar dos branches/PRs abertos. Uma sessão gerente por vez.
+- Instruções escritas p/ qualquer agente: nada que dependa de ferramenta de um só produto sem alternativa (ex.: "subagente" = outra sessão/agente; "SendMessage" = continuar o mesmo agente ou novo com resumo).
+- Custo: modelo mais barato que der conta (Sonnet/similar); modelo caro só p/ motor/ponte difícil.
 
 ## Pontos
-- Semana = ter 17:00 → ter 17:00 SP (renova o plano). Teto 30 pts/semana (Paulo; semana 3 (até ter 1/12) liberada sem teto: "autorizo quebrar a regra 30 pts", 26/11; itens em sequência, 1 por vez). Fácil 1, médio 2, difícil 3,5.
+- Semana = ter 17:00 → ter 17:00 SP (renova o plano). Teto 30 pts/semana (Paulo; semana 3 (até ter 1/12) liberada sem teto: "autorizo quebrar a regra 30 pts", 26/11; itens: até 2 em paralelo só p/ programas simples do catálogo, grandes (rede, git, clang) 1 por vez ("autorizo quebrar a regra 1 por vez", 26/11)). Fácil 1, médio 2, difícil 3,5.
 - Conversão: 15 pts ≈ 20% do crédito semanal (1 pt ≈ 1,3%). Paulo informa o % real; se % real > pts × 1,3, valer o % real.
 - Antes de começar: somar pontos da semana em `ROADMAP.md`; se estoura, parar e responder "sem cota".
 - Registrar linha no quadro de pontos no mesmo PR.
