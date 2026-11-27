@@ -554,6 +554,10 @@ b_patch() { # GNU patch 2.8.1 (GPL-3.0-or-later; a separate catalog program, sou
   printf '#include <errno.h>\n#include "ink_patch.h"\nint dup(int f) { (void)f; errno = ENOSYS; return -1; }\nint dup2(int f, int g) { (void)f; (void)g; errno = ENOSYS; return -1; }\nint fchdir(int f) { (void)f; errno = ENOSYS; return -1; }\nint getdtablesize(void) { return 1024; }\nint pipe(int p[2]) { (void)p; errno = ENOSYS; return -1; }\nint getrlimit(int r, struct rlimit *l) { (void)r; (void)l; errno = ENOSYS; return -1; }\n' > "$g/ink_patch.c"
   $CC -O2 -c "$g/ink_patch.c" -o "$g/ink_patch.o"
   sed -i "s/\\bopendirat\\b\\([^.]\\)/ink_opendirat\\1/g" "$g/lib/backupfile.c" "$g/lib/opendirat.c" "$g/lib/opendirat.h"
+  # WASI has no permission bits (fchmodat/fchmod are ENOSYS): patch's "set the permissions of the new file" step is a no-op that succeeds
+  sed -i 's/return fchmodat (dirfd, pathname, mode, 0);/(void) dirfd; (void) pathname; (void) mode; return 0;/' "$g/src/safe.c"
+  sed -i 's/(tofd < 0 ? safe_chmod (to, mode) : fchmod (tofd, mode)) < 0/(tofd < 0 ? safe_chmod (to, mode) : 0) < 0/' "$g/src/util.c"
+  grep -q "(void) dirfd; (void) pathname" "$g/src/safe.c" && grep -q "safe_chmod (to, mode) : 0" "$g/src/util.c"
   if [ -f "$g/lib/sigaction.c" ]; then
     sed -i 's/# error "Revisit the assumptions made in the sigaction module"/\/\* WASI defines SIGCHLD but has no sigaction: keep gnulib'\''s replacement. *\//' "$g/lib/sigaction.c"
   fi
