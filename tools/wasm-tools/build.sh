@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds WebAssembly (WASI preview1) command-line tools for the catalog (apk add) from upstream sources.
-# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | bzip2 | zstd | bc | file | less | grep | vim | nano | curl | git | make | python3 | diffutils | patch
+# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | bzip2 | zstd | bc | file | less | grep | vim | nano | curl | git | make | python3 | diffutils | patch | openssl
 # env: WASI_SDK (wasi-sdk-33 or later: C++ exceptions), WORK (sources, build dirs), OUT (the .wasm files)
 # CI: .github/workflows/wasm-tools.yml builds them and publishes a GitHub release; the catalog points at it.
 # No GPL in the engine, the page, or the worker. GPL is only a separate catalog program, source in its release (owner, 26/11): GNU grep, nano, git, diffutils 3.12, patch 2.8.1 and make 4.4.1 (the b_* recipes in this file; see THIRD_PARTY_LICENSES.md). Everything else: ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
@@ -26,7 +26,7 @@ CWDL="-Wl,--undefined=chdir"
 STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
-SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 ONIG=6.9.10 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12 VIM=9.1.1400 NANO=8.3 NCURSES=6.5 GIT=2.47.1 DIFFUTILS=3.12 PATCH=2.8.1 GMAKE=4.4.1
+SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 ONIG=6.9.10 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12 VIM=9.1.1400 NANO=8.3 NCURSES=6.5 GIT=2.47.1 DIFFUTILS=3.12 PATCH=2.8.1 OPENSSL=3.5.4 GMAKE=4.4.1
 PYWLR=python%2F3.12.0%2B20231211-040d5a6 WASIVFS=0.4.0 BINARYEN=124 WASMTIME=44.0.0 FREETYPE=2.13.3 WEBP=1.5.0 TIFF=4.7.0 PILLOW=11.3.0 PILLOW_SHA=3828ee7586cd0b2091b6209e5ad53e20d0649bbe87164a459d0676e035e8f523
 PILLOW_URL=https://files.pythonhosted.org/packages/f3/0d/d0d6dea55cd152ce3d6767bb38a8fc10e33796ba4ba210cbab9354b6d238/pillow-$PILLOW.tar.gz
 
@@ -621,6 +621,17 @@ PY
     cp src/patch "$OUT/patch.wasm")
 }
 
+b_openssl() { # OpenSSL 3.5 `openssl` command (Apache-2.0): dgst, enc, rand, genpkey, req, x509, passwd, base64, pkey, verify...; no sockets (no s_client/s_server: TLS goes through the x86 helper), no threads, no engines, no asm, no tests/docs; random bytes from WASI random_get
+  compat; dl "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL/openssl-$OPENSSL.tar.gz" openssl
+  g=$WORK/openssl
+  # `openssl speed` times itself with alarm()/fork: WASI has neither, so it runs without them (HAVE_FORK=0, alarm is a no-op: speed -seconds is not honored)
+  printf '#include <compat.h>\n#define alarm(s) ((void)(s), 0u)\n' > "$g/ink_openssl.h"
+  (cd "$g" && CFLAGS="-O2 $EMU -I$P/compat -include $g/ink_openssl.h -DHAVE_FORK=0" LDFLAGS="-L$P/lib $STACK" ./Configure linux-generic32 no-asm no-threads no-sock no-dso no-shared no-afalgeng no-ui-console no-tests no-docs no-engine no-async no-secure-memory no-ktls no-comp no-module no-atexit no-autoload-config \
+      -lcompat $EMUL --prefix=/usr/local --openssldir=/etc/ssl >"$WORK/openssl-configure.log" 2>&1 || { tail -40 "$WORK/openssl-configure.log"; exit 1; }
+    make -j"$J" build_programs >"$WORK/openssl-make.log" 2>&1 || { grep -n "error" "$WORK/openssl-make.log" | head -40; tail -20 "$WORK/openssl-make.log"; exit 1; }
+    cp apps/openssl "$OUT/openssl.wasm")
+}
+
 b_python3() { # python3 = CPython 3.12.0 (PSF-2.0) from VMware Labs' libpython (the same build as the earlier catalog python3, stdlib zip
   # inside by wasi-vfs) + Pillow 11.3.0 (MIT-CMU) with libjpeg-turbo 3.0.4 (IJG/BSD-3-Clause/zlib), FreeType 2.13.3 (FTL option of its
   # dual license, not the GPL one), libwebp 1.5.0 (BSD-3-Clause) and libtiff 4.7.0 (libtiff license); zlib comes in libpython.
@@ -693,5 +704,5 @@ b_python3() { # python3 = CPython 3.12.0 (PSF-2.0) from VMware Labs' libpython (
 }
 
 # b_ prefix: functions named zip, unzip... would hide those commands
-for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd|bc|file|less|grep|vim|nano|curl|git|make|python3|diffutils|patch) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
+for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd|bc|file|less|grep|vim|nano|curl|git|make|python3|diffutils|patch|openssl) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
 ls -l "$OUT"
