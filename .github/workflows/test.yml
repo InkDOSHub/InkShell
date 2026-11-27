@@ -37,6 +37,12 @@ jobs:
           e=$(awk -F '\t' '$1 == "python3"' overlay/etc/inksoc/wasm-catalog)
           curl -fsSL --retry 3 -o tests/python.wasm "$(printf '%s' "$e" | cut -f2)"
           echo "$(printf '%s' "$e" | cut -f3)  tests/python.wasm" | sha256sum -c
+      - name: Pillow resize on this runner, native (item 84; compare with the WebAssembly python3 number in the Linux test)
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          python3 -m venv $RUNNER_TEMP/pil && $RUNNER_TEMP/pil/bin/pip install -q pillow==11.3.0
+          $RUNNER_TEMP/pil/bin/python -c "import time; from PIL import Image; b = Image.new('RGB', (1024, 1024), (10, 20, 30)); t = time.time(); b.resize((512, 512), Image.LANCZOS); print('Pillow resize 1024x1024 -> 512x512 LANCZOS (native x86-64 runner):', int((time.time() - t) * 1000), 'ms')"
       - name: pip wheel from the catalog (py3-pip, item 83) + six for a local index
         run: |
           e=$(awk -F '\t' '$1 == "py3-pip"' overlay/etc/inksoc/wasm-catalog)
