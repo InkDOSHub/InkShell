@@ -61,7 +61,7 @@ InkShell = terminal Alpine Linux no navegador (WebKit do iPad/XeOS primeiro, iPh
 
 ## 6. Catálogo WASM (como se adiciona programa)
 - `overlay/etc/inksoc/wasm-catalog`, separado por TAB: nome, url, sha256, tamanho, licença, arquivos, descrição.
-- Cada item publica sua própria release `wasm-tools-N` só com os seus arquivos (usados: 15 bzip2/zstd, 16 diffutils sem uso, 17 bc/file, 18 less, 19 sem uso, 20 awk/lua/find (item 78), 22 qjs (item 79), 23 grep (item 80), 24 vim (item 74), 25 nano (item 81), 27 curl (item 82), 29 git (item 75), 34 python3 + Pillow (item 84; 33 = 1º build sem .pyc, sem uso); 21 era um vim antigo sem uso; 26 = 1º build do curl, sem uso; 28 = 1º build do git, sem uso: abria o $PAGER less).
+- Cada item publica sua própria release `wasm-tools-N` só com os seus arquivos (usados: 15 bzip2/zstd, 35 make (item 77a), 16 diffutils sem uso, 17 bc/file, 18 less, 19 sem uso, 20 awk/lua/find (item 78), 22 qjs (item 79), 23 grep (item 80), 24 vim (item 74), 25 nano (item 81), 27 curl (item 82), 29 git (item 75), 34 python3 + Pillow (item 84; 33 = 1º build sem .pyc, sem uso); 21 era um vim antigo sem uso; 26 = 1º build do curl, sem uso; 28 = 1º build do git, sem uso: abria o $PAGER less).
 - python3 = build próprio desde o item 84 (`b_python3`: libpython da VMware religado com Pillow, `wasm-tools-34`); módulo C novo p/ python = embutir em `tools/wasm-tools/python/main.c` e religar.
 - Sem build/release: `py3-pip` (item 83) aponta direto para o wheel do PyPI (sha256 fixo); 8º campo do catálogo = nomes instalados junto (`python3` → `py3-pip`).
 - Build: `tools/wasm-tools/build.sh` (funções `b_<nome>`), `.github/workflows/wasm-tools.yml` (TAG/PREV, matriz), licença em `THIRD_PARTY_LICENSES.md`.
@@ -78,7 +78,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 - Limite de 5 horas da conta pode parar workers no meio: retomar depois que liberar.
 
 ## 9. Estado atual (atualizar a cada merge)
-- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 80, 74, 81, 82, 75, 83, 84 feitos; 62, 65, 66, 71 travados.
+- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 80, 74, 81, 82, 75, 83, 84, 77a feitos; 62, 65, 66, 71 travados.
 - **Rodando**: 71 diff (PR #123, retomado) (gerente: sessão 013qXTaN, 27/11)
 - **Fila por uso (dono, 26/11: "siga essa ordem"; apps mais usados no terminal Linux que ainda estão incompletos aqui)**:
   1. ~~74 vim (2)~~ feito (#113)
@@ -88,7 +88,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
   5. ~~75 git oficial em WASM~~ feito (#119; clone/fetch/push: `apk add --x86 git` + `/usr/bin/git`)
   6. ~~83 pip no python WASM~~ feito (#120; `apk add python3` traz py3-pip; só pacote Python puro)
   7. 71 retomada diff/patch com GNU diffutils (2) — próximo
-  8. 77 clang + make (3,5)
+  8. 77 clang + make (3,5): ~~77a make~~ feito (#127; `apk add make`, receitas pela ponte); falta clang (próximo)
   9. ~~84 Pillow no python WASM~~ feito (#126; Pillow 11.3.0 dentro do python3 do catálogo, `wasm-tools-34`; PNG/JPEG, sem freetype/webp/tiff)
   Já completos (só velocidade x86): ls/cp/mv/rm/mkdir/cat, ps/top, tar/gzip, python3, ssh (x86, não medido). Fora: node (sem WASM viável; qjs no lugar), tmux (precisa pty).
 - **Fora**: teste do ruby (o dono: não fazer).
@@ -98,6 +98,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
+- 2026-11-27 | #127 | 77a make GNU em WASM | `wasm-tools-35` só com make 4.4.1 (611 KB, GPL-3.0 como programa separado, fonte na release); receitas, `$(shell)` e re-execução pela ponte /dev/inksoc; `-j N` num make, sem job server; teste Linux leve (padrão, phony, touch, -n, -k, -C, $(MAKE), -j2, erro sai 2); 50 alvos MK50; RODADAS rodadas de CI | 77 clang
 - 2026-11-27 | #126 | 84 Pillow no python WASM | python3 do catálogo religado (`wasm-tools-34`): libpython 3.12.0 da VMware + Pillow 11.3.0 (módulos C embutidos, WASI sem dlopen) + libjpeg-turbo 3.0.4, wasi-sdk 20, wasi-vfs 0.4.0, wasm-opt -O2; PNG/JPEG abrir/salvar, resize, thumbnail, convert no teste Linux leve; resize 1024²→512² LANCZOS 36 ms WASM vs 16 ms nativo (2,3x); script inteiro ~1,2 s; 1 rodada de CI; rede/processos/pip do python seguem no teste | 71 diff / 77 clang
 - 2026-11-27 | — | troca de gerente | sessão 013qXTaN assume; #123 (71) parado sem CI desde 00:27 (configure do diffutils em cross-compile) retomado; dono: sem limite de crédito hoje, ≥2 em paralelo | 71 + 84 em paralelo, depois 77
 - 2026-11-26 | #120 | 83 pip no python WASM | catálogo py3-pip = wheel pip 26.3 do PyPI (MIT), vem com `apk add python3`; adaptador requests sobre http.client pela ponte do 76; instala em ~/.local; `pip`/`pip3`/`python3 -m pip`; `pip install six` + import no teste Linux leve; só wheel Python puro (sem compilador) | 71 diff
