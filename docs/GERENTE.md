@@ -80,7 +80,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 
 ## 9. Estado atual (atualizar a cada merge)
 - **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 80, 74, 81, 82, 75, 83, 84, 71, 86, 85, 77a, 88, 89, 77, 90 feitos; 62, 65, 66 travados.
-- **Rodando**: — (gerente: sessão 013qXTaN, 27/11). 93 feito (#139): spawn WASM cut 75 -> 33 ms, grep 42 -> 32; resto = Worker nascer ~8 + XHR pelo service worker ~17 (próximo: 94 menos voltas / pool de Workers)
+- **Rodando**: — (gerente: sessão 013qXTaN, 27/11). 94 feito (#143): spawn WASM cut 33 -> 14 ms, grep 32 -> 10,5 (página isolada: SharedArrayBuffer + Worker de reserva; sem isolamento = XHR ~33 ms). Ganho só na 2ª visita/fora do iframe do Hub
 - **Fila por uso (dono, 26/11: "siga essa ordem"; apps mais usados no terminal Linux que ainda estão incompletos aqui)**:
   1. ~~74 vim (2)~~ feito (#113)
   2. ~~80 grep GNU em WASM~~ feito (#116)
@@ -104,6 +104,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
+- 2026-11-27 | #143 | 94 voltas WASI baratas | feito (1 rodada): service worker põe COOP/COEP (página isolada a partir da 2ª visita) -> chamadas WASI por SharedArrayBuffer + Atomics.wait direto ao Worker do motor (XHR fica de reserva) + 1 Worker de programa de reserva; Chromium 131, ms por spawn: cut 42 -> 14, grep 42 -> 10,5 (busybox 1,6); 11 chamadas 20 -> 1,9 ms | conferir no iPad real (`crossOriginIsolated`); dash opt-in (estudo 92) agora tem S ≤ 12
 - 2026-11-27 | #142 | regra economia | CI espera em pausas de 60s (sem gh run watch) e, se falhar, só as últimas 50 linhas; compactar (/compact) a cada 3 merges; no manual ficam os 8 merges mais novos (mais esta linha); o resto está em docs/LOG-ARQUIVO.md | —
 - 2026-11-27 | #139 | 93 cache de Module + cwd slot WASM | feito (3 rodadas + 1 de merge): todo arquivo do kernel tem versão (arquivo na memória também), página avisa o motor quais Modules tem e o motor não copia os bytes; Chromium 131, ms por spawn: cut 75 -> 33, true 61 -> 19, grep 42 -> 32 (Module 49/49 do cache, setup 19 -> 3,7). Não commitar engine.wasm compilado local (toolchain diferente = ~30% mais lento) | próximo: 94 menos voltas pelo service worker (ou pool de Workers)
 - 2026-11-27 | #136 | 91 medir spawn WASM | feito (3 rodadas: teto 2 + 1 com aval do dono); página real, Chromium 131, 49 spawns: coreutils 9 MB `cut` 75 ms, `true` 61, grep 0,7 MB 42 contra busybox 1,3–2; fases do Worker: nascer 9, setup WASI 7–20, Module 1–15 (compila em TODO spawn; ressalva: arquivo posto por `put`), instanciar 2, chamadas WASI ~1,6 ms cada (XHR síncrono + service worker), saída->wasi-end 7,6 ms, cópia dos bytes 4,6 ms (9 MB) | 92 (pool + cache) depois de conferir cache com programa de `apk add`
