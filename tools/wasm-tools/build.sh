@@ -149,7 +149,7 @@ b_jq() { # jq 1.7.1 with oniguruma 6.9.10 linked statically (item 85; item 14's 
   compat; oniguruma; dl "https://github.com/jqlang/jq/releases/download/jq-$JQ/jq-$JQ.tar.gz" jq
   (cd "$WORK/jq" && [ -f Makefile ] || CFLAGS="-O2 $EMU -I$P/compat -I$P/include -include compat.h" LDFLAGS="-L$P/lib $STACK" LIBS="-lcompat $EMUL" \
     ./configure --host=$T --disable-shared --enable-static --with-oniguruma="$P" --disable-docs --disable-valgrind --disable-maintainer-mode 2>&1 | tail -5)
-  (cd "$WORK/jq" && grep -q '^#define HAVE_ONIGURUMA 1' config.h && make src/builtin.inc src/version.h && make -j"$J" jq) # make jq alone skips BUILT_SOURCES
+  (cd "$WORK/jq" && make src/builtin.inc src/version.h && make -j"$J" jq && grep -q onig_search jq || { echo 'jq built without oniguruma'; exit 1; }) # make jq alone skips BUILT_SOURCES
   cp "$WORK/jq/jq" "$OUT/jq.wasm"
 }
 
