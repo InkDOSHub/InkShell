@@ -505,6 +505,11 @@ if (hasWasi) {
       const ok = py.length >= 2 && !py[0].hit && py.slice(1).every((e) => e.hit && e.ms < py[0].ms);
       results.push(ok); console.log((ok ? 'PASS ' : 'FAIL ') + 'python3: cwd detection cached after the 1st run');
     }
+    // item 84: Pillow is inside python3 (built-in C modules): PNG/JPEG save + open, resize, convert, thumbnail; resize 1024x1024 time
+    await step(`mkdir -p /tmp/pil && printf '%s\\n' 'import time' 'from PIL import Image, ImageDraw' 'im = Image.new("RGB", (64, 48), (200, 30, 30))' 'ImageDraw.Draw(im).rectangle([8, 8, 40, 30], fill=(0, 0, 255))' 'im.save("p.png"); im.save("p.jpg", quality=90)' 'a = Image.open("p.png"); b = Image.open("p.jpg"); b.load()' > /tmp/pil/p.py; echo pil-w1\n`, /pil-w1\s/, 'python3: Pillow script part 1');
+    await step(`printf '%s\\n' 'print("pil-open", a.format, a.size, a.mode, a.getpixel((20, 20)), b.format, b.size, b.mode)' 'c = b.resize((32, 24)); g = a.convert("L"); t = a.copy(); t.thumbnail((16, 16)); t.save("t.png")' 'print("pil-ops", c.size, g.mode, t.size, Image.open("t.png").size)' 'big = Image.new("RGB", (1024, 1024), (10, 20, 30)); t0 = time.time(); r = big.resize((512, 512), Image.LANCZOS)' 'print("pil-resize-ms", int((time.time() - t0) * 1000), r.size)' >> /tmp/pil/p.py && (cd /tmp/pil && python3 p.py)\n`,
+      /pil-open PNG \(64, 48\) RGB \(0, 0, 255\) JPEG \(64, 48\) RGB\s+pil-ops \(32, 24\) L \(16, 12\) \(16, 12\)\s+pil-resize-ms \d+ \(512, 512\)/, 'python3: Pillow PNG/JPEG save and open, resize, convert, thumbnail');
+    { const m = /pil-resize-ms (\d+)/.exec(out); if (m) console.log('Pillow resize 1024x1024 -> 512x512 LANCZOS (WebAssembly python3): ' + m[1] + ' ms'); }
   }
   if (tools.length) { // 7-Zip, qpdf, ImageMagick, ffmpeg, sqlite, jq, lua, zip, unzip from the catalog (local file:// mirrors), one apk add
     const lines = tools.map((t) => `${t.name}\\tfile:///root/${t.file}.wasm\\t${crypto.createHash('sha256').update(t.bytes).digest('hex')}\\t${t.bytes.length}\\tlicense\\t${t.progs.split(',').map((p) => '/usr/local/bin/' + p).join(',')}\\t${t.name}\\n`);
