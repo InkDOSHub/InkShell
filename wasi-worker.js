@@ -8,7 +8,8 @@ onmessage = async (ev) => {
   const { pid, sid, info, bytes, key, module, base, size, slots, spawn, prof: dbg } = ev.data;
   // item 91 (debug, page ?wasiprof=1): epoch-ms timestamps of this Worker's phases + count/time of its synchronous calls
   const P = dbg ? [] : null, calls = { n: 0, ms: 0 }, now = () => performance.timeOrigin + performance.now();
-  const prof = dbg ? (e) => P.push([e, now()]) : null;
+  // the marks go to the page at 'exit' (before the exit call: the engine's 'wasi-end' may end this Worker right after it)
+  const prof = dbg ? (e) => { P.push([e, now()]); if (e === 'exit') postMessage({ type: 'prof', pid, prof: P, calls }); } : null;
   prof && prof('onmessage');
   const { args, envs } = parseInfo(info);
   const url = new URL('__wasi?s=' + encodeURIComponent(sid), self.location).href;
@@ -31,6 +32,5 @@ onmessage = async (ev) => {
     slots: new Map(slots || []), prof, onSlot: (k, slot) => postMessage({ type: 'slot', key: k, slot }),
     // the compiled module goes back to the page, which hands it to the next Worker of the same file
     onModule: (k, mod) => { try { postMessage({ type: 'module', key: k, module: mod }); } catch {} } });
-  prof && prof('done');
-  postMessage({ type: 'done', pid, code, prof: P, calls });
+  postMessage({ type: 'done', pid, code });
 };

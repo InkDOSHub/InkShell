@@ -66,7 +66,7 @@ for (const [name, cmd] of loops) for (let rep = 1; rep <= REPS; rep++) {
     const t0 = performance.now(), re = new RegExp('DONE-' + tag + '-0'), lim = t0 + 60000;
     const chk = () => {
       const t = term.buffer.active; let s = '';
-      for (let i = Math.max(0, t.length - 8); i < t.length; i++) s += t.getLine(i).translateToString(true) + '\n';
+      for (let i = Math.max(0, t.length - 80); i < t.length; i++) s += t.getLine(i).translateToString(true) + '\n';
       if (re.test(s)) return ok({ ms: performance.now() - t0 });
       if (performance.now() > lim) return ok({ ms: -1 });
       requestAnimationFrame(chk);
@@ -97,10 +97,11 @@ const PH = [
   ['module: get Module (msg / cache / compile)', (s) => ev(s.w, 'mod:msg') - ev(s.w, 'setup') || ev(s.w, 'mod:cache') - ev(s.w, 'setup') || ev(s.w, 'mod:compile') - ev(s.w, 'setup')],
   ['imports object + Module.imports()', (s) => ev(s.w, 'imports') - ev(s.w, 'mod:msg') || ev(s.w, 'imports') - ev(s.w, 'mod:cache') || ev(s.w, 'imports') - ev(s.w, 'mod:compile')],
   ['WebAssembly.Instance (instantiate)', (s) => ev(s.w, 'inst') - ev(s.w, 'imports')],
-  ['program run (_start incl. its WASI calls and the exit call)', (s) => ev(s.w, 'ran') - ev(s.w, 'inst')],
-  ['exit: Worker done -> page done-msg', (s) => ev(s.pg, 'done-msg') - ev(s.w, 'done')],
-  ['page: worker.terminate()', (s) => ev(s.pg, 'terminated') - ev(s.pg, 'done-msg')],
-  ['whole Worker side: page start-msg -> terminated', (s) => ev(s.pg, 'terminated') - ev(s.pg, 'start-msg')],
+  ['program run (_start incl. its WASI calls, up to the exit call)', (s) => ev(s.w, 'exit') - ev(s.w, 'inst')],
+  ['exit: program calls exit (Worker mark) -> engine exit-call handled', (s) => ev(s.e, 'exit-call') - ev(s.w, 'exit')],
+  ['exit: engine exit-call -> page gets wasi-end', (s) => ev(s.pg, 'wend-msg') - ev(s.e, 'exit-call')],
+  ['page: worker.terminate()', (s) => ev(s.pg, 'terminated') - ev(s.pg, 'wend-msg')],
+  ['whole Worker side: page start-msg -> exit mark', (s) => ev(s.w, 'exit') - ev(s.pg, 'start-msg')],
   ['engine: exit call -> kernel marks the process dead (pump sees !alive)', (s) => ev(s.e, 'dead') - ev(s.e, 'exit-call')],
 ];
 const L = ['## Item 91: where one WebAssembly program start goes (real page, Chromium ' + b.version?.() + ')', '',
@@ -119,7 +120,7 @@ for (const name of loops.map((l) => l[0]).filter((n) => !n.startsWith('busybox')
   L.push(`| engine-side handling of those calls (x.wasi_call etc.), total ms | ${f(med(S.map((s) => s.svcMs)))} |`);
   L.push(`| program bytes copied per spawn (MB) / Module passed by the page (share of spawns) | ${f(med(S.map((s) => s.bytes)) / 1048576)} / ${f(S.filter((s) => s.mod).length / S.length)} |`);
   L.push(`| Module source (msg = page cache, cache = Worker cache, compile) | ${['msg', 'cache', 'compile'].map((m) => m + ' ' + S.filter((s) => (s.w || []).some((q) => q[0] === 'mod:' + m)).length).join(', ')} |`);
-  const first = rows(o)[0]; if (first) L.push(`| 1st spawn of the loop: Worker side ms / module phase ms | ${f(ev(first.pg, 'terminated') - ev(first.pg, 'start-msg'))} / ${f(ev(first.w, 'imports') - ev(first.w, 'setup'))} |`);
+  const first = rows(o)[0]; if (first) L.push(`| 1st spawn of the loop: Worker side ms / module phase ms | ${f(ev(first.w, 'exit') - ev(first.pg, 'start-msg'))} / ${f(ev(first.w, 'imports') - ev(first.w, 'setup'))} |`);
 }
 const md = L.join('\n');
 console.log(md);

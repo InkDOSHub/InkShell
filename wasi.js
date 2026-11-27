@@ -447,7 +447,7 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
   };
   const done = ([err, n], np) => { if (!err) dv().setUint32(np, n, true); return err; };
   // the process ends: exit_group in the stub (its parent gets `code`)
-  const exit = (code) => { try { sys(231, [code]); } catch {} throw new Exit(code); };
+  const exit = (code) => { prof && prof('exit'); try { sys(231, [code]); } catch {} throw new Exit(code); };
   const w = {
     args_get: (a, b) => strings(args, a, b), args_sizes_get: (a, b) => sizes(args, a, b),
     environ_get: (a, b) => { // the "PWD=..." string, in the program's memory now, becomes its cwd

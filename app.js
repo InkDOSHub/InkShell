@@ -116,14 +116,17 @@ if (navigator.serviceWorker) {
 // item 91 (debug, off unless the page URL has ?wasiprof=1): epoch-ms timestamps of each WebAssembly program's phases, collected in window.__wprof
 const WPROF = /[?&]wasiprof=1/.test(location.search), wnow = () => performance.timeOrigin + performance.now();
 window.__wprof = [];
+const wprofPage = new Map();
 function wasiEnd(pid) { const b = wasiWorkers.get(pid); if (b) { b.terminate(); wasiWorkers.delete(pid); } }
 function wasiStart(m) {
   const pp = WPROF ? [['start-msg', wnow()]] : null, nb = m.bytes ? m.bytes.byteLength : 0;
+  if (pp) wprofPage.set(m.pid, pp);
   const b = new Worker('wasi-worker.js?v=94', { type: 'module' });
   if (pp) pp.push(['worker-new', wnow()]);
   wasiWorkers.set(m.pid, b);
   b.onmessage = (ev) => {
-    if (ev.data.type === 'done') { if (pp) pp.push(['done-msg', wnow()]); wasiEnd(m.pid); if (pp) { pp.push(['terminated', wnow()]); window.__wprof.push({ pid: m.pid, page: pp, worker: ev.data.prof, calls: ev.data.calls, bytes: nb, mod: !!m.module }); } }
+    if (ev.data.type === 'done') wasiEnd(m.pid);
+    else if (ev.data.type === 'prof') window.__wprof.push({ pid: m.pid, page: pp, worker: ev.data.prof, calls: ev.data.calls, bytes: nb, mod: !!m.module });
     else if (ev.data.type === 'slot' && wasiSlots.size < 256) wasiSlots.set(ev.data.key, ev.data.slot);
     else if (ev.data.type === 'module' && ev.data.module) {
       wasiMods.delete(ev.data.key); wasiMods.set(ev.data.key, ev.data.module);
@@ -158,7 +161,7 @@ function start() {
     else if (m.type === 'saved') term.write('\r\n\x1b[2m[files saved]\x1b[0m\r\n');
     else if (m.type === 'info') { pref.set('alpine-user', m.user || ''); }
     else if (m.type === 'wasi-start') wasiStart(m);
-    else if (m.type === 'wasi-end') { if (WPROF && m.prof) (window.__wprofEng ||= {})[m.pid] = m.prof; wasiEnd(m.pid); }
+    else if (m.type === 'wasi-end') { const pp = WPROF && wprofPage.get(m.pid); if (pp) { pp.push(['wend-msg', wnow()]); (window.__wprofEng ||= {})[m.pid] = m.prof; } wasiEnd(m.pid); if (pp) { pp.push(['terminated', wnow()]); wprofPage.delete(m.pid); } }
     else if (m.type === 'done') {
       term.write('\r\n\x1b[2m[' + (m.error ? 'stopped: ' + m.error : 'Linux ended') + ']\x1b[0m\r\n');
       if (w) w.terminate();
