@@ -407,26 +407,6 @@ if (process.env.INK_SPAWN) { // item 78: processes from WebAssembly programs (ho
     }
     console.log('tool processes in ' + ((Date.now() - t2) / 1000).toFixed(1) + ' s\n' + got2.slice(-1500));
   }
-  if (hasTool('openssl')) { // item 87: OpenSSL 3.5 command-line tool in WebAssembly behind the /usr/local/bin/openssl wrapper (s_client stays on the x86 helper); tolerant matching
-    const sha = dig('sha256', Buffer.from('abc'));
-    await step(`hash -r; command -v openssl openssl-wasm | busybox tr '\\n' ' '; echo; openssl version | busybox cut -c1-11; printf abc | openssl dgst -sha256; printf abc | openssl dgst -sha1 -r | busybox cut -c1-40; openssl s_client 2>&1 | busybox head -n 1; echo ossl-a\n`,
-      new RegExp('/usr/local/bin/openssl /usr/local/bin/openssl-wasm\\s+OpenSSL 3\\.5\\s+SHA2-256\\(stdin\\)= ' + sha + '\\s+' + dig('sha1', Buffer.from('abc')) + '\\s+openssl s_client: -connect HOST:PORT needed\\s+ossl-a'), 'openssl: wrapper + WebAssembly program, version 3.5, dgst sha256/sha1, s_client still answered by the x86 helper');
-    await step(`cd /tmp && rm -rf os1 && mkdir os1 && cd os1 && printf 'secret text\\n' > e.txt && openssl enc -aes-256-cbc -pbkdf2 -salt -pass pass:pw1 -in e.txt -out e.enc; echo enc=$?; busybox head -c 8 e.enc; echo; openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:pw1 -in e.enc -out e.dec; echo dec=$?; busybox cmp e.txt e.dec && echo enc-same; openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:bad -in e.enc > /dev/null 2>&1; echo bad=$?; echo ossl-b\n`,
-      /enc=0\s+Salted__\s+dec=0\s+enc-same\s+bad=1\s+ossl-b/, 'openssl: enc -aes-256-cbc -pbkdf2 encrypt and decrypt round trip, wrong password fails');
-    await step(`openssl rand -hex 16 | busybox grep -cE '^[0-9a-f]{32}$'; [ "$(openssl rand -hex 16)" != "$(openssl rand -hex 16)" ] && echo rand-differ; openssl rand 100 | busybox wc -c; printf hello | openssl base64; printf aGVsbG8= | openssl base64 -d; echo; openssl passwd -6 -salt saltsalt pw1 | busybox grep -cE '^\\$6\\$saltsalt\\$[./0-9A-Za-z]{86}$'; openssl passwd -1 -salt abcdefgh pw1 | busybox grep -c '^\\$1\\$abcdefgh\\$'; echo ossl-c\n`,
-      /^1\s+rand-differ\s+100\s+aGVsbG8=\s+hello\s+1\s+1\s+ossl-c/m, 'openssl: rand -hex and -bytes, base64 encode/decode, passwd -6 and -1');
-    await step(`cd /tmp/os1 && openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out k.pem; echo gen=$?; openssl req -x509 -new -key k.pem -subj /CN=inkshell.test -days 30 -out c.pem; echo req=$?; openssl x509 -in c.pem -noout -text | busybox grep -E 'Subject:|Signature Algorithm|CA:TRUE' | busybox sort -u; openssl verify -CAfile c.pem c.pem; openssl x509 -in c.pem -noout -fingerprint -sha256 | busybox cut -c1-24; echo ossl-d\n`,
-      /gen=0\s+req=0\s+[\s\S]*CA:TRUE[\s\S]*Signature Algorithm: ecdsa-with-SHA256[\s\S]*Subject: CN\s*=\s*inkshell\.test[\s\S]*c\.pem: OK\s+sha256 Fingerprint=[0-9A-F:]+\s+ossl-d/i, 'openssl: genpkey EC, req -x509 self-signed certificate, x509 -text, verify, fingerprint');
-    await step(`cd /tmp/os1 && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out r.pem; echo rsa=$?; openssl pkey -in r.pem -pubout -out r.pub; echo ossl-e $(busybox grep -c 'BEGIN PUBLIC KEY' r.pub)\n`,
-      /rsa=0\s+ossl-e 1/, 'openssl: genpkey RSA 2048 and pkey -pubout');
-    // 10 MB: sha256 by the WebAssembly sha256sum (or busybox) against openssl dgst
-    await step(`cd /tmp/os1 && busybox seq 1 1500000 > big.txt; busybox wc -c < big.txt | busybox sed 's/^/size=/'; echo ossl-f\n`, /size=\d{8}\s+ossl-f/, 'openssl: 10 MB file made');
-    const t1 = Date.now();
-    await step(`sha256sum big.txt | busybox cut -c1-64 > h1.txt; echo ossl-g\n`, /ossl-g/, 'openssl: sha256sum of 10 MB (reference)');
-    const t2 = Date.now();
-    await step(`openssl dgst -sha256 big.txt | busybox sed 's/.*= //' > h2.txt; cmp h1.txt h2.txt && echo hash-same; cd\n`, /hash-same/, 'openssl: dgst -sha256 of 10 MB equals sha256sum');
-    console.log(`  [sha256 of 10 MB (ms, with the step wait): sha256sum ${t2 - t1}, openssl dgst ${Date.now() - t2}]`);
-  }
   if (hasTool('git')) { // item 75 (information only): git stash starts git children (update-index, diff-tree...) through /dev/inksoc
     const t3 = Date.now(), f3 = out.length;
     send(`mkdir -p /tmp/gb && busybox cp /root/git.wasm /tmp/gb/git && busybox chmod +x /tmp/gb/git && cd /tmp && rm -rf gs && mkdir gs && cd gs && PATH=/tmp/gb:$PATH; git init -q && git config user.name T && git config user.email t@example.com && echo a > a && git add a && git commit -q -m one && echo b >> a && git stash -q; echo st1=$?; git status --short | busybox wc -l | busybox sed 's/^/st-dirty=/'; git stash pop -q; echo st2=$?; busybox wc -l < a | busybox sed 's/^/st-lines=/'; cd; echo done-git-$((1+1))\n`);
@@ -530,6 +510,10 @@ if (hasWasi) {
     await step(`printf '%s\\n' 'print("pil-open", a.format, a.size, a.mode, a.getpixel((20, 20)), b.format, b.size, b.mode)' 'c = b.resize((32, 24)); g = a.convert("L"); t = a.copy(); t.thumbnail((16, 16)); t.save("t.png")' 'print("pil-ops", c.size, g.mode, t.size, Image.open("t.png").size)' 'big = Image.new("RGB", (1024, 1024), (10, 20, 30)); t0 = time.time(); r = big.resize((512, 512), Image.LANCZOS)' 'print("pil-resize-ms", int((time.time() - t0) * 1000), r.size)' >> /tmp/pil/p.py && (cd /tmp/pil && python3 p.py)\n`,
       /pil-open PNG \(64, 48\) RGB \(0, 0, 255\) JPEG \(64, 48\) RGB\s+pil-ops \(32, 24\) L \(16, 12\) \(16, 12\)\s+pil-resize-ms \d+ \(512, 512\)/, 'python3: Pillow PNG/JPEG save and open, resize, convert, thumbnail');
     { const m = /pil-resize-ms (\d+)/.exec(out); if (m) console.log('Pillow resize 1024x1024 -> 512x512 LANCZOS (WebAssembly python3): ' + m[1] + ' ms'); }
+    // item 86: FreeType text (Pillow's embedded default font), WEBP and TIFF save + reopen, a fatal libjpeg error (bad Huffman table) is an OSError
+    await step(`printf '%s\\n' 'import io' 'from PIL import Image, ImageDraw, ImageFont' 'im = Image.new("L", (96, 32), 0); f = ImageFont.load_default(size=20)' 'ImageDraw.Draw(im).text((2, 2), "Ink", font=f, fill=255)' 'print("pil-ft", type(f).__name__, im.getbbox() is not None, im.getextrema())' 'im.convert("RGB").save("w.webp", quality=80); im.save("w.tif", compression="tiff_deflate")' 'w = Image.open("w.webp"); w.load(); t = Image.open("w.tif"); t.load()' 'print("pil-webp", w.format, w.size, "pil-tiff", t.format, t.size, list(t.getdata()) == list(im.getdata()))' > /tmp/pil/q.py; echo pil-w2\n`, /pil-w2\s/, 'python3: Pillow script 2 part 1');
+    await step(`printf '%s\\n' 'j = io.BytesIO(); im.convert("RGB").save(j, "JPEG"); k = bytearray(j.getvalue()); p = k.index(b"\\xff\\xc4")' 'for i in range(p + 5, p + 21): k[i] = 255' 'try:' '    Image.open(io.BytesIO(bytes(k))).load(); print("pil-jpeg no error")' 'except OSError as e:' '    print("pil-jpeg-err", type(e).__name__)' 'print("pil-alive")' >> /tmp/pil/q.py && (cd /tmp/pil && python3 q.py)\n`,
+      /pil-ft FreeTypeFont True \(0, \d+\)\s+pil-webp WEBP \(96, 32\) pil-tiff TIFF \(96, 32\) True\s+pil-jpeg-err OSError\s+pil-alive/, 'python3: Pillow FreeType text, WEBP/TIFF save and open, bad JPEG is an OSError');
   }
   if (tools.length) { // 7-Zip, qpdf, ImageMagick, ffmpeg, sqlite, jq, lua, zip, unzip from the catalog (local file:// mirrors), one apk add
     const lines = tools.map((t) => `${t.name}\\tfile:///root/${t.file}.wasm\\t${crypto.createHash('sha256').update(t.bytes).digest('hex')}\\t${t.bytes.length}\\tlicense\\t${t.progs.split(',').map((p) => '/usr/local/bin/' + p).join(',')}\\t${t.name}\\n`);
@@ -678,6 +662,26 @@ if (hasWasi) {
       /patched=0\s+cmp-same=0\s+cmp-diff=1\s+df-b=0/, 'patch: applies a diff -u and reverses it; cmp exit codes');
     await step(`busybox seq 1 1500000 > big1.txt; busybox sed 's/^77777/y/' big1.txt > big2.txt; diff big1.txt big2.txt | busybox wc -l; diff -u big1.txt big2.txt | busybox wc -l; cmp big1.txt big2.txt | busybox cut -c1-40; echo df-done\n`,
       /\d+\s+\d+\s+big1.txt big2.txt differ[^\n]*\s+df-done/, 'diff: two 10 MB files do not crash (the uutils diff died with exit 134)');
+  }
+  if (hasTool('openssl')) { // item 87: OpenSSL 3.5 command-line tool in WebAssembly behind the /usr/local/bin/openssl wrapper (s_client stays on the x86 helper); tolerant matching
+    const sha = dig('sha256', Buffer.from('abc'));
+    await step(`hash -r; command -v openssl openssl-wasm | busybox tr '\\n' ' '; echo; openssl version | busybox cut -c1-11; printf abc | openssl dgst -sha256; printf abc | openssl dgst -sha1 -r | busybox cut -c1-40; openssl s_client 2>&1 | busybox head -n 1; echo ossl-a\n`,
+      new RegExp('/usr/local/bin/openssl /usr/local/bin/openssl-wasm\\s+OpenSSL 3\\.5\\s+SHA2-256\\(stdin\\)= ' + sha + '\\s+' + dig('sha1', Buffer.from('abc')) + '\\s+openssl s_client: -connect HOST:PORT needed\\s+ossl-a'), 'openssl: wrapper + WebAssembly program, version 3.5, dgst sha256/sha1, s_client still answered by the x86 helper');
+    await step(`cd /tmp && rm -rf os1 && mkdir os1 && cd os1 && printf 'secret text\\n' > e.txt && openssl enc -aes-256-cbc -pbkdf2 -salt -pass pass:pw1 -in e.txt -out e.enc; echo enc=$?; busybox head -c 8 e.enc; echo; openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:pw1 -in e.enc -out e.dec; echo dec=$?; busybox cmp e.txt e.dec && echo enc-same; openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:bad -in e.enc > /dev/null 2>&1; echo bad=$?; echo ossl-b\n`,
+      /enc=0\s+Salted__\s+dec=0\s+enc-same\s+bad=1\s+ossl-b/, 'openssl: enc -aes-256-cbc -pbkdf2 encrypt and decrypt round trip, wrong password fails');
+    await step(`openssl rand -hex 16 | busybox grep -cE '^[0-9a-f]{32}$'; [ "$(openssl rand -hex 16)" != "$(openssl rand -hex 16)" ] && echo rand-differ; openssl rand 100 | busybox wc -c; printf hello | openssl base64; printf aGVsbG8= | openssl base64 -d; echo; openssl passwd -6 -salt saltsalt pw1 | busybox grep -cE '^\\$6\\$saltsalt\\$[./0-9A-Za-z]{86}$'; openssl passwd -1 -salt abcdefgh pw1 | busybox grep -c '^\\$1\\$abcdefgh\\$'; echo ossl-c\n`,
+      /^1\s+rand-differ\s+100\s+aGVsbG8=\s+hello\s+1\s+1\s+ossl-c/m, 'openssl: rand -hex and -bytes, base64 encode/decode, passwd -6 and -1');
+    await step(`cd /tmp/os1 && openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out k.pem; echo gen=$?; openssl req -x509 -new -key k.pem -subj /CN=inkshell.test -days 30 -out c.pem; echo req=$?; openssl x509 -in c.pem -noout -text | busybox grep -E 'Subject:|Signature Algorithm|CA:TRUE' | busybox sort -u; openssl verify -CAfile c.pem c.pem; openssl x509 -in c.pem -noout -fingerprint -sha256 | busybox cut -c1-24; echo ossl-d\n`,
+      /gen=0\s+req=0\s+[\s\S]*CA:TRUE[\s\S]*Signature Algorithm: ecdsa-with-SHA256[\s\S]*Subject: CN\s*=\s*inkshell\.test[\s\S]*c\.pem: OK\s+sha256 Fingerprint=[0-9A-F:]+\s+ossl-d/i, 'openssl: genpkey EC, req -x509 self-signed certificate, x509 -text, verify, fingerprint');
+    await step(`cd /tmp/os1 && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out r.pem; echo rsa=$?; openssl pkey -in r.pem -pubout -out r.pub; echo ossl-e $(busybox grep -c 'BEGIN PUBLIC KEY' r.pub)\n`,
+      /rsa=0\s+ossl-e 1/, 'openssl: genpkey RSA 2048 and pkey -pubout');
+    // 10 MB: sha256 by the WebAssembly sha256sum (or busybox) against openssl dgst
+    await step(`cd /tmp/os1 && busybox seq 1 1500000 > big.txt; busybox wc -c < big.txt | busybox sed 's/^/size=/'; echo ossl-f\n`, /size=\d{8}\s+ossl-f/, 'openssl: 10 MB file made');
+    const t1 = Date.now();
+    await step(`sha256sum big.txt | busybox cut -c1-64 > h1.txt; echo ossl-g\n`, /ossl-g/, 'openssl: sha256sum of 10 MB (reference)');
+    const t2 = Date.now();
+    await step(`openssl dgst -sha256 big.txt | busybox sed 's/.*= //' > h2.txt; cmp h1.txt h2.txt && echo hash-same; cd\n`, /hash-same/, 'openssl: dgst -sha256 of 10 MB equals sha256sum');
+    console.log(`  [sha256 of 10 MB (ms, with the step wait): sha256sum ${t2 - t1}, openssl dgst ${Date.now() - t2}]`);
   }
   if (hasTool('git')) { // item 75: git 2.47 in WebAssembly ahead of an x86 git; local work in one process (no editor: -m; pager cat), tolerant matching
     await step(`cd /tmp && rm -rf gt && mkdir gt && cd gt && hash -r && command -v git && git --version && git init -q && git config user.name Tester && git config user.email t@example.com && echo one > a.txt && git add a.txt && git commit -q -m first; echo c1=$?; git log --oneline | busybox wc -l | busybox sed 's/^/n1=/'; git switch -q -c feat && echo two > b.txt && git add b.txt && git commit -q -m second && git switch -q master && git merge -q feat; echo ff=$?; git switch -q -c side && echo s >> a.txt && git commit -q -am side && git switch -q master && echo m > c.txt && git add c.txt && git commit -q -m main && git merge -q -m merged side; echo m3=$?; git log --oneline | busybox wc -l | busybox sed 's/^/n2=/'; git status --short | busybox wc -l | busybox sed 's/^/dirty=/'; git log -1 --format=%s; cd; echo git-back\n`,
