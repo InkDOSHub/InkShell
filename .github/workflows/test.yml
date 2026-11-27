@@ -43,6 +43,12 @@ jobs:
         run: |
           python3 -m venv $RUNNER_TEMP/pil && $RUNNER_TEMP/pil/bin/pip install -q pillow==11.3.0
           $RUNNER_TEMP/pil/bin/python -c "import time; from PIL import Image; b = Image.new('RGB', (1024, 1024), (10, 20, 30)); t = time.time(); b.resize((512, 512), Image.LANCZOS); print('Pillow resize 1024x1024 -> 512x512 LANCZOS (native x86-64 runner):', int((time.time() - t) * 1000), 'ms')"
+      - name: python3 start-up, wasm-tools-34 vs the catalog's (item 86, 1 run each, node)
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          curl -fsSL --retry 3 -o $RUNNER_TEMP/py34.wasm https://github.com/InkDOSHub/InkShell/releases/download/wasm-tools-34/python3.wasm
+          timeout 120 node tests/py-start.mjs before=$RUNNER_TEMP/py34.wasm after=tests/python.wasm
       - name: pip wheel from the catalog (py3-pip, item 83) + six for a local index
         run: |
           e=$(awk -F '\t' '$1 == "py3-pip"' overlay/etc/inksoc/wasm-catalog)
