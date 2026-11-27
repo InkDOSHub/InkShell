@@ -118,7 +118,9 @@ const WPROF = /[?&]wasiprof=1/.test(location.search), wnow = () => performance.t
 window.__wprof = [];
 const wprofPage = new Map();
 function wasiEnd(pid) { const b = wasiWorkers.get(pid); if (b) { b.terminate(); wasiWorkers.delete(pid); } }
-function wasiHeldKeys() { if (w) w.postMessage({ type: 'wasi-mods', keys: [...wasiMods.keys()].filter((k) => wasiSlots.has(k)) }); }
+// (debug, bench only: with ?wasiprof=1, window.__wasiNoMod = true turns the Module hand-over off)
+const wasiNoMod = () => WPROF && window.__wasiNoMod;
+function wasiHeldKeys() { if (w) w.postMessage({ type: 'wasi-mods', keys: wasiNoMod() ? [] : [...wasiMods.keys()].filter((k) => wasiSlots.has(k)) }); }
 function wasiStart(m) {
   // item 93: no bytes = the engine thought this page holds the Module and cwd slot of that file version; else ask for them
   if (!m.bytes && !(m.key && wasiMods.has(m.key) && wasiSlots.has(m.key))) { if (w) w.postMessage({ type: 'wasi-bytes', pid: m.pid }); return; }
@@ -139,7 +141,7 @@ function wasiStart(m) {
   };
   b.onerror = () => wasiEnd(m.pid);
   m.slots = [...wasiSlots];
-  if (m.key && wasiMods.has(m.key)) { m.module = wasiMods.get(m.key); wasiMods.delete(m.key); wasiMods.set(m.key, m.module); }
+  if (m.key && wasiMods.has(m.key) && !wasiNoMod()) { m.module = wasiMods.get(m.key); wasiMods.delete(m.key); wasiMods.set(m.key, m.module); }
   if (pp) { m.prof = true; pp.push(['post-worker', wnow()]); }
   b.postMessage(m, m.bytes ? [m.bytes.buffer] : []);
 }
