@@ -5,7 +5,7 @@
 # CI: .github/workflows/wasm-tools.yml builds them and publishes a GitHub release; the catalog points at it.
 # No GPL in the engine, the page, or the worker. GPL is only a separate catalog program, source in its release (owner, 26/11): GNU grep, nano, git, diffutils 3.12 and patch 2.8.1 (the b_* recipes in this file; see THIRD_PARTY_LICENSES.md). Everything else: ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
 # 7-Zip without the unRAR code (LGPL-2.1+ and BSD-3-Clause), qpdf (Apache-2.0), ImageMagick (its own Apache-style license),
-# SQLite (public domain), jq (MIT), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense), hashsum (InkShell's own code, MIT), uutils coreutils (MIT), QuickJS-ng (MIT), uutils sed (MIT), uutils findutils find (MIT; oniguruma BSD-2-Clause inside), one-true-awk (MIT-style Bell Labs license), xz 5.8 (0BSD; liblzma public domain/0BSD), libarchive bsdtar (BSD-2-Clause, BSD-3-Clause; zlib license for zlib, 0BSD for liblzma), gzip (InkShell's own code on zlib, MIT), bzip2 1.0.8 (bzip2 license, BSD-style), zstd 1.5.7 (BSD-3-Clause option of its dual license), Gavin Howard's bc 7.0.3 (BSD-2-Clause; not GNU bc), file/libmagic 5.46 (BSD-2-Clause), less 692 (the BSD-2-Clause style Less License option of its dual license; the GPL-3.0 option is not used), curl (InkShell's own code, MIT).
+# SQLite (public domain), jq (MIT; oniguruma BSD-2-Clause inside), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense), hashsum (InkShell's own code, MIT), uutils coreutils (MIT), QuickJS-ng (MIT), uutils sed (MIT), uutils findutils find (MIT; oniguruma BSD-2-Clause inside), one-true-awk (MIT-style Bell Labs license), xz 5.8 (0BSD; liblzma public domain/0BSD), libarchive bsdtar (BSD-2-Clause, BSD-3-Clause; zlib license for zlib, 0BSD for liblzma), gzip (InkShell's own code on zlib, MIT), bzip2 1.0.8 (bzip2 license, BSD-style), zstd 1.5.7 (BSD-3-Clause option of its dual license), Gavin Howard's bc 7.0.3 (BSD-2-Clause; not GNU bc), file/libmagic 5.46 (BSD-2-Clause), less 692 (the BSD-2-Clause style Less License option of its dual license; the GPL-3.0 option is not used), curl (InkShell's own code, MIT).
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 : "${WASI_SDK:=/opt/wasi-sdk}" "${WORK:=$PWD/wasm-tools-work}" "${OUT:=$PWD/wasm-tools-out}"
@@ -26,7 +26,7 @@ CWDL="-Wl,--undefined=chdir"
 STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
-SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12 VIM=9.1.1400 NANO=8.3 NCURSES=6.5 GIT=2.47.1 DIFFUTILS=3.12 PATCH=2.8.1
+SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 ONIG=6.9.10 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12 VIM=9.1.1400 NANO=8.3 NCURSES=6.5 GIT=2.47.1 DIFFUTILS=3.12 PATCH=2.8.1
 PYWLR=python%2F3.12.0%2B20231211-040d5a6 WASIVFS=0.4.0 BINARYEN=117 PILLOW=11.3.0 PILLOW_SHA=3828ee7586cd0b2091b6209e5ad53e20d0649bbe87164a459d0676e035e8f523
 PILLOW_URL=https://files.pythonhosted.org/packages/f3/0d/d0d6dea55cd152ce3d6767bb38a8fc10e33796ba4ba210cbab9354b6d238/pillow-$PILLOW.tar.gz
 
@@ -138,11 +138,18 @@ b_sqlite3() { # amalgamation + its shell; sqlite3.c turns on its WASI mode by it
     "$WORK/sqlite/shell.c" "$WORK/sqlite/sqlite3.c" -o "$OUT/sqlite3.wasm" -L"$P/lib" -lcompat $EMUL $STACK -lm
 }
 
-b_jq() { # no oniguruma (regex builtins test/match/sub report an error), decNumber kept
-  compat; dl "https://github.com/jqlang/jq/releases/download/jq-$JQ/jq-$JQ.tar.gz" jq
-  (cd "$WORK/jq" && [ -f Makefile ] || CFLAGS="-O2 $EMU -I$P/compat -include compat.h" LDFLAGS="-L$P/lib $STACK" LIBS="-lcompat $EMUL" \
-    ./configure --host=$T --disable-shared --enable-static --without-oniguruma --disable-docs --disable-valgrind --disable-maintainer-mode 2>&1 | tail -5)
-  (cd "$WORK/jq" && make src/builtin.inc src/version.h && make -j"$J" jq) # make jq alone skips BUILT_SOURCES
+oniguruma() { # oniguruma 6.9.10 (BSD-2-Clause), static: regex for jq (test/match/capture/sub/gsub/scan/splits)
+  [ -f "$P/lib/libonig.a" ] && return 0; compat
+  dl "https://github.com/kkos/oniguruma/releases/download/v$ONIG/onig-$ONIG.tar.gz" onig
+  (cd "$WORK/onig" && CFLAGS="-O2 $EMU -I$P/compat -include compat.h" ./configure --host=$T --prefix="$P" --disable-shared --enable-static 2>&1 | tail -2 &&
+    make -j"$J" -C src libonig.la && make -C src install-libLTLIBRARIES install-includeHEADERS)
+}
+
+b_jq() { # jq 1.7.1 with oniguruma 6.9.10 linked statically (item 85; item 14's build had none), decNumber kept
+  compat; oniguruma; dl "https://github.com/jqlang/jq/releases/download/jq-$JQ/jq-$JQ.tar.gz" jq
+  (cd "$WORK/jq" && [ -f Makefile ] || CFLAGS="-O2 $EMU -I$P/compat -I$P/include -include compat.h" LDFLAGS="-L$P/lib $STACK" LIBS="-lcompat $EMUL" \
+    ./configure --host=$T --disable-shared --enable-static --with-oniguruma="$P" --disable-docs --disable-valgrind --disable-maintainer-mode 2>&1 | tail -5)
+  (cd "$WORK/jq" && grep -q '^#define HAVE_ONIGURUMA 1' config.h && make src/builtin.inc src/version.h && make -j"$J" jq) # make jq alone skips BUILT_SOURCES
   cp "$WORK/jq/jq" "$OUT/jq.wasm"
 }
 
