@@ -27,7 +27,7 @@ STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
 SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12 VIM=9.1.1400 NANO=8.3 NCURSES=6.5 GIT=2.47.1 DIFFUTILS=3.12 PATCH=2.8.1
-PYWLR=python%2F3.12.0%2B20231211-040d5a6 WASIVFS=0.4.0 BINARYEN=117 PILLOW=11.3.0 PILLOW_SHA=3828ee7586cd0b2091b6209e5ad53e20d0649bbe87164a459d0676e035e8f523
+PYWLR=python%2F3.12.0%2B20231211-040d5a6 WASIVFS=0.4.0 BINARYEN=124 WASMTIME=44.0.0 FREETYPE=2.13.3 WEBP=1.5.0 TIFF=4.7.0 PILLOW=11.3.0 PILLOW_SHA=3828ee7586cd0b2091b6209e5ad53e20d0649bbe87164a459d0676e035e8f523
 PILLOW_URL=https://files.pythonhosted.org/packages/f3/0d/d0d6dea55cd152ce3d6767bb38a8fc10e33796ba4ba210cbab9354b6d238/pillow-$PILLOW.tar.gz
 
 fetch() { # github repo, tag, dir name: shallow clone once into $WORK/dir; a source tarball goes next to the binaries (LGPL)
@@ -591,20 +591,25 @@ PY
 }
 
 b_python3() { # python3 = CPython 3.12.0 (PSF-2.0) from VMware Labs' libpython (the same build as the earlier catalog python3, stdlib zip
-  # inside by wasi-vfs) + Pillow 11.3.0 (MIT-CMU) with libjpeg-turbo 3.0.4 (IJG/BSD-3-Clause/zlib); zlib comes in libpython. WASI has no dlopen:
-  # Pillow's C modules (_imaging, _imagingmath, _imagingmorph) are built-in modules (python/main.c), its Python package is in the
-  # packed /usr/local/lib/python3.12/site-packages. Built with wasi-sdk 20 like libpython, no setjmp (python/shim/setjmp.h): wizer
-  # (wasi-vfs pack) takes no wasm exceptions. No freetype/lcms/webp/tiff/openjpeg (ImageFont: only the built-in bitmap font).
-  py=$WORK/py; mkdir -p "$py"; C20=$py/wasi-sdk-20.0
+  # inside by wasi-vfs) + Pillow 11.3.0 (MIT-CMU) with libjpeg-turbo 3.0.4 (IJG/BSD-3-Clause/zlib), FreeType 2.13.3 (FTL option of its
+  # dual license, not the GPL one), libwebp 1.5.0 (BSD-3-Clause) and libtiff 4.7.0 (libtiff license); zlib comes in libpython.
+  # WASI has no dlopen: Pillow's C modules (_imaging, _imagingft, _webp, _imagingmath, _imagingmorph) are built-in modules
+  # (python/main.c), its Python package is in the packed /usr/local/lib/python3.12/site-packages. libpython and the C library are
+  # wasi-sdk 20's; the new code is compiled by wasi-sdk 33's clang ($WASI_SDK) over that sysroot with setjmp/longjmp as wasm
+  # exception handling (exnref, python/shim/setjmp.h + wasi-sdk 33's libsetjmp), so a fatal libjpeg error is a Python OSError (item 86).
+  # wasi-vfs 0.4.0's packer (an old wizer) takes no wasm exceptions: the stdlib is packed by `wasmtime wizer` with the same
+  # init function (wasi_vfs_pack_fs) as `wasi-vfs pack`. lcms/openjpeg/raqm not included (no ImageCms, JPEG 2000, complex text layout).
+  py=$WORK/py; mkdir -p "$py"; C20=$py/wasi-sdk-20.0; S20=$C20/share/wasi-sysroot; X=$WASI_SDK
   [ -d "$C20" ] || curl -fsSL --retry 3 https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-20/wasi-sdk-20.0-linux.tar.gz | tar -xz -C "$py"
-  [ -d "$py/vfs" ] || { curl -fsSL --retry 3 -o "$py/l.zip" https://github.com/kateinoigakukun/wasi-vfs/releases/download/v$WASIVFS/libwasi_vfs-wasm32-unknown-unknown.zip &&
-    curl -fsSL --retry 3 -o "$py/c.zip" https://github.com/kateinoigakukun/wasi-vfs/releases/download/v$WASIVFS/wasi-vfs-cli-x86_64-unknown-linux-gnu.zip &&
-    mkdir -p "$py/vfs" && unzip -q -o "$py/l.zip" -d "$py/vfs" && unzip -q -o "$py/c.zip" -d "$py/vfs" && chmod +x "$py/vfs/wasi-vfs"; }
-  [ -d "$py/binaryen" ] || { mkdir -p "$py/binaryen" && curl -fsSL --retry 3 https://github.com/WebAssembly/binaryen/releases/download/version_$BINARYEN/binaryen-version_$BINARYEN-x86_64-linux.tar.gz | tar -xz -C "$py/binaryen" --strip-components=1; }
+  [ -f "$py/vfs/libwasi_vfs.a" ] || { curl -fsSL --retry 3 -o "$py/l.zip" https://github.com/kateinoigakukun/wasi-vfs/releases/download/v$WASIVFS/libwasi_vfs-wasm32-unknown-unknown.zip &&
+    mkdir -p "$py/vfs" && unzip -q -o "$py/l.zip" -d "$py/vfs"; }
+  [ -x "$py/wasmtime/wasmtime" ] || { mkdir -p "$py/wasmtime" && curl -fsSL --retry 3 https://github.com/bytecodealliance/wasmtime/releases/download/v$WASMTIME/wasmtime-v$WASMTIME-x86_64-linux.tar.xz | tar -xJ -C "$py/wasmtime" --strip-components=1; }
+  [ -x "$py/binaryen/bin/wasm-opt" ] && "$py/binaryen/bin/wasm-opt" --version | grep -q "version $BINARYEN" || { rm -rf "$py/binaryen"; mkdir -p "$py/binaryen" && curl -fsSL --retry 3 https://github.com/WebAssembly/binaryen/releases/download/version_$BINARYEN/binaryen-version_$BINARYEN-x86_64-linux.tar.gz | tar -xz -C "$py/binaryen" --strip-components=1; }
   [ -d "$py/lp" ] || { mkdir -p "$py/lp" && curl -fsSL --retry 3 "https://github.com/vmware-labs/webassembly-language-runtimes/releases/download/$PYWLR/libpython-3.12.0-wasi-sdk-20.0.tar.gz" | tar -xz -C "$py/lp"; }
   [ -d "$py/pillow" ] || { curl -fsSL --retry 3 -o "$OUT/src-pillow-$PILLOW.tar.gz" "$PILLOW_URL" && echo "$PILLOW_SHA  $OUT/src-pillow-$PILLOW.tar.gz" | sha256sum -c - &&
     mkdir -p "$py/pillow" && tar -xzf "$OUT/src-pillow-$PILLOW.tar.gz" -C "$py/pillow" --strip-components=1; }
-  c20="$C20/bin/clang --target=wasm32-wasi --sysroot=$C20/share/wasi-sysroot"; jp=$py/jpeg
+  jp=$py/jpeg; pre=$py/pre
+  xc="$X/bin/clang --target=wasm32-wasi --sysroot=$S20 -Wno-deprecated" # clang 33 over the wasi-sdk 20 sysroot
   if [ ! -f "$jp/lib/libjpeg.a" ]; then # libjpeg-turbo with wasi-sdk 20, the library only (its tools and examples use setjmp)
     [ -d "$WORK/libjpeg" ] || { mkdir -p "$WORK/libjpeg" && curl -fsSL --retry 3 https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/$JPEG/libjpeg-turbo-$JPEG.tar.gz | tar -xz -C "$WORK/libjpeg" --strip-components=1; }
     CMAKE_POLICY_VERSION_MINIMUM=3.5 cmake -S "$WORK/libjpeg" -B "$py/jpeg-b" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$C20/share/cmake/wasi-sdk.cmake" -DWASI_SDK_PREFIX="$C20" \
@@ -615,23 +620,45 @@ b_python3() { # python3 = CPython 3.12.0 (PSF-2.0) from VMware Labs' libpython (
   fi
   z=$py/zinc # zlib headers only: libpython has zlib inside
   [ -f "$z/zlib.h" ] || { mkdir -p "$z" && curl -fsSL --retry 3 https://github.com/madler/zlib/releases/download/v$ZLIB/zlib-$ZLIB.tar.gz | tar -xz -C "$z" --strip-components=1; }
+  pycm() { # source dir, build dir, cmake options: a static library by clang 33 over the wasi-sdk 20 sysroot, installed in $pre
+    src=$1 bld=$2; shift 2
+    CMAKE_POLICY_VERSION_MINIMUM=3.5 cmake -S "$src" -B "$bld" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$X/share/cmake/wasi-sdk.cmake" -DWASI_SDK_PREFIX="$X" \
+      -DCMAKE_SYSROOT="$S20" -DCMAKE_C_FLAGS="-Wno-deprecated -I$here/python/shim $SJLJ" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+      -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_PREFIX="$pre" -DCMAKE_INSTALL_LIBDIR=lib "$@" >"$bld.log" 2>&1 || { tail -30 "$bld.log"; exit 1; }
+    cmake --build "$bld" -j"$J" >>"$bld.log" 2>&1 || { grep -n "error" "$bld.log" | head -30; exit 1; }
+    cmake --install "$bld" >/dev/null
+  }
+  if [ ! -f "$pre/lib/libfreetype.a" ]; then dl "https://download.savannah.gnu.org/releases/freetype/freetype-$FREETYPE.tar.xz" freetype
+    pycm "$WORK/freetype" "$py/ft-b" -DFT_DISABLE_ZLIB=ON -DFT_DISABLE_BZIP2=ON -DFT_DISABLE_PNG=ON -DFT_DISABLE_HARFBUZZ=ON -DFT_DISABLE_BROTLI=ON; fi
+  if [ ! -f "$pre/lib/libwebp.a" ]; then dl "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-$WEBP.tar.gz" libwebp
+    pycm "$WORK/libwebp" "$py/webp-b" -DWEBP_ENABLE_SIMD=OFF -DWEBP_USE_THREAD=OFF -DWEBP_BUILD_ANIM_UTILS=OFF -DWEBP_BUILD_CWEBP=OFF -DWEBP_BUILD_DWEBP=OFF \
+      -DWEBP_BUILD_GIF2WEBP=OFF -DWEBP_BUILD_IMG2WEBP=OFF -DWEBP_BUILD_VWEBP=OFF -DWEBP_BUILD_WEBPINFO=OFF -DWEBP_BUILD_WEBPMUX=OFF -DWEBP_BUILD_EXTRAS=OFF -DWEBP_BUILD_LIBWEBPMUX=ON; fi
+  if [ ! -f "$pre/lib/libtiff.a" ]; then dl "https://download.osgeo.org/libtiff/tiff-$TIFF.tar.xz" libtiff # zlib (deflate) and JPEG compression
+    pycm "$WORK/libtiff" "$py/tiff-b" -Dtiff-tools=OFF -Dtiff-tests=OFF -Dtiff-contrib=OFF -Dtiff-docs=OFF -Dtiff-cxx=OFF -Dtiff-opengl=OFF \
+      -Dzlib=ON -DZLIB_INCLUDE_DIR="$z" -DZLIB_LIBRARY="$py/lp/lib/wasm32-wasi/libpython3.12.a" -Djpeg=ON -DJPEG_INCLUDE_DIR="$jp/include" -DJPEG_LIBRARY="$jp/lib/libjpeg.a" \
+      -Dold-jpeg=OFF -Djpeg12=OFF -Dpixarlog=OFF -Dlzma=OFF -Dzstd=OFF -Dwebp=OFF -Djbig=OFF -Dlerc=OFF -Dlibdeflate=OFF -Dmmap=OFF; fi
   s=$py/pillow/src; o=$py/obj; rm -rf "$o"; mkdir -p "$o"; n=0
-  for f in "$s"/_imaging.c "$s"/decode.c "$s"/encode.c "$s"/map.c "$s"/display.c "$s"/outline.c "$s"/path.c "$s"/libImaging/*.c "$s"/_imagingmath.c "$s"/_imagingmorph.c; do
-    $c20 -O2 -w -I"$here/python/shim" -I"$py/lp/include/python3.12" -I"$jp/include" -I"$z" -I"$s" -I"$s/libImaging" \
-      -DHAVE_LIBJPEG -DHAVE_LIBZ -DPILLOW_VERSION="\"$PILLOW\"" -c "$f" -o "$o/$(basename "$(dirname "$f")")_$(basename "$f" .c).o" &
+  python3 "$here/python/fix_meth.py" "$s" # one-parameter methods called with two: a trap in wasm (Image.getextrema, split, WEBP open)
+  for f in "$s"/_imaging.c "$s"/decode.c "$s"/encode.c "$s"/map.c "$s"/display.c "$s"/outline.c "$s"/path.c "$s"/libImaging/*.c "$s"/_imagingmath.c "$s"/_imagingmorph.c "$s"/_imagingft.c "$s"/_webp.c; do
+    ex=; case $f in */_webp.c) ex="-DImagingSectionEnter=webp_SectionEnter -DImagingSectionLeave=webp_SectionLeave" ;; esac # its own copy (one .so upstream)
+    $xc -O2 -w $SJLJ $ex -I"$here/python/shim" -I"$py/lp/include/python3.12" -I"$jp/include" -I"$pre/include" -I"$pre/include/freetype2" -I"$z" -I"$s" -I"$s/libImaging" \
+      -DHAVE_LIBJPEG -DHAVE_LIBZ -DHAVE_LIBTIFF -DPILLOW_VERSION="\"$PILLOW\"" -c "$f" -o "$o/$(basename "$(dirname "$f")")_$(basename "$f" .c).o" &
     n=$((n + 1)); [ $((n % J)) -eq 0 ] && wait
   done; wait
-  for f in "$s"/_imaging.c "$s"/decode.c "$s"/libImaging/*.c "$s"/_imagingmath.c "$s"/_imagingmorph.c; do
+  for f in "$s"/_imaging.c "$s"/decode.c "$s"/libImaging/*.c "$s"/_imagingmath.c "$s"/_imagingmorph.c "$s"/_imagingft.c "$s"/_webp.c; do
     [ -f "$o/$(basename "$(dirname "$f")")_$(basename "$f" .c).o" ] || { echo "python3: $f did not compile"; exit 1; }; done
-  $c20 -O2 -I"$py/lp/include/python3.12" -c "$here/python/main.c" -o "$o/main.o"
-  $c20 -o "$py/python.wasm" "$o"/*.o "$jp/lib/libjpeg.a" -L"$py/lp/lib/wasm32-wasi" -lpython3.12 -L"$py/vfs" -lwasi_vfs \
+  $xc -O2 -I"$py/lp/include/python3.12" -c "$here/python/main.c" -o "$o/main.o"
+  $xc -o "$py/python.wasm" "$o"/*.o "$pre/lib/libtiff.a" "$pre/lib/libwebpmux.a" "$pre/lib/libwebpdemux.a" "$pre/lib/libwebp.a" "$pre/lib/libsharpyuv.a" \
+    "$pre/lib/libfreetype.a" "$jp/lib/libjpeg.a" -L"$py/lp/lib/wasm32-wasi" -lpython3.12 -L"$py/vfs" -lwasi_vfs "$X/share/wasi-sysroot/lib/wasm32-wasi/libsetjmp.a" \
     -Wl,-z,stack-size=524288 -Wl,--stack-first -Wl,--initial-memory=10485760 -lwasi-emulated-getpid -lwasi-emulated-signal -lwasi-emulated-process-clocks
   r=$py/root; rm -rf "$r"; d=$r/usr/local/lib/python3.12; mkdir -p "$d" # the tree VMware packs (stdlib zip, os.py landmark) + PIL
   cp -r "$py/lp/usr/local/lib/." "$r/usr/local/lib/"; mkdir -p "$d/site-packages"; cp -r "$s/PIL" "$d/site-packages/"; rm -f "$d/site-packages/PIL/"*.pyi
   if python3 -c 'import sys; sys.exit(sys.version_info[:2] != (3, 12))' 2>/dev/null; then # the packed tree is read-only: ship the bytecode
     python3 -m compileall -q --invalidation-mode unchecked-hash "$d/site-packages/PIL"; fi
-  "$py/vfs/wasi-vfs" pack "$py/python.wasm" --mapdir /usr::"$r/usr" -o "$py/packed.wasm"
-  "$py/binaryen/bin/wasm-opt" -O2 -o "$OUT/python3.wasm" "$py/packed.wasm" # libpython is built -O0 for this step, as VMware does
+  # = wasi-vfs pack (GUEST::HOST there, HOST::GUEST here), with wasm exceptions allowed
+  "$py/wasmtime/wasmtime" wizer -S cli=y -W exceptions=y --dir "$r/usr::/usr" --env __WASI_VFS_PACKING=1 -f wasi_vfs_pack_fs -o "$py/packed.wasm" "$py/python.wasm"
+  "$py/binaryen/bin/wasm-opt" -O2 --enable-bulk-memory --enable-sign-ext --enable-mutable-globals --enable-nontrapping-float-to-int --enable-reference-types \
+    --enable-multivalue --enable-exception-handling -o "$OUT/python3.wasm" "$py/packed.wasm" # libpython is built -O0 for this step, as VMware does
 }
 
 # b_ prefix: functions named zip, unzip... would hide those commands
