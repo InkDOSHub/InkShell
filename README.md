@@ -18,11 +18,39 @@ Alpine Linux 3.21 (x86-64) runs on [InkSoC](https://github.com/InkDOSHub/InkSoC)
 - Programs see 8 GB; real RAM follows this device's calibrated limit and the rest goes to swap in the browser storage.
 - Your files stay in this browser between visits; ⇡ and ⇣ send and download files.
 
+## Fast tools (WebAssembly catalog)
+
+Many common programs are available as **native WebAssembly** builds. They run much faster than the x86 Alpine packages (often 10–400× on big data) because they skip the x86 JIT.
+
+Install with the usual command:
+
+```sh
+apk add NAME
+```
+
+Examples that work today:
+
+| Category | Packages |
+|---|---|
+| Editors | `vim`, `nano`, `less` |
+| Text tools | `grep`, `sed`, `awk`, `find`, `coreutils` (sort, wc, cut…) |
+| Network | `curl` |
+| Version control | `git` (local ops; clone/fetch/push still need `apk add --x86 git`) |
+| Language | `python3` (+ `pip` for pure-Python packages), `quickjs`, `lua5.4`, `bc` |
+| Archives | `tar`, `gzip`, `xz`, `bzip2`, `zstd`, `zip`, `unzip`, `7zip` |
+| Media / data | `ffmpeg`, `ffprobe`, `imagemagick`, `qpdf`, `sqlite`, `jq`, `file`, `hashtools` |
+
+- `apk add NAME` → WebAssembly version (preferred).
+- `apk add --x86 NAME` → classic Alpine x86 package (fallback).
+
+If a WASM program is missing a feature, use the full path of the x86 binary (example: `/usr/bin/git` after `apk add --x86 git`).
+
 ## Limitations
 
 - **No incoming connections from outside.** Servers you start (`nc -l`, a web server, `sshd`) can only be reached from inside this terminal (`127.0.0.1`), because a browser page can't accept connections from the network. So `sshd` is not set up: only `ssh localhost` would reach it.
 - Timer signals (`alarm`, `setitimer`, `timer_create`) arrive at the program's next system call; a loop that never makes one doesn't get them.
 - No desktop or 3D graphics: it is a terminal.
+- Some WASM programs are still incomplete (e.g. git has no HTTPS clone yet; nano is ASCII-only).
 
 ## Files
 
@@ -42,4 +70,4 @@ Other InkDOS Hub repositories: [Hub](https://github.com/InkDOSHub/inkdoshub.gith
 
 ## License
 
-Code made here: [MIT](LICENSE). Third party: xterm.js (MIT), BusyBox (GPL-2.0) and Alpine Linux packages (each under its own license).
+Code made here: [MIT](LICENSE). Third party: xterm.js (MIT), BusyBox (GPL-2.0) and Alpine Linux packages (each under its own license). WASM catalog programs carry their own licenses (see `THIRD_PARTY_LICENSES.md` and the catalog).
