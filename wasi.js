@@ -199,6 +199,7 @@ KNOWN['574467:8f66d51c'] = { ptr: 8436172, lit: 8412357 }; // zip.wasm
 KNOWN['503577:8ecea3b'] = { ptr: 8426140, lit: 8395007 }; // unzip.wasm
 KNOWN['3403081:6d06aeea'] = { ptr: 2222148, lit: 1072918 }; // ripgrep.wasm
 KNOWN['321558:454cc1c1'] = { ptr: 72444, lit: 65857 }; // hashtools.wasm
+KNOWN['74467624:c4f20cc9'] = { ptr: 17848568, lit: 10422194 }; // clang llvm.wasm (YoWASP 22.1.6, item 77: ~0.8 s search otherwise)
 /** cwdSlot results by moduleKey: the search (~135 ms for python3) runs once per module in this thread.
  *  On the page each program has a new Worker, so app.js keeps the results and hands them over (slots, onSlot). */
 const slotCache = new Map();
@@ -256,6 +257,7 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     if (slot) { // real root at "/", the shell's folder becomes wasi-libc's cwd (see environ_get)
       envs = [...envs.filter((e) => !e.startsWith('PWD=')), 'PWD=' + cwd];
       slot.at = envs.slice(0, -1).reduce((n, e) => n + enc.encode(e).length + 1, 4);
+      slot.cwd = cwd;
     }
     if (cwd !== '/' && !slot) { // one "/" preopen for both: each path goes to the shell's folder or the real root (pick)
       cwdFd = opendir(cwd); rootFd = opendir('/');
@@ -592,6 +594,9 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     for (const i of WebAssembly.Module.imports(mod)) if (!imports[i.module]) imports[i.module] = {};
     inst = new WebAssembly.Instance(mod, imports);
     mem = inst.exports.memory;
+    if (slot && !WebAssembly.Module.imports(mod).some((i) => i.name === 'environ_get')) { // no environ_get (a small C program: item 77): the folder goes in a page of its own
+      try { const c = cstr(slot.cwd), at = mem.grow(1) * 65536; u8().set(c, at); if (dv().getUint32(slot.ptr, true) === slot.lit) dv().setUint32(slot.ptr, at, true); } catch {}
+    }
     if (inst.exports._start) inst.exports._start(); else if (inst.exports._initialize) inst.exports._initialize();
     exit(0);
   } catch (e) {

@@ -61,7 +61,7 @@ InkShell = terminal Alpine Linux no navegador (WebKit do iPad/XeOS primeiro, iPh
 
 ## 6. Catálogo WASM (como se adiciona programa)
 - `overlay/etc/inksoc/wasm-catalog`, separado por TAB: nome, url, sha256, tamanho, licença, arquivos, descrição.
-- Cada item publica sua própria release `wasm-tools-N` só com os seus arquivos (usados: 15 bzip2/zstd, 35 make (item 77a), 16 diffutils sem uso, 17 bc/file, 18 less, 19 sem uso, 20 awk/lua/find (item 78), 22 qjs (item 79), 23 grep (item 80), 24 vim (item 74), 25 nano (item 81), 27 curl (item 82), 29 git (item 75), 34 python3 + Pillow (item 84; 33 = 1º build sem .pyc, sem uso), 37 python3 + Pillow com FreeType/WebP/TIFF (item 86; 35 = make do 77a, 36 = jq do 85); 21 era um vim antigo sem uso; 26 = 1º build do curl, sem uso; 28 = 1º build do git, sem uso: abria o $PAGER less).
+- Cada item publica sua própria release `wasm-tools-N` só com os seus arquivos (usados: 15 bzip2/zstd, 35 make (item 77a), 16 diffutils sem uso, 17 bc/file, 18 less, 19 sem uso, 20 awk/lua/find (item 78), 22 qjs (item 79), 23 grep (item 80), 24 vim (item 74), 25 nano (item 81), 27 curl (item 82), 29 git (item 75), 34 python3 + Pillow (item 84; 33 = 1º build sem .pyc, sem uso), 37 python3 + Pillow com FreeType/WebP/TIFF (item 86; 35 = make do 77a, 36 = jq do 85); clang (item 77) sem release: .tgz do npm `@yowasp/clang` direto (apk modo arquivo: 1º arquivo terminado em `/`); 21 era um vim antigo sem uso; 26 = 1º build do curl, sem uso; 28 = 1º build do git, sem uso: abria o $PAGER less).
 - python3 = build próprio desde o item 84 (`b_python3`: libpython da VMware religado com Pillow, `wasm-tools-37` desde o 86); módulo C novo p/ python = embutir em `tools/wasm-tools/python/main.c` e religar. Código novo: clang do wasi-sdk 33 sobre o sysroot do wasi-sdk 20 (setjmp = exceção wasm); empacotar com `wasmtime wizer` (o do wasi-vfs 0.4.0 recusa exceções); método C do Pillow com 1 parâmetro → `fix_meth.py`.
 - Sem build/release: `py3-pip` (item 83) aponta direto para o wheel do PyPI (sha256 fixo); 8º campo do catálogo = nomes instalados junto (`python3` → `py3-pip`).
 - Build: `tools/wasm-tools/build.sh` (funções `b_<nome>`), `.github/workflows/wasm-tools.yml` (TAG/PREV, matriz), licença em `THIRD_PARTY_LICENSES.md`.
@@ -78,7 +78,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 - Limite de 5 horas da conta pode parar workers no meio: retomar depois que liberar.
 
 ## 9. Estado atual (atualizar a cada merge)
-- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 80, 74, 81, 82, 75, 83, 84, 71, 86, 85, 77a, 88, 89 feitos; 62, 65, 66 travados.
+- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 80, 74, 81, 82, 75, 83, 84, 71, 86, 85, 77a, 88, 89, 77 feitos; 62, 65, 66 travados.
 - **Rodando**: — (gerente: sessão 013qXTaN, 27/11)
 - **Fila por uso (dono, 26/11: "siga essa ordem"; apps mais usados no terminal Linux que ainda estão incompletos aqui)**:
   1. ~~74 vim (2)~~ feito (#113)
@@ -88,7 +88,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
   5. ~~75 git oficial em WASM~~ feito (#119; clone/fetch/push: `apk add --x86 git` + `/usr/bin/git`)
   6. ~~83 pip no python WASM~~ feito (#120; `apk add python3` traz py3-pip; só pacote Python puro)
   7. ~~71 retomada diff/patch com GNU diffutils (2)~~ feito (#123; próximo: 77)
-  8. 77 clang + make (3,5): ~~77a make~~ feito (#127); próximo: 77 clang
+  8. ~~77 clang + make (3,5)~~ feito: 77a make (#127), 77 clang (#135; `apk add clang`, C/C++ → WASI, sem threads/setjmp)
   9. ~~84 Pillow no python WASM~~ feito (#126; Pillow 11.3.0 dentro do python3 do catálogo, `wasm-tools-34`; PNG/JPEG, sem freetype/webp/tiff)
   10. ~~86 Pillow extras~~ feito (#129; FreeType/ImageFont, WEBP, TIFF; JPEG ruim = OSError; `wasm-tools-37`)
   Já completos (só velocidade x86): ls/cp/mv/rm/mkdir/cat, ps/top, tar/gzip, python3, ssh (x86, não medido). Fora: node (sem WASM viável; qjs no lugar), tmux (precisa pty).
@@ -101,6 +101,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
+- 2026-11-27 | #135 | 77 clang em WASM | clang 22.1.6 + wasm-ld do npm `@yowasp/clang` (sem build próprio; 27 MB baixados, ~135 MB instalados, opt-in); apk modo .tgz + `/etc/inksoc/wasm-setup/clang`; driver `clang -###` → cc1 + wasm-ld; hello.c → WASI que roda; 2 arquivos + header por make (cc); ar/llvm-ar; `apk add clang` 8,8 s, 1º hello 5,7 s (node/V8, frio); clang++ iostream ok (-fno-exceptions); wasi.js dá o cwd a programa sem environ_get; 4 rodadas de CI | próximo: 90 df
 - 2026-11-27 | #134 | 89 exnref | WASM com exceções (awk, bc, python3) em motor sem exnref: erro claro + exit 126 + dica busybox/apk --x86 (sem fallback automático) | próximo: 90 df
 - 2026-11-27 | #127 | 77a make GNU em WASM | feito na 5ª rodada com aval do dono ("autorizo quebrar a regra teto de rodadas no 77a"); antes parado no teto de 4 rodadas (1 build `wasm-tools-35`, 3 teste). make 4.4.1 pronto (611 KB, GPL-3.0 separado, fonte na release; receitas/`$(shell)`/re-execução pela ponte /dev/inksoc; `-j N` num make, sem job server) e bug do kernel corrigido (hora de modificação de arquivo não era guardada: stat = agora, touch sem efeito → `mtime` por caminho); make 11/11 PASS nas rodadas 3 e 4, 50 alvos ~1 s (~20 ms/receita). Rodada 4 (após merge do main com o 71) falhou só no passo `apk add` de TODAS as ferramentas: a lista cresceu (diffutils/cmp/patch/make) e passou dos 120 s de um settle; correção do teste já no branch `claude/77a-make` (commit [skip ci]: espera add-rc até 5 min) | gerente: aval p/ 1 rodada a mais (rodar test.yml no branch) e squash merge do #127; depois 77 clang
 - 2026-11-27 | #131 | 88 medir comandos do dia a dia | bench `cmds-bench.yml` (45 comandos, Chromium, VM vs nativo): shell ash x86 ≈ 60x nativo (1000 iterações 140 ms); spawn de WASM 5–12 ms vs 2 ms do busybox (WASM só ganha com entrada grande); awk WASM quebra no Chromium 131 (exnref); df sem /proc/mounts; ls -l 200 arquivos 51 ms, du 31 ms; resto 3–7 ms | 89 awk sem exnref/fallback, 90 df, 91 medir spawn WASM

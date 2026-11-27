@@ -6,6 +6,9 @@
 # - WebAssembly catalog (/etc/inksoc/wasm-catalog, and your own /etc/inksoc/wasm-catalog.local):
 #   "apk add NAME" for a name listed there installs its WebAssembly build (runs directly, much faster
 #   than x86 code); other names go to Alpine's apk unchanged. "apk add --x86 NAME" skips the catalog.
+# - A catalog entry whose first file ends in "/" (clang) is a .tar.gz unpacked into that folder; then
+#   /etc/inksoc/wasm-setup/NAME FOLDER (if there) finishes it and prints the paths it made (links...),
+#   which "apk del NAME" removes with the folder.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CATS="/etc/inksoc/wasm-catalog.local /etc/inksoc/wasm-catalog"
 DB=/var/lib/inksoc-wasm
@@ -26,8 +29,9 @@ progress() { # NAME BYTES TOTAL
 install_one() {
   e=$(entry "$1"); url=$(field "$e" 2); sum=$(field "$e" 3); size=$(field "$e" 4); lic=$(field "$e" 5); files=$(field "$e" 6)
   main=${files%%,*}
+  arch=; case "$main" in */) arch=1; main=${main%/} ;; esac # an archive unpacked into the folder $main
   with=$(field "$e" 8 | tr ',' ' ') # 8th field (optional): more catalog names installed with this one (python3: py3-pip)
-  if [ -f "$DB/$1" ] && [ "$(head -n1 "$DB/$1")" = "$sum" ] && [ -f "$main" ]; then echo "$1 (WebAssembly) is already installed"; install_with $with; return; fi
+  if [ -f "$DB/$1" ] && [ "$(head -n1 "$DB/$1")" = "$sum" ] && [ -e "$main" ]; then echo "$1 (WebAssembly) is already installed"; install_with $with; return; fi
   echo "($1) WebAssembly build, $lic, $((${size:-0} / 1048576)) MB"
   mkdir -p "$(dirname "$main")" "$DB" || return 1
   tmp="$main.apk-new"
@@ -73,10 +77,22 @@ install_one() {
   rm -f "$tmp.err"
   got=$(sha256sum "$tmp" | cut -d' ' -f1)
   [ "$got" = "$sum" ] || { rm -f "$tmp"; echo "ERROR: $1: checksum mismatch ($got)" >&2; return 1; }
-  chmod 755 "$tmp" && mv -f "$tmp" "$main" || return 1
-  printf '%s\n%s\n' "$sum" "$main" > "$DB/$1"
+  if [ -n "$arch" ]; then
+    echo "$1: unpacking into $main" >&2
+    rm -rf "$main" && mkdir -p "$main" && tar -xzf "$tmp" -C "$main" || { rm -rf "$tmp" "$main"; echo "ERROR: $1: unpack failed" >&2; return 1; }
+    rm -f "$tmp"
+    printf '%s\n%s\n' "$sum" "$main" > "$DB/$1"
+    hook=/etc/inksoc/wasm-setup/$1
+    if [ -f "$hook" ]; then
+      sh "$hook" "$main" > "$DB/$1.made" || { tail -n +2 "$DB/$1" | cat - "$DB/$1.made" | while read -r f; do rm -rf "$f"; done; rm -f "$DB/$1" "$DB/$1.made"; echo "ERROR: $1: setup failed" >&2; return 1; }
+      cat "$DB/$1.made" >> "$DB/$1"; rm -f "$DB/$1.made"
+    fi
+  else
+    chmod 755 "$tmp" && mv -f "$tmp" "$main" || return 1
+    printf '%s\n%s\n' "$sum" "$main" > "$DB/$1"
+  fi
   for f in $(printf '%s' "$files" | tr ',' ' '); do
-    [ "$f" = "$main" ] && continue
+    [ "$f" = "$main" ] || [ -n "$arch" ] && continue
     mkdir -p "$(dirname "$f")" && ln -sf "$main" "$f" && echo "$f" >> "$DB/$1"
   done
   echo "OK: $1 installed: $main"
@@ -84,7 +100,7 @@ install_one() {
 }
 install_with() { for w in "$@"; do [ -n "$(entry "$w")" ] && { install_one "$w" || return 1; }; done; return 0; }
 del_one() {
-  tail -n +2 "$DB/$1" | while read -r f; do rm -f "$f"; done
+  tail -n +2 "$DB/$1" | while read -r f; do if [ -d "$f" ] && [ ! -L "$f" ]; then rm -rf "$f"; else rm -f "$f"; fi; done
   rm -f "$DB/$1"; echo "($1) WebAssembly build removed"
 }
 
