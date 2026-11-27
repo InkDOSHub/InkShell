@@ -38,7 +38,7 @@ InkShell = terminal Alpine Linux no navegador (WebKit do iPad/XeOS primeiro, iPh
    - rodar `git remote -v` primeiro; ler `CLAUDE.md` e `docs/graph/SUMMARY.md`;
    - branch `claude/<item>`; PR via `gh api repos/InkDOSHub/InkShell/pulls` (GraphQL bloqueado);
    - teto de rodadas de CI = 2 × pontos;
-   - testes só no GitHub Actions; local só build/sintaxe;
+   - testes só no GitHub Actions; local só build/sintaxe; se o CI falhar, ler só o fim do log (`gh run view <id> --log-failed | tail -n 50`);
    - bump de `?v=` (`engine.wasm`, `worker.js`, `app.js`, `overlay.tar`) se mudou arquivo servido;
    - linha no quadro de pontos do ROADMAP e linha no **Log** deste arquivo, no mesmo PR;
    - esperar CI verde e fazer squash-merge sozinho; terminar com relatório de 2–4 linhas (PR, CI, pontos, número medido).
@@ -103,6 +103,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
+- 2026-11-27 | #PRNUM | regra log do CI | worker que vê o CI falhar lê só as últimas 50 linhas do log (`gh run view <id> --log-failed | tail -n 50`), não o log inteiro | —
 - 2026-11-27 | #139 | 93 cache de Module + cwd slot WASM | feito (3 rodadas + 1 de merge): todo arquivo do kernel tem versão (arquivo na memória também), página avisa o motor quais Modules tem e o motor não copia os bytes; Chromium 131, ms por spawn: cut 75 -> 33, true 61 -> 19, grep 42 -> 32 (Module 49/49 do cache, setup 19 -> 3,7). Não commitar engine.wasm compilado local (toolchain diferente = ~30% mais lento) | próximo: 94 menos voltas pelo service worker (ou pool de Workers)
 - 2026-11-27 | #136 | 91 medir spawn WASM | feito (3 rodadas: teto 2 + 1 com aval do dono); página real, Chromium 131, 49 spawns: coreutils 9 MB `cut` 75 ms, `true` 61, grep 0,7 MB 42 contra busybox 1,3–2; fases do Worker: nascer 9, setup WASI 7–20, Module 1–15 (compila em TODO spawn; ressalva: arquivo posto por `put`), instanciar 2, chamadas WASI ~1,6 ms cada (XHR síncrono + service worker), saída->wasi-end 7,6 ms, cópia dos bytes 4,6 ms (9 MB) | 92 (pool + cache) depois de conferir cache com programa de `apk add`
 - 2026-11-27 | #133 | 90 df / proc/mounts | motor serve /proc/mounts, /proc/self/mounts e /etc/mtab (mounts reais); df, df -h e mount passam no teste Linux leve | próximo da fila (91; teste Linux na engine rebuilt pós-merge)
