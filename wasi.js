@@ -206,9 +206,14 @@ const slotCache = new Map();
 /** Each lookup: { hit, ms } (ms = key + search), for tests and benches. */
 export const cwdStats = [];
 function slotOf(bytes, slots, onSlot, k) {
-  const t = performance.now(), fk = fastKey(bytes), known = KNOWN[fk], key = k || (known ? fk : moduleKey(bytes)), hit = slots.has(key);
-  const s = hit ? slots.get(key) : known || cwdSlot(bytes);
-  if (!hit) { slots.set(key, s); if (onSlot) onSlot(key, s); }
+  const t = performance.now();
+  let s, hit = !!k && slots.has(k); // item 93: a known file version needs no look at the bytes (the page may not send them)
+  if (hit) s = slots.get(k);
+  else {
+    const fk = fastKey(bytes), known = KNOWN[fk], key = k || (known ? fk : moduleKey(bytes));
+    hit = slots.has(key); s = hit ? slots.get(key) : known || cwdSlot(bytes);
+    if (!hit) { slots.set(key, s); if (onSlot) onSlot(key, s); }
+  }
   cwdStats.push({ hit, ms: performance.now() - t });
   if (cwdStats.length > 64) cwdStats.shift();
   return s && { ptr: s.ptr, lit: s.lit };
@@ -218,7 +223,7 @@ function slotOf(bytes, slots, onSlot, k) {
  *  (a Linux call of the stub process; throws Exit when the process is gone). */
 export function runModule({ bytes, key = null, module = null, args, envs, base: BASE, size: SIZE, sys, inline = false, slots = slotCache, onSlot, mods = modCache, onModule, spawn: SPAWN = 0, prof = null }) {
   prof && prof('rm0'); // item 91: debug timestamps (page ?wasiprof=1), off by default
-  const prog = jsProgram(bytes);
+  const prog = bytes && jsProgram(bytes); // no bytes: the page holds the compiled Module (item 93; never a JS program)
   if (prog) { // its exit code (a Promise of it when it works asynchronously, as WebCodecs does)
     const end = (c) => { try { sys(231, [c]); } catch {} return c; };
     let r; try { r = prog({ args, sys, base: BASE, size: SIZE, inline }); } catch { return end(1); }

@@ -54,14 +54,18 @@ const loops = [
   ['wasm cut (coreutils 9 MB)', `i=0; while [ $i -lt ${N} ]; do echo abc | ./coreutils cut -c1-2 > /dev/null; i=$((i + 1)); done`],
   ['wasm true (coreutils 9 MB)', `i=0; while [ $i -lt ${N} ]; do ./coreutils true; i=$((i + 1)); done`],
   ['wasm grep (0.7 MB)', `i=0; while [ $i -lt ${N} ]; do echo abc | ./grep -c b > /dev/null; i=$((i + 1)); done`],
+  // item 93: the same with the page's Module hand-over off (debug window.__wasiNoMod: bytes sent, each Worker compiles; cwd slot still cached)
+  ['wasm grep, no Module msg', `i=0; while [ $i -lt ${N} ]; do echo abc | ./grep -c b > /dev/null; i=$((i + 1)); done`, 1],
+  ['wasm cut, no Module msg', `i=0; while [ $i -lt ${N} ]; do echo abc | ./coreutils cut -c1-2 > /dev/null; i=$((i + 1)); done`, 1],
+  ['wasm grep again (Module msg)', `i=0; while [ $i -lt ${N} ]; do echo abc | ./grep -c b > /dev/null; i=$((i + 1)); done`],
   ['busybox cut (x86)', `i=0; while [ $i -lt ${N} ]; do echo abc | busybox cut -c1-2 > /dev/null; i=$((i + 1)); done`],
   ['busybox true (x86)', `i=0; while [ $i -lt ${N} ]; do busybox true; i=$((i + 1)); done`],
 ];
 const out = [];
 let k = 0;
-for (const [name, cmd] of loops) for (let rep = 1; rep <= REPS; rep++) {
+for (const [name, cmd, nomod] of loops) for (let rep = 1; rep <= REPS; rep++) {
   const tag = 'L' + (++k);
-  await p.evaluate(() => { window.__wprof.length = 0; window.__wprofEng = {}; });
+  await p.evaluate((nm) => { window.__wprof.length = 0; window.__wprofEng = {}; window.__wasiNoMod = !!nm; if (typeof wasiHeldKeys === 'function') wasiHeldKeys(); }, nomod);
   const r = await p.evaluate(({ cmd, tag }) => new Promise((ok) => {
     const t0 = performance.now(), re = new RegExp('DONE-' + tag + '-0'), lim = t0 + 60000;
     const chk = () => {
