@@ -199,6 +199,7 @@ KNOWN['574467:8f66d51c'] = { ptr: 8436172, lit: 8412357 }; // zip.wasm
 KNOWN['503577:8ecea3b'] = { ptr: 8426140, lit: 8395007 }; // unzip.wasm
 KNOWN['3403081:6d06aeea'] = { ptr: 2222148, lit: 1072918 }; // ripgrep.wasm
 KNOWN['321558:454cc1c1'] = { ptr: 72444, lit: 65857 }; // hashtools.wasm
+KNOWN['74467624:c4f20cc9'] = { ptr: 17848568, lit: 10422194 }; // clang llvm.wasm (YoWASP 22.1.6, item 77: ~0.8 s search otherwise)
 /** cwdSlot results by moduleKey: the search (~135 ms for python3) runs once per module in this thread.
  *  On the page each program has a new Worker, so app.js keeps the results and hands them over (slots, onSlot). */
 const slotCache = new Map();
