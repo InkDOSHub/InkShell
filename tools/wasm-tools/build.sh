@@ -515,6 +515,20 @@ if old not in t:
     raise SystemExit("sdiff.c: execvp block not found")
 p.write_text(t.replace(old, new, 1))
 PY
+  # WASI's NSIG is 65. Gnulib's fallback sigset is a 32-bit mask and will not compile (verify_NSIG_constraint).
+  python3 - "$d/lib/signal.in.h" << 'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+t = p.read_text()
+old = "#  ifndef NSIG\n#   define NSIG 32\n#  endif\n"
+new = "#  undef NSIG\n#  define NSIG 32\n"
+if old not in t:
+    if new not in t:
+        raise SystemExit("signal.in.h: NSIG block not found")
+else:
+    p.write_text(t.replace(old, new, 1))
+PY
   rm -rf "$d/b" && mkdir -p "$d/b" && (cd "$d/b" && CFLAGS="-O2 -DCOMPAT_CHMOD_OK $EMU $SJLJ -I$P/compat -include $d/ink_diff.h" LDFLAGS="-L$P/lib $STACK" LIBS="$d/ink_diff.o -lcompat -lsetjmp $EMUL" \
     ac_cv_func_fork_works=no ac_cv_func_vfork_works=no ac_cv_func_fchdir=yes ac_cv_func_getdtablesize=yes ac_cv_func_pipe=yes ac_cv_func_dup2=yes \
     gl_cv_func_fcntl_f_dupfd_cloexec=yes gl_cv_func_dup2_works=yes gl_cv_func_fdopendir_works=yes \
@@ -532,6 +546,19 @@ b_patch() { # GNU patch 2.8.1 (GPL-3.0-or-later; a separate catalog program, sou
   printf '#include <errno.h>\nint dup(int f) { (void)f; errno = ENOSYS; return -1; }\nint dup2(int f, int g) { (void)f; (void)g; errno = ENOSYS; return -1; }\nint fchdir(int f) { (void)f; errno = ENOSYS; return -1; }\nint getdtablesize(void) { return 1024; }\nint pipe(int p[2]) { (void)p; errno = ENOSYS; return -1; }\n' > "$g/ink_patch.c"
   $CC -O2 -c "$g/ink_patch.c" -o "$g/ink_patch.o"
   sed -i "s/\\bopendirat\\b\\([^.]\\)/ink_opendirat\\1/g" "$g/lib/backupfile.c" "$g/lib/opendirat.c" "$g/lib/opendirat.h"
+  python3 - "$g/lib/signal.in.h" << 'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+t = p.read_text()
+old = "#  ifndef NSIG\n#   define NSIG 32\n#  endif\n"
+new = "#  undef NSIG\n#  define NSIG 32\n"
+if old not in t:
+    if new not in t:
+        raise SystemExit("signal.in.h: NSIG block not found")
+else:
+    p.write_text(t.replace(old, new, 1))
+PY
   rm -rf "$g/b" && mkdir -p "$g/b" && (cd "$g/b" && CFLAGS="-O2 -DCOMPAT_CHMOD_OK $EMU $SJLJ -I$P/compat -include $g/ink_patch.h" LDFLAGS="-L$P/lib $STACK" LIBS="$g/ink_patch.o -lcompat -lsetjmp $EMUL" \
     ac_cv_func_fork_works=no ac_cv_func_vfork_works=no ac_cv_func_fchdir=yes ac_cv_func_getdtablesize=yes ac_cv_func_pipe=yes ac_cv_func_dup2=yes \
     gl_cv_func_fcntl_f_dupfd_cloexec=yes gl_cv_func_dup2_works=yes gl_cv_func_fdopendir_works=yes \
