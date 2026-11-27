@@ -175,7 +175,7 @@ export function fastKey(b) {
 }
 /** Shipped cwdSlot of the catalog modules, by fastKey (no search, no hash on the first run). */
 export const KNOWN = {};
-KNOWN['29544227:aeabf88d'] = { ptr: 4837688, lit: 763634 }; // python3.wasm (with Pillow, item 84)
+KNOWN['30915451:664cae6'] = { ptr: 5121112, lit: 792157 }; // python3.wasm (Pillow with FreeType/WebP/TIFF, item 86)
 KNOWN['24470606:a4a50657'] = { ptr: 20570696, lit: 16866701 }; // ruby.wasm
 KNOWN['2115894:7d0408b4'] = { ptr: 8487468, lit: 8416887 }; // 7zip.wasm
 KNOWN['6583149:19625083'] = { ptr: 8667268, lit: 8443918 }; // qpdf.wasm
