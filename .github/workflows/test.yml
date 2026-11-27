@@ -94,6 +94,9 @@ jobs:
       - name: python3 processes (item 78; subprocess/os.system through /dev/inksoc, WASM programs in worker threads)
         timeout-minutes: 6
         run: INK_SPAWN=1 INK_WASI_THREADS=1 timeout 300 node tests/linux-test.mjs engine-src/target/wasm32-unknown-unknown/release/inksoc.wasm
+      - name: WASM exnref fallback (item 89)
+        timeout-minutes: 2
+        run: node tests/exnref-fallback.mjs
       - name: Test the fresh build
         run: node tests/linux-test.mjs engine-src/target/wasm32-unknown-unknown/release/inksoc.wasm
       - name: Test the published engine.wasm

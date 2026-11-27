@@ -31,6 +31,16 @@ const E = { 101: 40, 103: 13, 104: 15, 107: 53, 110: 73, 111: 14, 113: 23, 1: 63
 const errno = (v) => E[-v] ?? 29;
 const ftype = (mode) => ({ 0o040000: 3, 0o100000: 4, 0o020000: 2, 0o060000: 1, 0o120000: 7, 0o140000: 6 })[mode & 0o170000] ?? 0;
 const dtype = { 1: 0, 2: 2, 4: 3, 6: 1, 8: 4, 10: 7, 12: 6 };
+class NoExnref extends Error {}
+let exnrefOk;
+/** Does this engine accept exnref (the exceptions the setjmp/longjmp builds of awk, bc, python3 use)? Checked once. */
+export function hasExnref() {
+  if (globalThis.INKSHELL_NO_EXNREF) return false; // test hook (tests/exnref-fallback.mjs)
+  if (exnrefOk === undefined) {
+    try { exnrefOk = WebAssembly.validate(new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 5, 1, 0x60, 0, 1, 0x69])); } catch { exnrefOk = false; }
+  }
+  return exnrefOk;
+}
 export class Exit { constructor(code) { this.code = code; } }
 
 /** The "path\0args\0\0env" description (wasi_info) as { args, envs }. */
@@ -571,7 +581,7 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
   let code = 0;
   try {
     let mod = module || (key && mods.get(key));
-    if (!mod) { mod = new WebAssembly.Module(bytes); if (key) { cacheModule(mods, key, mod); if (onModule) onModule(key, mod); } }
+    if (!mod) { try { if (globalThis.INKSHELL_NO_EXNREF) throw new WebAssembly.CompileError('test hook'); mod = new WebAssembly.Module(bytes); } catch (e) { if (e instanceof WebAssembly.CompileError && !hasExnref()) throw new NoExnref(); throw e; } if (key) { cacheModule(mods, key, mod); if (onModule) onModule(key, mod); } }
     else if (key) cacheModule(mods, key, mod);
     const imports = { wasi_snapshot_preview1: w, wasi_unstable: w };
     imports.inksoc = { // terminal control for full-screen programs (less): WASI has no ioctl. TCGETS / TCSETS (36 bytes, the kernel's struct termios) and TIOCGWINSZ; 0 = ok
@@ -586,7 +596,10 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     exit(0);
   } catch (e) {
     if (e instanceof Exit) code = e.code;
-    else { // a trap or a bad module: say why on stderr, exit 127 (134 for a trap, like an abort)
+    else if (e instanceof NoExnref) { // an older engine (Safari < 18.4, Chrome < 137): say it plainly, 126 = cannot execute
+      code = 126;
+      try { const nm = (args[0] || 'wasm').split('/').pop(), m = enc.encode(`${nm}: this program needs WebAssembly exception handling (Safari 18.4+ / Chrome 137+). Try the x86 version: busybox ${nm} ... or apk add --x86 ${nm}\n`); sys(1, [2, BASE, m.length], m); exit(code); } catch {}
+    } else { // a trap or a bad module: say why on stderr, exit 127 (134 for a trap, like an abort)
       code = e instanceof WebAssembly.RuntimeError ? 134 : 127;
       try { const m = enc.encode(`${args[0] || 'wasm'}: ${e.message}\n`); sys(1, [2, BASE, m.length], m); exit(code); } catch {}
     }
