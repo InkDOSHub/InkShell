@@ -76,6 +76,15 @@ if (hasPip) {
 }
 add('procs.sh', fs.readFileSync(new URL('./src/procs.sh', import.meta.url))); // item 78 (INK_SPAWN): awk, lua, find
 add('make.sh', fs.readFileSync(new URL('./src/make.sh', import.meta.url))); // item 77a (INK_SPAWN): GNU make, recipes through /dev/inksoc
+// item 77 (INK_CLANG): the catalog's clang (test.yml downloads the npm .tgz to tests/clang.tgz, sha256 checked) as a local catalog entry
+const clangTgz = new URL('./clang.tgz', import.meta.url);
+const hasClang = !!process.env.INK_CLANG && hasWasi && fs.existsSync(clangTgz);
+if (hasClang) {
+  const cb = fs.readFileSync(clangTgz), cl = fs.readFileSync('overlay/etc/inksoc/wasm-catalog', 'utf8').split('\n').find((l) => l.startsWith('clang\t')).split('\t');
+  add('clang.tgz', cb);
+  add('clangcat.txt', Buffer.from(['clang', 'file:///root/clang.tgz', crypto.createHash('sha256').update(cb).digest('hex'), cb.length, ...cl.slice(4)].join('\t') + '\n'));
+  add('clang.sh', fs.readFileSync(new URL('./src/clang.sh', import.meta.url)));
+}
 add('curl-e.cgi', enc.encode('#!/bin/sh\nprintf \'Content-Type: text/plain\\r\\n\\r\\n\'\necho "m=$REQUEST_METHOD ua=$HTTP_USER_AGENT"\nhead -c "${CONTENT_LENGTH:-0}"\necho\n')); // item 82 (INK_CURL): a CGI of busybox httpd that echoes a POST
 // tools from the catalog (test.yml downloads them to tests/NAME.wasm, sha256 checked): [catalog name, file, programs]
 const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagick', 'magick', 'magick,convert,identify'], ['ffmpeg', 'ffmpeg', 'ffmpeg'], ['ffprobe', 'ffprobe', 'ffprobe'],
@@ -373,6 +382,34 @@ if (process.env.INK_CURL) { // item 82: the WebAssembly curl (network helper ink
   let ok = true;
   for (const [re, name] of checks) { const k = re.test(got1); ok = ok && k; console.log((k ? 'PASS ' : 'FAIL ') + 'curl: ' + name); }
   console.log('curl in ' + ((Date.now() - t1) / 1000).toFixed(1) + ' s\n' + got1.slice(-1500));
+  process.exit(ok ? 0 : 1);
+}
+if (process.env.INK_CLANG) { // item 77: apk add clang (the npm .tgz, unpacked by apk + /etc/inksoc/wasm-setup/clang), then C to WASI programs; with INK_WASI_THREADS=1
+  if (!hasClang || !hasTool('make')) { console.log('FAIL INK_CLANG: no tests/clang.tgz or tests/make.wasm'); process.exit(1); }
+  const t1 = Date.now(), f1 = out.length;
+  send("su root -c 'cp /root/clangcat.txt /etc/inksoc/wasm-catalog.local && apk add clang'; echo ins-$?\n");
+  await settle(30000);
+  send('pw1\n');
+  for (let at = 60000; !/ins-\d/.test(out.slice(f1)) && Date.now() - t1 < 420000;) { await settle(5000); if (Date.now() - t1 > at) { at += 60000; console.log('  ... apk add clang ' + ((Date.now() - t1) / 1000 | 0) + ' s'); } }
+  const got1 = out.slice(f1).replace(/\x1b\[[0-9;?>]*[A-Za-z]/g, '').replace(/\r/g, '\n');
+  const insOk = /OK: clang installed[\s\S]*ins-0/.test(got1);
+  console.log((insOk ? 'PASS ' : 'FAIL ') + 'apk add clang: download (local file), sha256, unpack, setup (' + ((Date.now() - t1) / 1000).toFixed(1) + ' s)\n' + got1.slice(-600));
+  if (!insOk) process.exit(1);
+  const t2 = Date.now(), f2 = out.length;
+  send('sh /root/clang.sh; echo done-clang-$?\n');
+  for (let at = 60000; !/done-clang-\d/.test(out.slice(f2)) && Date.now() - t2 < 420000;) { await settle(5000); if (Date.now() - t2 > at) { at += 60000; console.log('  ... clang.sh ' + ((Date.now() - t2) / 1000 | 0) + ' s'); } }
+  const got2 = out.slice(f2).replace(/\x1b\[[0-9;?>]*[A-Za-z]/g, '').replace(/\r/g, '');
+  let ok = true;
+  for (const [re, name] of [[/clang version 22\./, 'clang --version'], [/c1=0\s+hello from clang argc=3\s+h1=7/, 'clang hello.c -o hello; ./hello: output and exit code'],
+      [/mode=-rwx\S* magic=0061736d/, 'the output is an executable WebAssembly file'], [/cb=1 ue=1/, 'compile error: message and exit status 1'],
+      [/m1=0\s+sum=13 data=from-data\s+p1=0/, 'make: 2 files + header (cc, built-in %.o rule); relative fopen'], [/is up to date\.\s+m2=0/, 'make again: nothing to remake'],
+      [/l1=0\s+sum=3 data=from-data\s+p2=0/, 'clang -c, ar rcs (llvm-ar), link -L. -lcalc'], [/clang-end[\s\S]*done-clang-0/, 'script ends']]) {
+    const k = re.test(got2); ok = ok && k; console.log((k ? 'PASS ' : 'FAIL ') + 'clang: ' + name);
+  }
+  console.log('INFO clang++ iostream: ' + (/cx=0\s+cpp sum 6\s+hx=0/.test(got2) ? 'works' : 'does not work'));
+  const u0 = /cc-t0=([\d.]+)/.exec(got2), u1 = /cc-t1=([\d.]+)/.exec(got2);
+  console.log('clang.sh in ' + ((Date.now() - t2) / 1000).toFixed(1) + ' s\n' + got2.slice(-3000));
+  if (u0 && u1) console.log(`  [clang hello.c -o hello (driver + clang -### + cc1 + wasm-ld, node/V8 worker threads): ${Math.round((u1[1] - u0[1]) * 1000)} ms]`);
   process.exit(ok ? 0 : 1);
 }
 if (process.env.INK_SPAWN) { // item 78: processes from WebAssembly programs (host channel /dev/inksoc); with INK_WASI_THREADS=1
