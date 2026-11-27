@@ -78,7 +78,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 - Limite de 5 horas da conta pode parar workers no meio: retomar depois que liberar.
 
 ## 9. Estado atual (atualizar a cada merge)
-- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 80, 74, 81, 82, 75, 83, 84, 71, 86, 85, 77a, 88 feitos; 62, 65, 66 travados.
+- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 80, 74, 81, 82, 75, 83, 84, 71, 86, 85, 77a, 88, 89 feitos; 62, 65, 66 travados.
 - **Rodando**: — (gerente: sessão 013qXTaN, 27/11)
 - **Fila por uso (dono, 26/11: "siga essa ordem"; apps mais usados no terminal Linux que ainda estão incompletos aqui)**:
   1. ~~74 vim (2)~~ feito (#113)
@@ -93,7 +93,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
   10. ~~86 Pillow extras~~ feito (#129; FreeType/ImageFont, WEBP, TIFF; JPEG ruim = OSError; `wasm-tools-37`)
   Já completos (só velocidade x86): ls/cp/mv/rm/mkdir/cat, ps/top, tar/gzip, python3, ssh (x86, não medido). Fora: node (sem WASM viável; qjs no lugar), tmux (precisa pty).
   **Medido no 88 (27/11)**: cp/mv/rm/mkdir/cat/head/tail/ps/top/date/env/stat = 3–7 ms no x86 (sem ganho possível); ls -l 200 arquivos 51 ms e du 31 ms são os maiores; o shell ash x86 manda nos scripts (≈ 0,14 ms/iteração, 60x nativo); spawn de WASM custa 5–12 ms (busybox 2 ms).
-- **Fila nova (do 88; ganho est. / pts)**: 89 awk WASM sem exnref ou fallback ao busybox (bug que quebra uso no Chromium < 137; awk volta a rodar / 1); 90 `df`: /proc/mounts no kernel (bug; df funciona / 1); 91 medir e cortar custo de spawn do WASM (coreutils 12 ms vs busybox 2 ms; ganho est. 2–4x em scripts com WASM por linha / 1 medir + 2 cortar); 92 ls/du em WASM (3x em 50 ms; baixa prioridade / 1).
+- **Fila nova (do 88; ganho est. / pts)**: ~~89~~ feito (erro claro; sem fallback automático) (bug que quebra uso no Chromium < 137; awk volta a rodar / 1); 90 `df`: /proc/mounts no kernel (bug; df funciona / 1); 91 medir e cortar custo de spawn do WASM (coreutils 12 ms vs busybox 2 ms; ganho est. 2–4x em scripts com WASM por linha / 1 medir + 2 cortar); 92 ls/du em WASM (3x em 50 ms; baixa prioridade / 1).
 - **Fora**: teste do ruby (o dono: não fazer).
 - **Semana que vem**: continuar a fila acima de onde parar.
 - **PRs abertos de propósito**: #80 (não dar merge), #38 (teste iPad).
@@ -101,6 +101,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
+- 2026-11-27 | #134 | 89 exnref | WASM com exceções (awk, bc, python3) em motor sem exnref: erro claro + exit 126 + dica busybox/apk --x86 (sem fallback automático) | próximo: 90 df
 - 2026-11-27 | #127 | 77a make GNU em WASM | feito na 5ª rodada com aval do dono ("autorizo quebrar a regra teto de rodadas no 77a"); antes parado no teto de 4 rodadas (1 build `wasm-tools-35`, 3 teste). make 4.4.1 pronto (611 KB, GPL-3.0 separado, fonte na release; receitas/`$(shell)`/re-execução pela ponte /dev/inksoc; `-j N` num make, sem job server) e bug do kernel corrigido (hora de modificação de arquivo não era guardada: stat = agora, touch sem efeito → `mtime` por caminho); make 11/11 PASS nas rodadas 3 e 4, 50 alvos ~1 s (~20 ms/receita). Rodada 4 (após merge do main com o 71) falhou só no passo `apk add` de TODAS as ferramentas: a lista cresceu (diffutils/cmp/patch/make) e passou dos 120 s de um settle; correção do teste já no branch `claude/77a-make` (commit [skip ci]: espera add-rc até 5 min) | gerente: aval p/ 1 rodada a mais (rodar test.yml no branch) e squash merge do #127; depois 77 clang
 - 2026-11-27 | #131 | 88 medir comandos do dia a dia | bench `cmds-bench.yml` (45 comandos, Chromium, VM vs nativo): shell ash x86 ≈ 60x nativo (1000 iterações 140 ms); spawn de WASM 5–12 ms vs 2 ms do busybox (WASM só ganha com entrada grande); awk WASM quebra no Chromium 131 (exnref); df sem /proc/mounts; ls -l 200 arquivos 51 ms, du 31 ms; resto 3–7 ms | 89 awk sem exnref/fallback, 90 df, 91 medir spawn WASM
 - 2026-11-27 | #128 | 85 jq com oniguruma | jq 1.7.1 + oniguruma 6.9.10 (BSD-2) estático, `wasm-tools-36` só com jq.wasm; test/match/capture/sub/gsub/scan/splits funcionam | próximo: 77 clang + make
