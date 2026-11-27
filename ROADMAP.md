@@ -244,7 +244,7 @@ Fila proposta (ganho est. / pts): 89 awk WASM sem exnref ou fallback ao busybox 
 | 2026-11-27 | 3 | 85: jq com oniguruma 6.9.10 no catálogo WASM (wasm-tools-36; teste Linux leve + 1 tempo no Chromium) | #128 | 1 |
 | 2026-11-27 | 3 | 77a: make GNU em WASM (make 4.4.1, wasm-tools-35; receitas pela ponte /dev/inksoc; teste Linux leve) | #127 | 2 |
 | 2026-11-27 | 3 | 77: clang 22.1.6 no catálogo WASM (npm `@yowasp/clang`, apk modo .tgz, driver -### + wasm-ld; C/C++ → WASI; make + cc; teste Linux leve) | #135 | 3,5 |
-| 2026-11-27 | 3 | 92: estudo shell WASM p/ scripts (dash WASM 403 KB, laço 28x; no-go agora, go condicional após pool de Workers; docs/wasm-shell-study.md) | #PR | 1 |
+| 2026-11-27 | 3 | 92: estudo shell WASM p/ scripts (dash WASM 403 KB, laço 28x; no-go agora, go condicional após pool de Workers; docs/wasm-shell-study.md) | #138 | 1 |
 
 ## Fora (sem ponto até o dono mandar)
 Compat Windows InkSoC; Steam/CEF/jogos/instaladores; Wine WASM; JIT x86 antes do terminal; Blink; x86→WASM no aparelho; inkbuild/compilar git/ssh/gcc/node; apps gráficos, servidores, threads WASI; visual Hub/InkOS que não sirva o terminal.
