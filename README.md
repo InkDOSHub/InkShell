@@ -20,9 +20,9 @@ Alpine Linux 3.21 (x86-64) runs on [InkSoC](https://github.com/InkDOSHub/InkSoC)
 
 ## Fast tools (WebAssembly catalog)
 
-Many common programs are available as **native WebAssembly** builds. They run much faster than the x86 Alpine packages (often 10–400× on big data) because they skip the x86 JIT.
+Many common programs are available as **native WebAssembly** builds. They run much faster than the x86 Alpine packages (often tens to hundreds of times on large data) because they skip the x86 JIT.
 
-Install with the usual command:
+Install with the usual command (names must match the catalog):
 
 ```sh
 apk add NAME
@@ -30,13 +30,13 @@ apk add NAME
 
 Examples that work today:
 
-| Category | Packages |
+| Category | `apk add` names |
 |---|---|
 | Editors | `vim`, `nano`, `less` |
-| Text tools | `grep`, `sed`, `awk`, `find`, `coreutils` (sort, wc, cut…) |
+| Text tools | `grep`, `sed`, `onetrue-awk`, `findutils`, `coreutils`, `ripgrep` |
 | Network | `curl` |
 | Version control | `git` (local ops; clone/fetch/push still need `apk add --x86 git`) |
-| Language | `python3` (+ `pip` for pure-Python packages), `quickjs`, `lua5.4`, `bc` |
+| Language | `python3` (brings `py3-pip` for pure-Python packages), `quickjs`, `lua5.4`, `bc` |
 | Archives | `tar`, `gzip`, `xz`, `bzip2`, `zstd`, `zip`, `unzip`, `7zip` |
 | Media / data | `ffmpeg`, `ffprobe`, `imagemagick`, `qpdf`, `sqlite`, `jq`, `file`, `hashtools` |
 
@@ -50,7 +50,7 @@ If a WASM program is missing a feature, use the full path of the x86 binary (exa
 - **No incoming connections from outside.** Servers you start (`nc -l`, a web server, `sshd`) can only be reached from inside this terminal (`127.0.0.1`), because a browser page can't accept connections from the network. So `sshd` is not set up: only `ssh localhost` would reach it.
 - Timer signals (`alarm`, `setitimer`, `timer_create`) arrive at the program's next system call; a loop that never makes one doesn't get them.
 - No desktop or 3D graphics: it is a terminal.
-- Some WASM programs are still incomplete (e.g. git has no HTTPS clone yet; nano is ASCII-only).
+- Some WASM programs are still incomplete (e.g. `git` has no HTTPS clone yet; `nano` is ASCII-only).
 
 ## Files
 
