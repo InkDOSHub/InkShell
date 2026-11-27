@@ -500,6 +500,7 @@ impl Engine {
         l.put(&mut self.mmu, &exe, bytes.clone());
         l.fds.insert(0, Fd::Tty); l.fds.insert(1, Fd::Tty); l.fds.insert(2, Fd::Tty);
         l.fs.insert("/proc/self/exe".into(), Node::Link(exe.clone()));
+        l.fs.insert("/etc/mtab".into(), Node::Link("/proc/mounts".into()));
         if name == "busybox" || name.starts_with("busybox") {
             for a in ["sh", "ash", "ls", "cat", "echo", "mkdir", "rm", "cp", "mv", "pwd", "grep", "sed", "awk", "wc", "head", "tail", "sort", "uniq", "touch", "find", "xargs", "vi", "env", "uname", "date", "sleep", "true", "false", "test", "expr", "printf", "md5sum", "sha256sum", "tar", "gzip", "gunzip", "ps", "free", "df", "du", "which", "clear", "seq", "tr", "cut", "basename", "dirname", "yes", "hexdump", "od", "diff", "less", "more", "ln", "chmod", "stat"] {
                 l.fs.insert(format!("/bin/{}", a), Node::Link(exe.clone()));
@@ -667,6 +668,11 @@ fn proc_file(e: &mut Engine, p: &str) {
         "/proc/loadavg" => "0.00 0.00 0.00 1/1 1\n".to_string(),
         "/proc/version" => "Linux version 6.6.0-inksoc (InkSoC engine in WebAssembly) #1 SMP\n".to_string(),
         "/proc/stat" => format!("cpu  {u} 0 0 0 0 0 0 0 0 0\ncpu0 {u} 0 0 0 0 0 0 0 0 0\nbtime 0\nprocesses 1\nprocs_running 1\n", u = (up * 100.0) as u64),
+        "/proc/mounts" | "/proc/self/mounts" => { // the real mounts, standard format (df, mount, findmnt read it)
+            let mut t = String::from("rootfs / rootfs rw 0 0\nproc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\ndevtmpfs /dev devtmpfs rw,nosuid 0 0\ntmpfs /tmp tmpfs rw,nosuid,nodev 0 0\n");
+            for m in lx(e).mounts.iter() { t.push_str(&format!("{m} {m} ext4 rw,relatime 0 0\n")); }
+            t
+        }
         "/proc/inksoc/enosys" => lx(e).unknown.iter().map(|(n, k)| format!("{n}\t{k}\n")).collect(),
         "/proc/inksoc/trace-on" => { let l = lx(e); l.trace_on = true; l.trace.clear(); String::new() }
         "/proc/inksoc/trace" => { let l = lx(e); l.trace_on = false; l.trace.iter().map(|t| format!("{t}\n")).collect() }
