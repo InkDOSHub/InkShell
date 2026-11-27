@@ -29,6 +29,10 @@ try {
   // the first visit installs the service worker; it takes control at once (clients.claim)
   const sw = await p.waitForFunction(() => !!(navigator.serviceWorker && navigator.serviceWorker.controller), null, { timeout: 30000 }).then(() => true, () => false);
   check(sw, 'service worker controls the page');
+  // item 94: the second load comes through the service worker, with COOP/COEP: the program calls use SharedArrayBuffer
+  await p.reload();
+  await p.waitForFunction(() => !!(navigator.serviceWorker && navigator.serviceWorker.controller), null, { timeout: 30000 }).catch(() => {});
+  check(await p.evaluate(() => self.crossOriginIsolated), 'page is cross-origin isolated after the reload (SharedArrayBuffer channel)');
   await p.evaluate(() => { if (!w) start(); });
   check(await until(/New UNIX username/), 'Linux starts on the page');
   await send('tester\r'); await until(/New password/);
