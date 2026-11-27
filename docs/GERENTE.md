@@ -79,7 +79,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 
 ## 9. Estado atual (atualizar a cada merge)
 - **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 80, 74, 81, 82, 75, 83, 84, 71, 86, 85, 77a, 88, 89, 77, 90 feitos; 62, 65, 66 travados.
-- **Rodando**: 94 menos voltas ao service worker (branch `claude/94-wasi-rounds`, 2 pts; gerente: grok vfydr2m9wk-ops, 27/11). 93 feito (#139): cut ~33 ms, grep ~32 ms; sobra Worker nascer ~8 ms + ~10 XHR ~17 ms. Pool de Workers fica para o item seguinte.
+- **Rodando**: — (gerente: sessão 013qXTaN, 27/11). 93 feito (#139): spawn WASM cut 75 -> 33 ms, grep 42 -> 32; resto = Worker nascer ~8 + XHR pelo service worker ~17 (próximo: 94 menos voltas / pool de Workers)
 - **Fila por uso (dono, 26/11: "siga essa ordem"; apps mais usados no terminal Linux que ainda estão incompletos aqui)**:
   1. ~~74 vim (2)~~ feito (#113)
   2. ~~80 grep GNU em WASM~~ feito (#116)
@@ -103,7 +103,6 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
-- 2026-11-27 | — | troca de gerente | grok vfydr2m9wk-ops assume; nada parado; 94 aberto (menos XHR no service worker, 2 pts) | 94
 - 2026-11-27 | #139 | 93 cache de Module + cwd slot WASM | feito (3 rodadas + 1 de merge): todo arquivo do kernel tem versão (arquivo na memória também), página avisa o motor quais Modules tem e o motor não copia os bytes; Chromium 131, ms por spawn: cut 75 -> 33, true 61 -> 19, grep 42 -> 32 (Module 49/49 do cache, setup 19 -> 3,7). Não commitar engine.wasm compilado local (toolchain diferente = ~30% mais lento) | próximo: 94 menos voltas pelo service worker (ou pool de Workers)
 - 2026-11-27 | #136 | 91 medir spawn WASM | feito (3 rodadas: teto 2 + 1 com aval do dono); página real, Chromium 131, 49 spawns: coreutils 9 MB `cut` 75 ms, `true` 61, grep 0,7 MB 42 contra busybox 1,3–2; fases do Worker: nascer 9, setup WASI 7–20, Module 1–15 (compila em TODO spawn; ressalva: arquivo posto por `put`), instanciar 2, chamadas WASI ~1,6 ms cada (XHR síncrono + service worker), saída->wasi-end 7,6 ms, cópia dos bytes 4,6 ms (9 MB) | 92 (pool + cache) depois de conferir cache com programa de `apk add`
 - 2026-11-27 | #133 | 90 df / proc/mounts | motor serve /proc/mounts, /proc/self/mounts e /etc/mtab (mounts reais); df, df -h e mount passam no teste Linux leve | próximo da fila (91; teste Linux na engine rebuilt pós-merge)
