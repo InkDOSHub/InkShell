@@ -536,7 +536,13 @@ if (hasWasi) {
     await step('sudo sh -c "cat /tmp/wcat >> /etc/inksoc/wasm-catalog.local"; rm /tmp/wcat\n', /Password/, 'tools: local catalog entries (sudo asks)');
     await step('pw1\n', /tester@inksoc/, 'tools: local catalog entries written');
     await step(`apk add --no-network ${tools.map((t) => t.name).join(' ')}; echo add-rc=$?\n`, /Password/, 'tools: apk add asks sudo');
-    await step('pw1\n', new RegExp(tools.map((t) => `OK: ${t.name} installed`).join('[\\s\\S]*') + '[\\s\\S]*add-rc=0'), `tools: apk add installs ${tools.map((t) => t.name).join(', ')}`);
+    { // one apk add of every tool can take longer than one settle (120 s): wait for its exit status (up to 5 min)
+      const b = out.length, re = new RegExp(tools.map((t) => `OK: ${t.name} installed`).join('[\\s\\S]*') + '[\\s\\S]*add-rc=0'), ta = Date.now();
+      send('pw1\n');
+      while (!/add-rc=\d/.test(out.slice(b)) && Date.now() - ta < 300000) await settle();
+      const got = out.slice(b), k = re.test(got); results.push(k);
+      console.log((k ? 'PASS ' : 'FAIL ') + `tools: apk add installs ${tools.map((t) => t.name).join(', ')} (${((Date.now() - ta) / 1000).toFixed(1)} s)` + (k ? '' : '\n---- output ----\n' + got.slice(-600) + '\n----------------'));
+    }
   }
   if (hasTool('7zip')) { // 7-Zip: create, list, extract, compare (7z and zip)
     await step('mkdir -p /tmp/sz/in/sub && cd /tmp/sz && echo one > in/a.txt && seq 1 3000 > in/sub/n.txt && 7zz a -bd t.7z in > /dev/null && 7z l t.7z | grep -c "\\.txt$"; mkdir x && cd x && 7z x -bd ../t.7z > /dev/null && diff -r ../in in && echo 7z-same; cd /tmp/sz && 7zz a -bd -tzip t.zip in > /dev/null && unzip -l t.zip | grep -c "\\.txt$" && 7zz t t.zip | grep -c "Everything is Ok"; cd\n',
