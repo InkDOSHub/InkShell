@@ -4,7 +4,7 @@
 # other programs itself, so this driver asks it for its plan ("clang -###": the compile, which runs
 # inside clang, and the wasm-ld link) and runs each step as its own program. Target wasm32-wasip1,
 # sysroot /usr/local/lib/clang-wasm/sysroot (wasi-libc, libc++). The output is made executable and
-# linked with chdir (relative paths follow the shell's folder). No threads, no setjmp by default.
+# linked with chdir (relative paths follow the shell's folder). No threads, no setjmp, C++ without exceptions.
 D=/usr/local/lib/clang-wasm
 S=$D/sysroot
 B=$D/bin
@@ -12,6 +12,8 @@ if [ ! -f "$D/llvm.wasm" ]; then echo "${0##*/}: clang is not installed: run apk
 case ${0##*/} in *++*) tool=clang++ ;; *) tool=clang ;; esac
 case $1 in -cc1*) exec "$B/$tool" "$@" ;; esac
 set -- -resource-dir "$S" "--sysroot=$S" "$@"
+# C++: libc++abi here has no exception support (like wasi-sdk): no exceptions unless asked (-fexceptions later wins)
+if [ "$tool" = clang++ ]; then set -- -fno-exceptions "$@"; fi
 plan=0
 for a in "$@"; do case $a in -\#\#\#|--version|-dumpversion|-dumpmachine|-print-*|--print-*|-help|--help|--help-hidden) plan=1 ;; esac; done
 if [ "$plan" = 1 ]; then exec "$B/$tool" "$@"; fi

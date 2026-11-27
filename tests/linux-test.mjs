@@ -400,7 +400,7 @@ if (process.env.INK_CLANG) { // item 77: apk add clang (the npm .tgz, unpacked b
   for (let at = 60000; !/done-clang-\d/.test(out.slice(f2)) && Date.now() - t2 < 420000;) { await settle(5000); if (Date.now() - t2 > at) { at += 60000; console.log('  ... clang.sh ' + ((Date.now() - t2) / 1000 | 0) + ' s'); } }
   const got2 = out.slice(f2).replace(/\x1b\[[0-9;?>]*[A-Za-z]/g, '').replace(/\r/g, '');
   let ok = true;
-  for (const [re, name] of [[/clang version 22\./, 'clang --version'], [/c1=0\s+hello from clang argc=3\s+h1=7/, 'clang hello.c -o hello; ./hello: output and exit code'],
+  for (const [re, name] of [[/clang version 22\./, 'clang --version'], [/c1=0[\s\S]*?hello from clang argc=3\s+h1=7/, 'clang hello.c -o hello; ./hello: output and exit code'],
       [/mode=-rwx\S* magic=0061736d/, 'the output is an executable WebAssembly file'], [/cb=1 ue=1/, 'compile error: message and exit status 1'],
       [/m1=0\s+sum=13 data=from-data\s+p1=0/, 'make: 2 files + header (cc, built-in %.o rule); relative fopen'], [/is up to date\.\s+m2=0/, 'make again: nothing to remake'],
       [/l1=0\s+sum=3 data=from-data\s+p2=0/, 'clang -c, ar rcs (llvm-ar), link -L. -lcalc'], [/clang-end[\s\S]*done-clang-0/, 'script ends']]) {

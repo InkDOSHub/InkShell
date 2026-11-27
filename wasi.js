@@ -257,6 +257,7 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     if (slot) { // real root at "/", the shell's folder becomes wasi-libc's cwd (see environ_get)
       envs = [...envs.filter((e) => !e.startsWith('PWD=')), 'PWD=' + cwd];
       slot.at = envs.slice(0, -1).reduce((n, e) => n + enc.encode(e).length + 1, 4);
+      slot.cwd = cwd;
     }
     if (cwd !== '/' && !slot) { // one "/" preopen for both: each path goes to the shell's folder or the real root (pick)
       cwdFd = opendir(cwd); rootFd = opendir('/');
@@ -593,6 +594,9 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     for (const i of WebAssembly.Module.imports(mod)) if (!imports[i.module]) imports[i.module] = {};
     inst = new WebAssembly.Instance(mod, imports);
     mem = inst.exports.memory;
+    if (slot && !WebAssembly.Module.imports(mod).some((i) => i.name === 'environ_get')) { // no environ_get (a small C program: item 77): the folder goes in a page of its own
+      try { const c = cstr(slot.cwd), at = mem.grow(1) * 65536; u8().set(c, at); if (dv().getUint32(slot.ptr, true) === slot.lit) dv().setUint32(slot.ptr, at, true); } catch {}
+    }
     if (inst.exports._start) inst.exports._start(); else if (inst.exports._initialize) inst.exports._initialize();
     exit(0);
   } catch (e) {
