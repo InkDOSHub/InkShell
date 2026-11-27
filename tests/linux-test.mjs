@@ -84,7 +84,7 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
   ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat'],
   ['bzip2', 'bzip2', 'bzip2,bunzip2,bzcat'], ['zstd', 'zstd', 'zstd,unzstd,zstdcat'],
-  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['nano', 'nano', 'nano'], ['curl', 'curl', 'curl'], ['git', 'git', 'git'], ['make', 'make', 'make']]
+  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['nano', 'nano', 'nano'], ['curl', 'curl', 'curl'], ['git', 'git', 'git'], ['diffutils', 'diff', 'diff'], ['cmp', 'cmp', 'cmp'], ['patch', 'patch', 'patch'], ['make', 'make', 'make']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -660,6 +660,16 @@ if (hasWasi) {
   }
   if (hasTool('curl')) { // item 82: apk add curl puts the WebAssembly curl in /usr/local/bin (network checks: INK_CURL, INK_NET_PY)
     await step(`hash -r; command -v curl; curl -V | busybox head -n 1 | busybox cut -c1-6; curl; echo curl-rc=$?\n`, /\/usr\/local\/bin\/curl\s+curl 8[\s\S]*no URL specified[\s\S]*curl-rc=2/, 'curl: in /usr/local/bin, -V, no URL = exit 2');
+  }
+  if (hasTool('diffutils') && hasTool('cmp') && hasTool('patch')) { // item 71: GNU diffutils 3.12 + GNU patch 2.8.1 (GPL-3.0 separate catalog programs) ahead of busybox; the uutils diff died (exit 134) on a 10 MB file
+    await step(`cd /tmp && rm -rf df1 && mkdir -p df1/a/s df1/b/s && cd df1 && printf 'one\\ntwo\\nthree\\nfour\\n' > a/f.txt && printf 'one\\n2\\nthree\\nfour\\nfive\\n' > b/f.txt && printf 'x\\n' > a/s/g.txt && printf 'x\\n' > b/s/g.txt && printf 'only\\n' > b/new.txt && hash -r && for c in diff cmp patch; do command -v $c; done | busybox tr '\\n' ' '; echo; echo df-ready\n`,
+      /\/usr\/local\/bin\/diff \/usr\/local\/bin\/cmp \/usr\/local\/bin\/patch\s+df-ready/, 'diff/cmp/patch: GNU programs in /usr/local/bin before busybox');
+    await step(`diff a/f.txt a/f.txt; echo same=$?; diff a/f.txt b/f.txt > /dev/null; echo differ=$?; diff -u a/f.txt b/f.txt | busybox sed 1,2d | busybox head -n 3; diff -r a b | busybox grep -c '^Only in'; diff -rq a b | busybox wc -l; diff nofile a/f.txt 2>/dev/null; echo trouble=$?; echo df-a\n`,
+      /same=0\s+differ=1\s+@@ -1,4 \+1,5 @@\s+ one\s+-two\s+1\s+2\s+trouble=2\s+df-a/, 'diff: exit codes 0/1/2, -u, -r, -rq');
+    await step(`diff -u a/f.txt b/f.txt > p.diff; cp a/f.txt c.txt; patch -s c.txt p.diff < /dev/null; echo patched=$?; cmp c.txt b/f.txt; echo cmp-same=$?; cmp a/f.txt b/f.txt > /dev/null; echo cmp-diff=$?; patch -s -R c.txt p.diff < /dev/null; cmp c.txt a/f.txt; echo df-b=$?\n`,
+      /patched=0\s+cmp-same=0\s+cmp-diff=1\s+df-b=0/, 'patch: applies a diff -u and reverses it; cmp exit codes');
+    await step(`busybox seq 1 1500000 > big1.txt; busybox sed 's/^77777/y/' big1.txt > big2.txt; diff big1.txt big2.txt | busybox wc -l; diff -u big1.txt big2.txt | busybox wc -l; cmp big1.txt big2.txt | busybox cut -c1-40; echo df-done\n`,
+      /\d+\s+\d+\s+big1.txt big2.txt differ[^\n]*\s+df-done/, 'diff: two 10 MB files do not crash (the uutils diff died with exit 134)');
   }
   if (hasTool('git')) { // item 75: git 2.47 in WebAssembly ahead of an x86 git; local work in one process (no editor: -m; pager cat), tolerant matching
     await step(`cd /tmp && rm -rf gt && mkdir gt && cd gt && hash -r && command -v git && git --version && git init -q && git config user.name Tester && git config user.email t@example.com && echo one > a.txt && git add a.txt && git commit -q -m first; echo c1=$?; git log --oneline | busybox wc -l | busybox sed 's/^/n1=/'; git switch -q -c feat && echo two > b.txt && git add b.txt && git commit -q -m second && git switch -q master && git merge -q feat; echo ff=$?; git switch -q -c side && echo s >> a.txt && git commit -q -am side && git switch -q master && echo m > c.txt && git add c.txt && git commit -q -m main && git merge -q -m merged side; echo m3=$?; git log --oneline | busybox wc -l | busybox sed 's/^/n2=/'; git status --short | busybox wc -l | busybox sed 's/^/dirty=/'; git log -1 --format=%s; cd; echo git-back\n`,

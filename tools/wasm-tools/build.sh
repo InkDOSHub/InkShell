@@ -1,9 +1,9 @@
 #!/bin/sh
 # Builds WebAssembly (WASI preview1) command-line tools for the catalog (apk add) from upstream sources.
-# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | bzip2 | zstd | bc | file | less | grep | vim | nano | curl | git | make | python3
+# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | bzip2 | zstd | bc | file | less | grep | vim | nano | curl | git | make | python3 | diffutils | patch
 # env: WASI_SDK (wasi-sdk-33 or later: C++ exceptions), WORK (sources, build dirs), OUT (the .wasm files)
 # CI: .github/workflows/wasm-tools.yml builds them and publishes a GitHub release; the catalog points at it.
-# No GPL except GNU grep (GPL-3.0-or-later, item 80; also nano, git and GNU make 4.4.1 (item 77a), each one a separate catalog program with its source release and these changes published; see THIRD_PARTY_LICENSES.md): ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
+# No GPL in the engine, the page, or the worker. GPL is only a separate catalog program, source in its release (owner, 26/11): GNU grep, nano, git, diffutils 3.12, patch 2.8.1 and make 4.4.1 (the b_* recipes in this file; see THIRD_PARTY_LICENSES.md). Everything else: ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
 # 7-Zip without the unRAR code (LGPL-2.1+ and BSD-3-Clause), qpdf (Apache-2.0), ImageMagick (its own Apache-style license),
 # SQLite (public domain), jq (MIT), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense), hashsum (InkShell's own code, MIT), uutils coreutils (MIT), QuickJS-ng (MIT), uutils sed (MIT), uutils findutils find (MIT; oniguruma BSD-2-Clause inside), one-true-awk (MIT-style Bell Labs license), xz 5.8 (0BSD; liblzma public domain/0BSD), libarchive bsdtar (BSD-2-Clause, BSD-3-Clause; zlib license for zlib, 0BSD for liblzma), gzip (InkShell's own code on zlib, MIT), bzip2 1.0.8 (bzip2 license, BSD-style), zstd 1.5.7 (BSD-3-Clause option of its dual license), Gavin Howard's bc 7.0.3 (BSD-2-Clause; not GNU bc), file/libmagic 5.46 (BSD-2-Clause), less 692 (the BSD-2-Clause style Less License option of its dual license; the GPL-3.0 option is not used), curl (InkShell's own code, MIT).
 set -eu
@@ -26,7 +26,7 @@ CWDL="-Wl,--undefined=chdir"
 STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
-SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12 VIM=9.1.1400 NANO=8.3 NCURSES=6.5 GIT=2.47.1 GMAKE=4.4.1
+SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12 VIM=9.1.1400 NANO=8.3 NCURSES=6.5 GIT=2.47.1 DIFFUTILS=3.12 PATCH=2.8.1 GMAKE=4.4.1
 PYWLR=python%2F3.12.0%2B20231211-040d5a6 WASIVFS=0.4.0 BINARYEN=117 PILLOW=11.3.0 PILLOW_SHA=3828ee7586cd0b2091b6209e5ad53e20d0649bbe87164a459d0676e035e8f523
 PILLOW_URL=https://files.pythonhosted.org/packages/f3/0d/d0d6dea55cd152ce3d6767bb38a8fc10e33796ba4ba210cbab9354b6d238/pillow-$PILLOW.tar.gz
 
@@ -505,6 +505,115 @@ b_vim() { # Vim 9.1 (Vim license: charityware, GPL-compatible; a separate catalo
     cp vim "$OUT/vim.wasm")
 }
 
+b_diffutils() { # GNU diffutils 3.12 (GPL-3.0-or-later; a separate catalog program, source release in the GitHub release): diff, cmp, diff3, sdiff; no NLS. diff3 and sdiff run diff through popen (the host process channel): WASI has no fork. Stack is 8 MB (diff of a big file used to abort on the 1 MB default).
+  compat; dl "https://ftp.gnu.org/gnu/diffutils/diffutils-$DIFFUTILS.tar.xz" diffutils
+  d=$WORK/diffutils
+  # what WASI lacks and gnulib may call: dup, dup2, fchdir, pipe, getdtablesize (ENOSYS); flockfile has no threads
+  printf 'int dup(int);\nint dup2(int, int);\nint fchdir(int);\nint getdtablesize(void);\nint pipe(int[2]);\n#define flockfile(f) ((void)0)\n#define funlockfile(f) ((void)0)\n' > "$d/ink_diff.h"
+  printf '#include <errno.h>\nint dup(int f) { (void)f; errno = ENOSYS; return -1; }\nint dup2(int f, int g) { (void)f; (void)g; errno = ENOSYS; return -1; }\nint fchdir(int f) { (void)f; errno = ENOSYS; return -1; }\nint getdtablesize(void) { return 1024; }\nint pipe(int p[2]) { (void)p; errno = ENOSYS; return -1; }\n' > "$d/ink_diff.c"
+  $CC -O2 -c "$d/ink_diff.c" -o "$d/ink_diff.o"
+  # sdiff without -o replaces itself by execvp("diff"). WASI cannot exec: run that diff through system() (host channel) and leave with its status.
+  python3 - "$d/src/sdiff.c" << 'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+t = p.read_text()
+old = """      diffarg (nullptr);
+      execvp (diffargv[0], (char **) diffargv);
+      perror_fatal (squote (0, diffargv[0]));"""
+new = """      diffarg (nullptr);
+#if ! HAVE_WORKING_FORK
+      {
+        char *command = system_quote_argv (SCI_SYSTEM, (char **) diffargv);
+        int st = system (command);
+        if (st == -1)
+          perror_fatal (command);
+        free (command);
+        exit ((st & 0xff) == 0 ? (st >> 8) & 0xff : 2);
+      }
+#else
+      execvp (diffargv[0], (char **) diffargv);
+      perror_fatal (squote (0, diffargv[0]));
+#endif"""
+if old not in t:
+    if "HAVE_WORKING_FORK" in t and "system_quote_argv (SCI_SYSTEM, (char **) diffargv)" in t:
+        sys.exit(0)
+    raise SystemExit("sdiff.c: execvp block not found")
+p.write_text(t.replace(old, new, 1))
+PY
+  # WASI's NSIG is 65. Gnulib's fallback sigset is a 32-bit mask and will not compile (verify_NSIG_constraint).
+  python3 - "$d/lib/signal.in.h" << 'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+t = p.read_text()
+old = "#  ifndef NSIG\n#   define NSIG 32\n#  endif\n"
+new = "#  undef NSIG\n#  define NSIG 32\n"
+if old not in t:
+    if new not in t:
+        raise SystemExit("signal.in.h: NSIG block not found")
+else:
+    p.write_text(t.replace(old, new, 1))
+PY
+  # WASI defines SIGCHLD, so gnulib's Windows sigaction replacement refuses to compile.
+  # There is still no sigaction in wasi-libc: keep the replacement (signal() underneath).
+  sed -i 's/# error "Revisit the assumptions made in the sigaction module"/\/\* WASI defines SIGCHLD but has no sigaction: keep gnulib'\''s replacement. *\//' "$d/lib/sigaction.c"
+  rm -rf "$d/b" && mkdir -p "$d/b" && (cd "$d/b" && CFLAGS="-O2 -DCOMPAT_CHMOD_OK $EMU $SJLJ -I$P/compat -include $d/ink_diff.h" LDFLAGS="-L$P/lib $STACK" LIBS="$d/ink_diff.o -lcompat -lsetjmp $EMUL" \
+    ac_cv_func_fork_works=no ac_cv_func_vfork_works=no ac_cv_func_fchdir=yes ac_cv_func_getdtablesize=yes ac_cv_func_pipe=yes ac_cv_func_dup2=yes \
+    gl_cv_func_fcntl_f_dupfd_cloexec=yes gl_cv_func_dup2_works=yes gl_cv_func_fdopendir_works=yes \
+    gl_cv_func_strcasecmp_works=yes gl_cv_func_getopt_posix=yes \
+    ../configure --host=$T --disable-nls --disable-rpath --disable-gcc-warnings >"$WORK/diff-configure.log" 2>&1 || { tail -80 "$WORK/diff-configure.log"; exit 1; }
+    # popen/pclose/system and tzset: after config.h (gnulib wants that first). compat.h is the host process channel.
+    cfg=lib/config.h; [ -f "$cfg" ] || cfg=config.h
+    printf '\n#include <compat.h>\n' >> "$cfg"
+    make -j"$J" -C lib GL_CFLAG_GNULIB_WARNINGS= >"$WORK/diff-lib.log" 2>&1 || { grep -n "error:" "$WORK/diff-lib.log" | head -40; tail -20 "$WORK/diff-lib.log"; exit 1; }
+    make -j"$J" -C src cmp diff diff3 sdiff GL_CFLAG_GNULIB_WARNINGS= >"$WORK/diff-src.log" 2>&1 || { grep -n "error:" "$WORK/diff-src.log" | head -40; tail -30 "$WORK/diff-src.log"; exit 1; }
+    cp src/diff "$OUT/diff.wasm" && cp src/cmp "$OUT/cmp.wasm" && cp src/diff3 "$OUT/diff3.wasm" && cp src/sdiff "$OUT/sdiff.wasm")
+}
+
+b_patch() { # GNU patch 2.8.1 (GPL-3.0-or-later; a separate catalog program, source release in the GitHub release): apply a diff; no NLS. Same WASI stubs as diffutils (dup/pipe/fchdir); gnulib opendirat renamed (it clashes with wasi-libc's).
+  compat; dl "https://ftp.gnu.org/gnu/patch/patch-$PATCH.tar.xz" patch
+  g=$WORK/patch
+  printf 'typedef unsigned long rlim_t;\nstruct rlimit { rlim_t rlim_cur; rlim_t rlim_max; };\n#define RLIMIT_NOFILE 7\n#define RLIM_INFINITY (~0UL)\nint dup(int);\nint dup2(int, int);\nint fchdir(int);\nint getdtablesize(void);\nint pipe(int[2]);\nint getrlimit(int, struct rlimit *);\n#define flockfile(f) ((void)0)\n#define funlockfile(f) ((void)0)\n' > "$g/ink_patch.h"
+  # no COMPAT_CHMOD_OK: gnulib's rpl_chmod #undefs that macro and then calls chmod, which wasi-libc does provide
+  # getrlimit: WASI has no rlimit. safe.c only uses it to size a dirfd cache and already falls back when it fails.
+  printf '#include <errno.h>\n#include "ink_patch.h"\nint dup(int f) { (void)f; errno = ENOSYS; return -1; }\nint dup2(int f, int g) { (void)f; (void)g; errno = ENOSYS; return -1; }\nint fchdir(int f) { (void)f; errno = ENOSYS; return -1; }\nint getdtablesize(void) { return 1024; }\nint pipe(int p[2]) { (void)p; errno = ENOSYS; return -1; }\nint getrlimit(int r, struct rlimit *l) { (void)r; (void)l; errno = ENOSYS; return -1; }\n' > "$g/ink_patch.c"
+  $CC -O2 -c "$g/ink_patch.c" -o "$g/ink_patch.o"
+  sed -i "s/\\bopendirat\\b\\([^.]\\)/ink_opendirat\\1/g" "$g/lib/backupfile.c" "$g/lib/opendirat.c" "$g/lib/opendirat.h"
+  # WASI has no permission bits (fchmodat/fchmod are ENOSYS): patch's "set the permissions of the new file" step is a no-op that succeeds
+  sed -i 's/return fchmodat (dirfd, pathname, mode, 0);/(void) dirfd; (void) pathname; (void) mode; return 0;/' "$g/src/safe.c"
+  sed -i 's/(tofd < 0 ? safe_chmod (to, mode) : fchmod (tofd, mode)) < 0/(tofd < 0 ? safe_chmod (to, mode) : 0) < 0/' "$g/src/util.c"
+  grep -q "(void) dirfd; (void) pathname" "$g/src/safe.c" && grep -q "safe_chmod (to, mode) : 0" "$g/src/util.c"
+  if [ -f "$g/lib/sigaction.c" ]; then
+    sed -i 's/# error "Revisit the assumptions made in the sigaction module"/\/\* WASI defines SIGCHLD but has no sigaction: keep gnulib'\''s replacement. *\//' "$g/lib/sigaction.c"
+  fi
+  python3 - "$g/lib/signal.in.h" << 'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+t = p.read_text()
+old = "#  ifndef NSIG\n#   define NSIG 32\n#  endif\n"
+new = "#  undef NSIG\n#  define NSIG 32\n"
+if old not in t:
+    if new not in t:
+        raise SystemExit("signal.in.h: NSIG block not found")
+else:
+    p.write_text(t.replace(old, new, 1))
+PY
+  rm -rf "$g/b" && mkdir -p "$g/b" && (cd "$g/b" && CFLAGS="-O2 $EMU $SJLJ -I$P/compat -include $g/ink_patch.h" LDFLAGS="-L$P/lib $STACK" LIBS="$g/ink_patch.o -lcompat -lsetjmp $EMUL" \
+    ac_cv_func_fork_works=no ac_cv_func_vfork_works=no ac_cv_func_fchdir=yes ac_cv_func_getdtablesize=yes ac_cv_func_pipe=yes ac_cv_func_dup2=yes \
+    gl_cv_func_fcntl_f_dupfd_cloexec=yes gl_cv_func_dup2_works=yes gl_cv_func_fdopendir_works=yes \
+    gl_cv_func_strcasecmp_works=yes gl_cv_func_getopt_posix=yes \
+    ../configure --host=$T --disable-nls --disable-rpath --disable-gcc-warnings >"$WORK/patch-configure.log" 2>&1 || { tail -80 "$WORK/patch-configure.log"; exit 1; }
+    cfg=lib/config.h; [ -f "$cfg" ] || cfg=config.h
+    printf '\n#include <compat.h>\n' >> "$cfg"
+    # cross guess said GETGROUPS_T is int; the declaration uses gid_t (unsigned)
+    sed -i 's/^#define GETGROUPS_T int$/#define GETGROUPS_T gid_t/' "$cfg"
+    make -j"$J" -C lib GL_CFLAG_GNULIB_WARNINGS= >"$WORK/patch-lib.log" 2>&1 || { grep -n "error:" "$WORK/patch-lib.log" | head -40; tail -20 "$WORK/patch-lib.log"; exit 1; }
+    make -j"$J" -C src patch GL_CFLAG_GNULIB_WARNINGS= >"$WORK/patch-src.log" 2>&1 || { grep -n "error:" "$WORK/patch-src.log" | head -40; tail -30 "$WORK/patch-src.log"; exit 1; }
+    cp src/patch "$OUT/patch.wasm")
+}
+
 b_python3() { # python3 = CPython 3.12.0 (PSF-2.0) from VMware Labs' libpython (the same build as the earlier catalog python3, stdlib zip
   # inside by wasi-vfs) + Pillow 11.3.0 (MIT-CMU) with libjpeg-turbo 3.0.4 (IJG/BSD-3-Clause/zlib); zlib comes in libpython. WASI has no dlopen:
   # Pillow's C modules (_imaging, _imagingmath, _imagingmorph) are built-in modules (python/main.c), its Python package is in the
@@ -550,5 +659,5 @@ b_python3() { # python3 = CPython 3.12.0 (PSF-2.0) from VMware Labs' libpython (
 }
 
 # b_ prefix: functions named zip, unzip... would hide those commands
-for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd|bc|file|less|grep|vim|nano|curl|git|make|python3) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
+for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd|bc|file|less|grep|vim|nano|curl|git|make|python3|diffutils|patch) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
 ls -l "$OUT"

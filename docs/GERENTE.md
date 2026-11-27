@@ -78,8 +78,8 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 - Limite de 5 horas da conta pode parar workers no meio: retomar depois que liberar.
 
 ## 9. Estado atual (atualizar a cada merge)
-- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 80, 74, 81, 82, 75, 83, 84, 77a feitos; 62, 65, 66, 71 travados.
-- **Rodando**: 71 diff (PR #123, retomado) (gerente: sessão 013qXTaN, 27/11)
+- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 80, 74, 81, 82, 75, 83, 84, 71, 77a feitos; 62, 65, 66 travados.
+- **Rodando**: — (gerente: sessão 013qXTaN, 27/11)
 - **Fila por uso (dono, 26/11: "siga essa ordem"; apps mais usados no terminal Linux que ainda estão incompletos aqui)**:
   1. ~~74 vim (2)~~ feito (#113)
   2. ~~80 grep GNU em WASM~~ feito (#116)
@@ -87,7 +87,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
   4. ~~82 curl em WASM pela ponte de rede~~ feito (#118)
   5. ~~75 git oficial em WASM~~ feito (#119; clone/fetch/push: `apk add --x86 git` + `/usr/bin/git`)
   6. ~~83 pip no python WASM~~ feito (#120; `apk add python3` traz py3-pip; só pacote Python puro)
-  7. 71 retomada diff/patch com GNU diffutils (2) — próximo
+  7. ~~71 retomada diff/patch com GNU diffutils (2)~~ feito (#123; próximo: 77)
   8. 77 clang + make (3,5): ~~77a make~~ feito (#127; `apk add make`, receitas pela ponte); falta clang (próximo)
   9. ~~84 Pillow no python WASM~~ feito (#126; Pillow 11.3.0 dentro do python3 do catálogo, `wasm-tools-34`; PNG/JPEG, sem freetype/webp/tiff)
   Já completos (só velocidade x86): ls/cp/mv/rm/mkdir/cat, ps/top, tar/gzip, python3, ssh (x86, não medido). Fora: node (sem WASM viável; qjs no lugar), tmux (precisa pty).
@@ -98,7 +98,8 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
-- 2026-11-27 | #127 | 77a make GNU em WASM | `wasm-tools-35` só com make 4.4.1 (611 KB, GPL-3.0 como programa separado, fonte na release); receitas, `$(shell)` e re-execução pela ponte /dev/inksoc; `-j N` num make, sem job server; bug do kernel corrigido: hora de modificação de arquivo não era guardada (stat = agora, touch sem efeito), agora `mtime` por caminho; teste Linux leve (padrão, phony, touch, -n, -k, -C, $(MAKE), -j2, erro sai 2); 50 alvos MK50; RODADAS rodadas de CI | 77 clang
+- 2026-11-27 | #127 | 77a make GNU em WASM | `wasm-tools-35` só com make 4.4.1 (611 KB, GPL-3.0 como programa separado, fonte na release); receitas, `$(shell)` e re-execução pela ponte /dev/inksoc; `-j N` num make, sem job server; bug do kernel corrigido: hora de modificação de arquivo não era guardada (stat = agora, touch sem efeito), agora `mtime` por caminho; teste Linux leve (padrão, phony, touch, -n, -k, -C, $(MAKE), -j2, erro sai 2); 50 alvos (make WASM, 50 filhos sh x86) 980 ms (~20 ms/receita); 3 rodadas de CI (1 build, 2 teste; a 1ª achou o bug de hora) | 77 clang
+- 2026-11-27 | #123 | 71 diffutils + patch GNU em WASM | wasm-tools-30 (diff, cmp, diff3, sdiff 3.12) e -31 (patch 2.8.1, sem fchmodat); GPL-3.0 como programas separados, fonte nas releases; `apk add diffutils` traz cmp/diff3/sdiff; Chromium 10 MB: diff 13398 -> 225 ms (59x), diff -u 102x, cmp 36x, sem abort (uutils dava 134) | 77 clang + make
 - 2026-11-27 | #126 | 84 Pillow no python WASM | python3 do catálogo religado (`wasm-tools-34`): libpython 3.12.0 da VMware + Pillow 11.3.0 (módulos C embutidos, WASI sem dlopen) + libjpeg-turbo 3.0.4, wasi-sdk 20, wasi-vfs 0.4.0, wasm-opt -O2; PNG/JPEG abrir/salvar, resize, thumbnail, convert no teste Linux leve; resize 1024²→512² LANCZOS 36 ms WASM vs 16 ms nativo (2,3x); script inteiro ~1,2 s; 1 rodada de CI; rede/processos/pip do python seguem no teste | 71 diff / 77 clang
 - 2026-11-27 | — | troca de gerente | sessão 013qXTaN assume; #123 (71) parado sem CI desde 00:27 (configure do diffutils em cross-compile) retomado; dono: sem limite de crédito hoje, ≥2 em paralelo | 71 + 84 em paralelo, depois 77
 - 2026-11-26 | #120 | 83 pip no python WASM | catálogo py3-pip = wheel pip 26.3 do PyPI (MIT), vem com `apk add python3`; adaptador requests sobre http.client pela ponte do 76; instala em ~/.local; `pip`/`pip3`/`python3 -m pip`; `pip install six` + import no teste Linux leve; só wheel Python puro (sem compilador) | 71 diff
