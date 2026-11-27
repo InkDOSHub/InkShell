@@ -83,7 +83,7 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
   ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat'],
   ['bzip2', 'bzip2', 'bzip2,bunzip2,bzcat'], ['zstd', 'zstd', 'zstd,unzstd,zstdcat'],
-  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['nano', 'nano', 'nano'], ['curl', 'curl', 'curl'], ['git', 'git', 'git'], ['diffutils', 'diff', 'diff'], ['cmp', 'cmp', 'cmp'], ['patch', 'patch', 'patch']]
+  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['nano', 'nano', 'nano'], ['curl', 'curl', 'curl'], ['git', 'git', 'git'], ['diffutils', 'diff', 'diff'], ['cmp', 'cmp', 'cmp'], ['patch', 'patch', 'patch'], ['openssl', 'openssl', 'openssl-wasm']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -407,6 +407,26 @@ if (process.env.INK_SPAWN) { // item 78: processes from WebAssembly programs (ho
     }
     console.log('tool processes in ' + ((Date.now() - t2) / 1000).toFixed(1) + ' s\n' + got2.slice(-1500));
   }
+  if (hasTool('openssl')) { // item 87: OpenSSL 3.5 command-line tool in WebAssembly behind the /usr/local/bin/openssl wrapper (s_client stays on the x86 helper); tolerant matching
+    const sha = dig('sha256', Buffer.from('abc'));
+    await step(`hash -r; command -v openssl openssl-wasm | busybox tr '\\n' ' '; echo; openssl version | busybox cut -c1-11; printf abc | openssl dgst -sha256; printf abc | openssl dgst -sha1 -r | busybox cut -c1-40; openssl s_client 2>&1 | busybox head -n 1; echo ossl-a\n`,
+      new RegExp('/usr/local/bin/openssl /usr/local/bin/openssl-wasm\\s+OpenSSL 3\\.5\\s+SHA2-256\\(stdin\\)= ' + sha + '\\s+' + dig('sha1', Buffer.from('abc')) + '\\s+openssl s_client: -connect HOST:PORT needed\\s+ossl-a'), 'openssl: wrapper + WebAssembly program, version 3.5, dgst sha256/sha1, s_client still answered by the x86 helper');
+    await step(`cd /tmp && rm -rf os1 && mkdir os1 && cd os1 && printf 'secret text\\n' > e.txt && openssl enc -aes-256-cbc -pbkdf2 -salt -pass pass:pw1 -in e.txt -out e.enc; echo enc=$?; busybox head -c 8 e.enc; echo; openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:pw1 -in e.enc -out e.dec; echo dec=$?; busybox cmp e.txt e.dec && echo enc-same; openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:bad -in e.enc > /dev/null 2>&1; echo bad=$?; echo ossl-b\n`,
+      /enc=0\s+Salted__\s+dec=0\s+enc-same\s+bad=1\s+ossl-b/, 'openssl: enc -aes-256-cbc -pbkdf2 encrypt and decrypt round trip, wrong password fails');
+    await step(`openssl rand -hex 16 | busybox grep -cE '^[0-9a-f]{32}$'; [ "$(openssl rand -hex 16)" != "$(openssl rand -hex 16)" ] && echo rand-differ; openssl rand 100 | busybox wc -c; printf hello | openssl base64; printf aGVsbG8= | openssl base64 -d; echo; openssl passwd -6 -salt saltsalt pw1 | busybox grep -cE '^\\$6\\$saltsalt\\$[./0-9A-Za-z]{86}$'; openssl passwd -1 -salt abcdefgh pw1 | busybox grep -c '^\\$1\\$abcdefgh\\$'; echo ossl-c\n`,
+      /^1\s+rand-differ\s+100\s+aGVsbG8=\s+hello\s+1\s+1\s+ossl-c/m, 'openssl: rand -hex and -bytes, base64 encode/decode, passwd -6 and -1');
+    await step(`cd /tmp/os1 && openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out k.pem; echo gen=$?; openssl req -x509 -new -key k.pem -subj /CN=inkshell.test -days 30 -out c.pem; echo req=$?; openssl x509 -in c.pem -noout -text | busybox grep -E 'Subject:|Signature Algorithm|CA:TRUE' | busybox sort -u; openssl verify -CAfile c.pem c.pem; openssl x509 -in c.pem -noout -fingerprint -sha256 | busybox cut -c1-24; echo ossl-d\n`,
+      /gen=0\s+req=0\s+[\s\S]*CA:TRUE[\s\S]*Signature Algorithm: ecdsa-with-SHA256[\s\S]*Subject: CN\s*=\s*inkshell\.test[\s\S]*c\.pem: OK\s+sha256 Fingerprint=[0-9A-F:]+\s+ossl-d/i, 'openssl: genpkey EC, req -x509 self-signed certificate, x509 -text, verify, fingerprint');
+    await step(`cd /tmp/os1 && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out r.pem; echo rsa=$?; openssl pkey -in r.pem -pubout -out r.pub; echo ossl-e $(busybox grep -c 'BEGIN PUBLIC KEY' r.pub)\n`,
+      /rsa=0\s+ossl-e 1/, 'openssl: genpkey RSA 2048 and pkey -pubout');
+    // 10 MB: sha256 by the WebAssembly sha256sum (or busybox) against openssl dgst
+    await step(`cd /tmp/os1 && busybox seq 1 1500000 > big.txt; busybox wc -c < big.txt | busybox sed 's/^/size=/'; echo ossl-f\n`, /size=\d{8}\s+ossl-f/, 'openssl: 10 MB file made');
+    const t1 = Date.now();
+    await step(`sha256sum big.txt | busybox cut -c1-64 > h1.txt; echo ossl-g\n`, /ossl-g/, 'openssl: sha256sum of 10 MB (reference)');
+    const t2 = Date.now();
+    await step(`openssl dgst -sha256 big.txt | busybox sed 's/.*= //' > h2.txt; cmp h1.txt h2.txt && echo hash-same; cd\n`, /hash-same/, 'openssl: dgst -sha256 of 10 MB equals sha256sum');
+    console.log(`  [sha256 of 10 MB (ms, with the step wait): sha256sum ${t2 - t1}, openssl dgst ${Date.now() - t2}]`);
+  }
   if (hasTool('git')) { // item 75 (information only): git stash starts git children (update-index, diff-tree...) through /dev/inksoc
     const t3 = Date.now(), f3 = out.length;
     send(`mkdir -p /tmp/gb && busybox cp /root/git.wasm /tmp/gb/git && busybox chmod +x /tmp/gb/git && cd /tmp && rm -rf gs && mkdir gs && cd gs && PATH=/tmp/gb:$PATH; git init -q && git config user.name T && git config user.email t@example.com && echo a > a && git add a && git commit -q -m one && echo b >> a && git stash -q; echo st1=$?; git status --short | busybox wc -l | busybox sed 's/^/st-dirty=/'; git stash pop -q; echo st2=$?; busybox wc -l < a | busybox sed 's/^/st-lines=/'; cd; echo done-git-$((1+1))\n`);
@@ -518,7 +538,13 @@ if (hasWasi) {
     await step('sudo sh -c "cat /tmp/wcat >> /etc/inksoc/wasm-catalog.local"; rm /tmp/wcat\n', /Password/, 'tools: local catalog entries (sudo asks)');
     await step('pw1\n', /tester@inksoc/, 'tools: local catalog entries written');
     await step(`apk add --no-network ${tools.map((t) => t.name).join(' ')}; echo add-rc=$?\n`, /Password/, 'tools: apk add asks sudo');
-    await step('pw1\n', new RegExp(tools.map((t) => `OK: ${t.name} installed`).join('[\\s\\S]*') + '[\\s\\S]*add-rc=0'), `tools: apk add installs ${tools.map((t) => t.name).join(', ')}`);
+    { // one apk add of every tool can take longer than one settle (120 s): wait for its exit status (up to 5 min)
+      const b = out.length, re = new RegExp(tools.map((t) => `OK: ${t.name} installed`).join('[\\s\\S]*') + '[\\s\\S]*add-rc=0'), ta = Date.now();
+      send('pw1\n');
+      while (!/add-rc=\d/.test(out.slice(b)) && Date.now() - ta < 300000) await settle();
+      const got = out.slice(b), k = re.test(got); results.push(k);
+      console.log((k ? 'PASS ' : 'FAIL ') + `tools: apk add installs ${tools.map((t) => t.name).join(', ')} (${((Date.now() - ta) / 1000).toFixed(1)} s)` + (k ? '' : '\n---- output ----\n' + got.slice(-600) + '\n----------------'));
+    }
   }
   if (hasTool('7zip')) { // 7-Zip: create, list, extract, compare (7z and zip)
     await step('mkdir -p /tmp/sz/in/sub && cd /tmp/sz && echo one > in/a.txt && seq 1 3000 > in/sub/n.txt && 7zz a -bd t.7z in > /dev/null && 7z l t.7z | grep -c "\\.txt$"; mkdir x && cd x && 7z x -bd ../t.7z > /dev/null && diff -r ../in in && echo 7z-same; cd /tmp/sz && 7zz a -bd -tzip t.zip in > /dev/null && unzip -l t.zip | grep -c "\\.txt$" && 7zz t t.zip | grep -c "Everything is Ok"; cd\n',
