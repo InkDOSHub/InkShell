@@ -138,7 +138,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   if (network in NETS) net = network;
   mark('run');
   wasiSw = !!sw; wasiOpen(Math.random().toString(36).slice(2));
-  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=23'); } catch (e) { wasiInline = null; } }
+  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=24'); } catch (e) { wasiInline = null; } }
   const swap = await openSwap(), ram = new Map();
   const page = (p) => new Uint8Array(mem.buffer, p, 4096);
   const env = {
@@ -172,7 +172,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   };
   const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(u + ': ' + r.status); return r; });
   const [wasm, busybox, overlay, saved] = await Promise.all([
-    get('engine.wasm?v=52').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
+    get('engine.wasm?v=53').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
     get('overlay.tar?v=43').then((r) => r.arrayBuffer()), loadSaved()]);
   mark('fetched');
   let rootfs = null;
@@ -336,20 +336,24 @@ function wasiServe() {
     else { const d = rd(f); lx.put(p, d); loaded(p, d.byteLength); }
   }
 }
+// item 93: keys (file versions) whose compiled Module and cwd slot the page holds: their bytes are not copied
+let wasiHeld = new Set();
+function wasiStartMsg(pid, info, force) {
+  // the file's version in the kernel (new at each change, never 0 on a new engine): the page keeps the compiled module by it
+  const g = x.wasi_module_gen ? x.wasi_module_gen(pid) : 0;
+  const z = info.indexOf(0), key = g ? `${wasiSid}:${g}:${new TextDecoder().decode(info.subarray(0, z < 0 ? info.length : z))}` : null;
+  let bytes = null;
+  if (force || !key || !wasiHeld.has(key)) { const m = x.wasi_module(pid); bytes = new Uint8Array(mem.buffer, x.out_ptr(), m).slice(); }
+  if (wprof) { const r = wmark(pid, 'read'); r.bytes = bytes ? bytes.byteLength : 0; }
+  postMessage({ type: 'wasi-start', pid, sid: wasiSid, info, bytes, key, base: x.wasi_base(), size: x.wasi_buf_size(), spawn: !!x.wasi_spawn }, bytes ? [bytes.buffer] : []);
+  if (wprof) wmark(pid, 'posted');
+}
 function wasiPump() {
   for (let pid; (pid = x.wasi_next());) {
     if (wprof) wmark(pid, 'next');
     const k = x.wasi_info(pid), info = new Uint8Array(mem.buffer, x.out_ptr(), k).slice();
-    if (wasiSw) {
-      const m = x.wasi_module(pid), bytes = new Uint8Array(mem.buffer, x.out_ptr(), m).slice();
-      // the file's version in the kernel (new at each change): the page keeps the compiled module by it
-      const g = x.wasi_module_gen ? x.wasi_module_gen(pid) : 0;
-      const z = info.indexOf(0), key = g ? `${wasiSid}:${g}:${m}:${new TextDecoder().decode(info.subarray(0, z < 0 ? info.length : z))}` : null;
-      wasiLive.add(pid);
-      if (wprof) { const r = wmark(pid, 'read'); r.bytes = m; }
-      postMessage({ type: 'wasi-start', pid, sid: wasiSid, info, bytes, key, base: x.wasi_base(), size: x.wasi_buf_size(), spawn: !!x.wasi_spawn }, [bytes.buffer]);
-      if (wprof) wmark(pid, 'posted');
-    } else if (wasiInline) wasiInline.runWasi(x, pid, { serve: wasiServe });
+    if (wasiSw) { wasiLive.add(pid); wasiStartMsg(pid, info, false); }
+    else if (wasiInline) wasiInline.runWasi(x, pid, { serve: wasiServe });
     else { out('\r\n\x1b[2m[WebAssembly programs need a newer browser]\x1b[0m\r\n'); put(new Uint8Array(0)); x.wasi_call(pid, 231, 126, 0, 0, 0, 0, 0, 0); }
   }
   for (const [pid, q] of wasiWait) {
@@ -365,6 +369,11 @@ function wasiPump() {
 onmessage = async (ev) => {
   const d = ev.data;
   if (d.type === 'key') { keys.push(d.data); return; }
+  if (d.type === 'wasi-mods') { wasiHeld = new Set(d.keys); return; }
+  if (d.type === 'wasi-bytes') { // the page no longer holds that Module: the start again, with the bytes
+    if (lx && wasiLive.has(d.pid) && x.wasi_alive(d.pid)) { const k = x.wasi_info(d.pid); wasiStartMsg(d.pid, new Uint8Array(mem.buffer, x.out_ptr(), k).slice(), true); }
+    return;
+  }
   if (d.type === 'resize') { if (lx) lx.resize(d.rows, d.cols); return; }
   if (d.type === 'put') { if (lx) { lx.put(d.name, d.data); loaded(d.name, d.data.byteLength); } else pendingPuts.push({ name: d.name, data: d.data }); return; }
   if (d.type === 'dbg') { dbgSend(); return; }
