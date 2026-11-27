@@ -567,6 +567,10 @@ if (hasWasi) {
     await step("printf '{\"k\":\"out\"}' > /tmp/z.json && mkdir -p /tmp/jq2/tmp && printf '{\"k\":\"in\"}' > /tmp/jq2/tmp/z.json && cd /tmp/jq2 && jq -cM .k /tmp/z.json ./tmp/z.json; echo jq-same-done; cd\n",
       /^"out"\s+^"in"\s+^jq-same-done/m, 'jq: /tmp/z.json and ./tmp/z.json in the same command each open the right file');
   }
+  if (hasTool('jq')) { // item 85: jq built with oniguruma (regex builtins)
+    await step("echo '\"abc\"' | jq -cM '[test(\"a.c\"), (capture(\"(?<x>b)c\").x), gsub(\"[ac]\";\"-\"), sub(\"b\";\"B\"), ([\"a,b;c\" | splits(\"[,;]\")]), ([match(\"[a-c]\";\"g\").string] | length)]'; jq -nM '\"x\" | test(\"y\")' ; echo jq-onig-done\n",
+      /^\[true,"b","-b-","aBc",\["a","b","c"\],3\]\s+^false\s+^jq-onig-done/m, 'jq: oniguruma regex builtins (test, capture, gsub, sub, splits, match)');
+  }
   if (hasTool('ripgrep')) { // ripgrep: count, line number, list files of a folder, no match exits 1, stdin with "-"
     await step("mkdir -p /tmp/rg/s && cd /tmp/rg && printf 'alpha\\nbeta\\ngamma\\n' > s/a.txt && printf 'beta2\\n' > b.txt && rg --color never -c beta s/a.txt; rg --color never -n gam s/a.txt; rg --color never -l beta . | sort; rg --color never zzz s/a.txt; echo rg-rc=$?; printf 'x1\\ny\\n' | rg --color never x -; cd\n",
       /^1\s+^3:gamma\s+^(\.\/)?b\.txt\s+^(\.\/)?s\/a\.txt\s+^rg-rc=1\s+^x1\s*$/m, 'ripgrep: count, line number, files of a folder, no match exits 1, stdin with -');
