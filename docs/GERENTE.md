@@ -92,6 +92,8 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
   9. ~~84 Pillow no python WASM~~ feito (#126; Pillow 11.3.0 dentro do python3 do catálogo, `wasm-tools-34`; PNG/JPEG, sem freetype/webp/tiff)
   10. ~~86 Pillow extras~~ feito (#129; FreeType/ImageFont, WEBP, TIFF; JPEG ruim = OSError; `wasm-tools-37`)
   Já completos (só velocidade x86): ls/cp/mv/rm/mkdir/cat, ps/top, tar/gzip, python3, ssh (x86, não medido). Fora: node (sem WASM viável; qjs no lugar), tmux (precisa pty).
+  **Medido no 88 (27/11)**: cp/mv/rm/mkdir/cat/head/tail/ps/top/date/env/stat = 3–7 ms no x86 (sem ganho possível); ls -l 200 arquivos 51 ms e du 31 ms são os maiores; o shell ash x86 manda nos scripts (≈ 0,14 ms/iteração, 60x nativo); spawn de WASM custa 5–12 ms (busybox 2 ms).
+- **Fila nova (do 88; ganho est. / pts)**: 89 awk WASM sem exnref ou fallback ao busybox (bug que quebra uso no Chromium < 137; awk volta a rodar / 1); 90 `df`: /proc/mounts no kernel (bug; df funciona / 1); 91 medir e cortar custo de spawn do WASM (coreutils 12 ms vs busybox 2 ms; ganho est. 2–4x em scripts com WASM por linha / 1 medir + 2 cortar); 92 ls/du em WASM (3x em 50 ms; baixa prioridade / 1).
 - **Fora**: teste do ruby (o dono: não fazer).
 - **Semana que vem**: continuar a fila acima de onde parar.
 - **PRs abertos de propósito**: #80 (não dar merge), #38 (teste iPad).
@@ -99,6 +101,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
+- 2026-11-27 | #131 | 88 medir comandos do dia a dia | bench `cmds-bench.yml` (45 comandos, Chromium, VM vs nativo): shell ash x86 ≈ 60x nativo (1000 iterações 140 ms); spawn de WASM 5–12 ms vs 2 ms do busybox (WASM só ganha com entrada grande); awk WASM quebra no Chromium 131 (exnref); df sem /proc/mounts; ls -l 200 arquivos 51 ms, du 31 ms; resto 3–7 ms | 89 awk sem exnref/fallback, 90 df, 91 medir spawn WASM
 - 2026-11-27 | #129 | 86 Pillow extras no python WASM | `wasm-tools-37` (python3 30,9 MB): FreeType 2.13.3 (FTL), libwebp 1.5.0, libtiff 4.7.0; setjmp = exceção wasm (exnref) → JPEG ruim dá OSError e o python segue; `wasmtime wizer` 44 no lugar do pack do wasi-vfs; `fix_meth.py` conserta getextrema/split/abrir WEBP (trap no wasm, bug do 84 também); início do python (node, 1 rep, compile + `import PIL.Image`) 394 → 321 ms, resize LANCZOS 30 ms; 1 build + 1 rodada de teste | 77 clang + make
 - 2026-11-27 | #123 | 71 diffutils + patch GNU em WASM | wasm-tools-30 (diff, cmp, diff3, sdiff 3.12) e -31 (patch 2.8.1, sem fchmodat); GPL-3.0 como programas separados, fonte nas releases; `apk add diffutils` traz cmp/diff3/sdiff; Chromium 10 MB: diff 13398 -> 225 ms (59x), diff -u 102x, cmp 36x, sem abort (uutils dava 134) | 77 clang + make
 - 2026-11-27 | #126 | 84 Pillow no python WASM | python3 do catálogo religado (`wasm-tools-34`): libpython 3.12.0 da VMware + Pillow 11.3.0 (módulos C embutidos, WASI sem dlopen) + libjpeg-turbo 3.0.4, wasi-sdk 20, wasi-vfs 0.4.0, wasm-opt -O2; PNG/JPEG abrir/salvar, resize, thumbnail, convert no teste Linux leve; resize 1024²→512² LANCZOS 36 ms WASM vs 16 ms nativo (2,3x); script inteiro ~1,2 s; 1 rodada de CI; rede/processos/pip do python seguem no teste | 71 diff / 77 clang
