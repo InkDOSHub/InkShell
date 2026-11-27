@@ -1,0 +1,45 @@
+sh-start	sh	true
+ls-l-200	ls	cd $D/many && ls -l
+cp	cp	cp $D/words.txt $D/w2.txt
+mv	mv	mv $D/w2.txt $D/w3.txt
+rm	rm	rm -f $D/w3.txt
+mkdir	mkdir	mkdir -p $D/x/y/z
+cat	cat	cat $D/words.txt > /dev/null
+head	head	head -n 20 $D/words.txt
+tail	tail	tail -n 20 $D/words.txt
+sort	sort	sort -t, -k3,3n $D/words.txt > /dev/null
+wc	wc	wc -l $D/words.txt
+cut	cut	cut -d, -f2 $D/words.txt > /dev/null
+tr	tr	tr a-z A-Z < $D/words.txt > /dev/null
+uniq	cut uniq	cut -d, -f2 $D/words.txt | uniq -c > /dev/null
+sed	sed	sed 's/word/WORD/' $D/words.txt > /dev/null
+awk	awk	awk -F, '{ s += $3 } END { print s }' $D/words.txt
+grep	grep	grep -c word1 $D/words.txt
+find	find	find $D/many -name "f1*" > /dev/null
+xargs	xargs echo	echo a b c d e f | xargs -n2 echo > /dev/null
+tar-c	tar	tar cf $D/o.tar -C $D many
+tar-t	tar	tar tf $D/a.tar > /dev/null
+gzip	gzip	gzip -c $D/words.txt > /dev/null
+gunzip	gzip	gzip -dc $D/words.gz > /dev/null
+date	date	date > /dev/null
+ps	ps	ps > /dev/null
+top	top	top -bn1 > /dev/null
+du	du	du -s $D/many
+df	df	df > /dev/null
+chmod	chmod	chmod 755 $D/exe
+ln	ln	ln -sf $D/words.txt $D/lnk
+basename	basename	basename /a/b/c.txt .txt
+dirname	dirname	dirname /a/b/c.txt
+env	env	env > /dev/null
+test-bracket	test [	test -f $D/words.txt && [ -d $D/many ]
+echo-1000	echo	i=0; while [ $i -lt 1000 ]; do echo x$i; i=$((i + 1)); done > /dev/null
+which	which	which ls sort > /dev/null
+tee	tee	echo hi | tee $D/tee.out > /dev/null
+stat	stat	stat $D/words.txt > /dev/null
+md5sum	md5sum	md5sum $D/words.txt
+sh-loop-1000	sh	i=0; while [ $i -lt 1000 ]; do i=$((i + 1)); done
+sh-for-1000	sh	n=0; for i in $(seq 1 1000); do n=$((n + i)); done
+script-read-100	sh	while read a b c; do x="$a-$b"; case $x in line5*) y=$c;; esac; done < $D/l100.txt
+script-read-ext-50	sh cut	head -n 50 $D/l100.txt | while read a b c; do echo $a | cut -c1-3 > /dev/null; done
+loop-basename-100	basename	i=0; while [ $i -lt 100 ]; do basename /a/b/c.txt > /dev/null; i=$((i + 1)); done
+pipeline	cat sort uniq head	cat $D/words.txt | cut -d, -f2 | sort | uniq -c | sort -rn | head -n 3 > /dev/null
