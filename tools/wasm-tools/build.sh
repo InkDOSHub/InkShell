@@ -1,9 +1,9 @@
 #!/bin/sh
 # Builds WebAssembly (WASI preview1) command-line tools for the catalog (apk add) from upstream sources.
-# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | bzip2 | zstd | bc | file | less | grep | vim | nano | curl | git | python3 | diffutils | patch | openssl
+# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | bzip2 | zstd | bc | file | less | grep | vim | nano | curl | git | make | python3 | diffutils | patch | openssl
 # env: WASI_SDK (wasi-sdk-33 or later: C++ exceptions), WORK (sources, build dirs), OUT (the .wasm files)
 # CI: .github/workflows/wasm-tools.yml builds them and publishes a GitHub release; the catalog points at it.
-# No GPL in the engine, the page, or the worker. GPL is only a separate catalog program, source in its release (owner, 26/11): GNU grep, nano, git, diffutils 3.12 and patch 2.8.1 (the b_* recipes in this file; see THIRD_PARTY_LICENSES.md). Everything else: ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
+# No GPL in the engine, the page, or the worker. GPL is only a separate catalog program, source in its release (owner, 26/11): GNU grep, nano, git, diffutils 3.12, patch 2.8.1 and make 4.4.1 (the b_* recipes in this file; see THIRD_PARTY_LICENSES.md). Everything else: ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
 # 7-Zip without the unRAR code (LGPL-2.1+ and BSD-3-Clause), qpdf (Apache-2.0), ImageMagick (its own Apache-style license),
 # SQLite (public domain), jq (MIT; oniguruma BSD-2-Clause inside), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense), hashsum (InkShell's own code, MIT), uutils coreutils (MIT), QuickJS-ng (MIT), uutils sed (MIT), uutils findutils find (MIT; oniguruma BSD-2-Clause inside), one-true-awk (MIT-style Bell Labs license), xz 5.8 (0BSD; liblzma public domain/0BSD), libarchive bsdtar (BSD-2-Clause, BSD-3-Clause; zlib license for zlib, 0BSD for liblzma), gzip (InkShell's own code on zlib, MIT), bzip2 1.0.8 (bzip2 license, BSD-style), zstd 1.5.7 (BSD-3-Clause option of its dual license), Gavin Howard's bc 7.0.3 (BSD-2-Clause; not GNU bc), file/libmagic 5.46 (BSD-2-Clause), less 692 (the BSD-2-Clause style Less License option of its dual license; the GPL-3.0 option is not used), curl (InkShell's own code, MIT).
 set -eu
@@ -26,7 +26,7 @@ CWDL="-Wl,--undefined=chdir"
 STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
-SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 ONIG=6.9.10 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12 VIM=9.1.1400 NANO=8.3 NCURSES=6.5 GIT=2.47.1 DIFFUTILS=3.12 PATCH=2.8.1 OPENSSL=3.5.4
+SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 ONIG=6.9.10 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12 VIM=9.1.1400 NANO=8.3 NCURSES=6.5 GIT=2.47.1 DIFFUTILS=3.12 PATCH=2.8.1 OPENSSL=3.5.4 GMAKE=4.4.1
 PYWLR=python%2F3.12.0%2B20231211-040d5a6 WASIVFS=0.4.0 BINARYEN=124 WASMTIME=44.0.0 FREETYPE=2.13.3 WEBP=1.5.0 TIFF=4.7.0 PILLOW=11.3.0 PILLOW_SHA=3828ee7586cd0b2091b6209e5ad53e20d0649bbe87164a459d0676e035e8f523
 PILLOW_URL=https://files.pythonhosted.org/packages/f3/0d/d0d6dea55cd152ce3d6767bb38a8fc10e33796ba4ba210cbab9354b6d238/pillow-$PILLOW.tar.gz
 
@@ -456,6 +456,30 @@ EOF
     cp git "$OUT/git.wasm")
 }
 
+b_make() { # GNU make 4.4.1 (GPL-3.0-or-later; a separate catalog program, source release in the GitHub release): recipes run through the host channel /dev/inksoc (make/ink_make.c: child_execute_job, exec_command and $(shell) over compat_spawn/waitpid, item 78); -j N inside one make (wait/nohang of the host), no job server for sub-makes (no pipe), no load/guile/NLS
+  compat; dl "https://ftp.gnu.org/gnu/make/make-$GMAKE.tar.gz" make
+  m=$WORK/make
+  grep -q ink_child_execute_job "$m/src/job.c" || {
+    # child_execute_job / exec_command: the host starts the child (WASI has no fork/exec); the code after the hook stays for other systems
+    sed -i '/^child_execute_job (struct childbase \*child, int good_stdin, char \*\*argv)$/{n;s/^{$/{\n#ifdef __wasi__\n  { extern pid_t ink_child_execute_job (struct childbase *, int, char **); return ink_child_execute_job (child, good_stdin, argv); }\n#endif/}' "$m/src/job.c"
+    sed -i '/^exec_command (char \*\*argv, char \*\*envp)$/{n;s/^{$/{\n#ifdef __wasi__\n  { extern void ink_exec_command (char **, char **); ink_exec_command (argv, envp); }\n#endif/}' "$m/src/job.c"
+    cat "$here/make/ink_make.c" >> "$m/src/job.c"
+    # $(shell ...): no pipe(); the child's stdout pipe comes back from the host (ink_shell_fd)
+    sed -i 's/^  if (pipe (pipedes) < 0)$/#ifdef __wasi__\n  { extern int ink_shell_pipe (int *); if (ink_shell_pipe (pipedes) < 0) abort (); }\n  if (0)\n#else\n&\n#endif/' "$m/src/function.c"
+    sed -i 's/^  pid = child_execute_job (&child, 1, command_argv);$/&\n#ifdef __wasi__\n  { extern int ink_shell_fd; pipedes[0] = ink_shell_fd; }\n#endif/' "$m/src/function.c"
+    # main with envp is not a WASI entry point (wasi-libc calls main(argc, argv) only): environ instead
+    sed -i 's/^main (int argc, char \*\*argv, char \*\*envp)$/#ifdef __wasi__\nmain (int argc, char **argv)\n#define envp environ\n#else\n&\n#endif/' "$m/src/main.c"
+    # glob's mock dirent: wasi-libc's d_name is a flexible array (no sizeof)
+    sed -i 's/size_t sz = sizeof (\*d) - sizeof (d->d_name) + len;/size_t sz = offsetof (struct dirent, d_name) + len;/' "$m/src/dir.c"
+  }
+  [ "$(grep -c 'ink_child_execute_job (child' "$m/src/job.c")" -ge 1 ] && grep -q 'ink_exec_command (argv' "$m/src/job.c" && grep -q 'pipedes\[0\] = ink_shell_fd' "$m/src/function.c" && grep -q '^#define envp environ$' "$m/src/main.c"
+  printf '#include <errno.h>\n#include <stddef.h>\n#define vfork fork\nint dup(int);\nint dup2(int, int);\nint getdtablesize(void);\nint kill(pid_t, int);\nint pipe(int[2]);\n#include <string.h>\n#include <signal.h>\n#define SIG_BLOCK 0\n#define SIG_UNBLOCK 1\n#define SIG_SETMASK 2\n#define sigemptyset(s) (memset((s), 0, sizeof *(s)), 0)\n#define sigaddset(s, n) ((void)(s), (void)(n), 0)\n#define sigprocmask(h, s, o) ((void)(h), (void)(s), (void)(o), 0)\n' > "$m/ink_make.h" # no signal masks in WASI (nothing to block: signals are not delivered)
+  rm -rf "$m/b" && mkdir -p "$m/b" && (cd "$m/b" && CFLAGS="-O2 $EMU -I$P/compat" LDFLAGS="-L$P/lib $STACK" LIBS="-lcompat $EMUL" \
+    ../configure --host=$T --disable-nls --disable-job-server --disable-posix-spawn --disable-load --without-guile >/dev/null &&
+    make -j"$J" CFLAGS="-O2 -D_GNU_SOURCE -DNO_OUTPUT_SYNC $EMU -I$P/compat -include compat.h -include $m/ink_make.h" >"$WORK/make-make.log" 2>&1 || { grep -n "error" "$WORK/make-make.log" | head -40; tail -20 "$WORK/make-make.log"; exit 1; }
+    cp make "$OUT/make.wasm")
+}
+
 b_vim() { # Vim 9.1 (Vim license: charityware, GPL-compatible; a separate catalog program): normal features, no GUI/X11/channels/jobs/terminal/scripting languages; builtin terminal entries (no termcap library); raw keys and window size through the host's "inksoc" imports (vim/ink_term.c); no fork: :! and :shell report failure; no runtime files (VIMINIT in the program turns nocompatible on)
   compat
   fetch vim/vim v$VIM vim
@@ -680,5 +704,5 @@ b_python3() { # python3 = CPython 3.12.0 (PSF-2.0) from VMware Labs' libpython (
 }
 
 # b_ prefix: functions named zip, unzip... would hide those commands
-for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd|bc|file|less|grep|vim|nano|curl|git|python3|diffutils|patch|openssl) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
+for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd|bc|file|less|grep|vim|nano|curl|git|make|python3|diffutils|patch|openssl) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
 ls -l "$OUT"

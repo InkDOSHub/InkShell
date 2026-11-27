@@ -75,6 +75,16 @@ if (hasPip) {
   if (fs.existsSync(sixWhl)) add('six.whl', fs.readFileSync(sixWhl));
 }
 add('procs.sh', fs.readFileSync(new URL('./src/procs.sh', import.meta.url))); // item 78 (INK_SPAWN): awk, lua, find
+add('make.sh', fs.readFileSync(new URL('./src/make.sh', import.meta.url))); // item 77a (INK_SPAWN): GNU make, recipes through /dev/inksoc
+// item 77 (INK_CLANG): the catalog's clang (test.yml downloads the npm .tgz to tests/clang.tgz, sha256 checked) as a local catalog entry
+const clangTgz = new URL('./clang.tgz', import.meta.url);
+const hasClang = !!process.env.INK_CLANG && hasWasi && fs.existsSync(clangTgz);
+if (hasClang) {
+  const cb = fs.readFileSync(clangTgz), cl = fs.readFileSync('overlay/etc/inksoc/wasm-catalog', 'utf8').split('\n').find((l) => l.startsWith('clang\t')).split('\t');
+  add('clang.tgz', cb);
+  add('clangcat.txt', Buffer.from(['clang', 'file:///root/clang.tgz', crypto.createHash('sha256').update(cb).digest('hex'), cb.length, ...cl.slice(4)].join('\t') + '\n'));
+  add('clang.sh', fs.readFileSync(new URL('./src/clang.sh', import.meta.url)));
+}
 add('curl-e.cgi', enc.encode('#!/bin/sh\nprintf \'Content-Type: text/plain\\r\\n\\r\\n\'\necho "m=$REQUEST_METHOD ua=$HTTP_USER_AGENT"\nhead -c "${CONTENT_LENGTH:-0}"\necho\n')); // item 82 (INK_CURL): a CGI of busybox httpd that echoes a POST
 // tools from the catalog (test.yml downloads them to tests/NAME.wasm, sha256 checked): [catalog name, file, programs]
 const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagick', 'magick', 'magick,convert,identify'], ['ffmpeg', 'ffmpeg', 'ffmpeg'], ['ffprobe', 'ffprobe', 'ffprobe'],
@@ -83,7 +93,7 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
   ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat'],
   ['bzip2', 'bzip2', 'bzip2,bunzip2,bzcat'], ['zstd', 'zstd', 'zstd,unzstd,zstdcat'],
-  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['nano', 'nano', 'nano'], ['curl', 'curl', 'curl'], ['git', 'git', 'git'], ['diffutils', 'diff', 'diff'], ['cmp', 'cmp', 'cmp'], ['patch', 'patch', 'patch'], ['openssl', 'openssl', 'openssl-wasm']]
+  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['nano', 'nano', 'nano'], ['curl', 'curl', 'curl'], ['git', 'git', 'git'], ['diffutils', 'diff', 'diff'], ['cmp', 'cmp', 'cmp'], ['patch', 'patch', 'patch'], ['make', 'make', 'make'], ['openssl', 'openssl', 'openssl-wasm']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -374,6 +384,34 @@ if (process.env.INK_CURL) { // item 82: the WebAssembly curl (network helper ink
   console.log('curl in ' + ((Date.now() - t1) / 1000).toFixed(1) + ' s\n' + got1.slice(-1500));
   process.exit(ok ? 0 : 1);
 }
+if (process.env.INK_CLANG) { // item 77: apk add clang (the npm .tgz, unpacked by apk + /etc/inksoc/wasm-setup/clang), then C to WASI programs; with INK_WASI_THREADS=1
+  if (!hasClang || !hasTool('make')) { console.log('FAIL INK_CLANG: no tests/clang.tgz or tests/make.wasm'); process.exit(1); }
+  const t1 = Date.now(), f1 = out.length;
+  send("su root -c 'cp /root/clangcat.txt /etc/inksoc/wasm-catalog.local && apk add clang'; echo ins-$?\n");
+  await settle(30000);
+  send('pw1\n');
+  for (let at = 60000; !/ins-\d/.test(out.slice(f1)) && Date.now() - t1 < 420000;) { await settle(5000); if (Date.now() - t1 > at) { at += 60000; console.log('  ... apk add clang ' + ((Date.now() - t1) / 1000 | 0) + ' s'); } }
+  const got1 = out.slice(f1).replace(/\x1b\[[0-9;?>]*[A-Za-z]/g, '').replace(/\r/g, '\n');
+  const insOk = /OK: clang installed[\s\S]*ins-0/.test(got1);
+  console.log((insOk ? 'PASS ' : 'FAIL ') + 'apk add clang: download (local file), sha256, unpack, setup (' + ((Date.now() - t1) / 1000).toFixed(1) + ' s)\n' + got1.slice(-600));
+  if (!insOk) process.exit(1);
+  const t2 = Date.now(), f2 = out.length;
+  send('sh /root/clang.sh; echo done-clang-$?\n');
+  for (let at = 60000; !/done-clang-\d/.test(out.slice(f2)) && Date.now() - t2 < 420000;) { await settle(5000); if (Date.now() - t2 > at) { at += 60000; console.log('  ... clang.sh ' + ((Date.now() - t2) / 1000 | 0) + ' s'); } }
+  const got2 = out.slice(f2).replace(/\x1b\[[0-9;?>]*[A-Za-z]/g, '').replace(/\r/g, '');
+  let ok = true;
+  for (const [re, name] of [[/clang version 22\./, 'clang --version'], [/c1=0[\s\S]*?hello from clang argc=3\s+h1=7/, 'clang hello.c -o hello; ./hello: output and exit code'],
+      [/mode=-rwx\S* magic=0061736d/, 'the output is an executable WebAssembly file'], [/cb=1 ue=1/, 'compile error: message and exit status 1'],
+      [/m1=0\s+sum=13 data=from-data\s+p1=0/, 'make: 2 files + header (cc, built-in %.o rule); relative fopen'], [/is up to date\.\s+m2=0/, 'make again: nothing to remake'],
+      [/l1=0\s+sum=3 data=from-data\s+p2=0/, 'clang -c, ar rcs (llvm-ar), link -L. -lcalc'], [/clang-end[\s\S]*done-clang-0/, 'script ends']]) {
+    const k = re.test(got2); ok = ok && k; console.log((k ? 'PASS ' : 'FAIL ') + 'clang: ' + name);
+  }
+  console.log('INFO clang++ iostream: ' + (/cx=0\s+cpp sum 6\s+hx=0/.test(got2) ? 'works' : 'does not work'));
+  const u0 = /cc-t0=([\d.]+)/.exec(got2), u1 = /cc-t1=([\d.]+)/.exec(got2);
+  console.log('clang.sh in ' + ((Date.now() - t2) / 1000).toFixed(1) + ' s\n' + got2.slice(-3000));
+  if (u0 && u1) console.log(`  [clang hello.c -o hello (driver + clang -### + cc1 + wasm-ld, node/V8 worker threads): ${Math.round((u1[1] - u0[1]) * 1000)} ms]`);
+  process.exit(ok ? 0 : 1);
+}
 if (process.env.INK_SPAWN) { // item 78: processes from WebAssembly programs (host channel /dev/inksoc); with INK_WASI_THREADS=1
   if (!hasPy) { console.log('FAIL INK_SPAWN: no tests/python.wasm'); process.exit(1); }
   const t1 = Date.now(), from = out.length;
@@ -407,6 +445,23 @@ if (process.env.INK_SPAWN) { // item 78: processes from WebAssembly programs (ho
     }
     console.log('tool processes in ' + ((Date.now() - t2) / 1000).toFixed(1) + ' s\n' + got2.slice(-1500));
   }
+  if (hasTool('make')) { // item 77a: GNU make 4.4.1 in WebAssembly; every recipe line is a child through /dev/inksoc (x86 busybox sh/sed/cat; $(MAKE) is WebAssembly)
+    const t4 = Date.now(), f4 = out.length;
+    send('sh /root/make.sh; echo done-make-$?\n');
+    while (!/done-make-\d/.test(out.slice(f4)) && Date.now() - t4 < 150000) await settle(5000);
+    const got4 = out.slice(f4).replace(/\x1b\[[0-9;?>]*[A-Za-z]/g, '').replace(/\r/g, '');
+    for (const [re, name] of [[/r1=0[\s\S]*all-done shell-ok mk-name[\s\S]*n1=2\s+total=p-hello p-world /, 'variables, include, $(shell), $(wildcard), pattern rule, phony target'],
+        [/'total\.txt' is up to date\.\s+r2=0/, 'nothing to remake'], [/r3=0\s+n3=1 b3=1/, 'touch one input: only its target remade'],
+        [/r4=0\s+n4=1 a4=1 stale=1/, '-n prints without running'], [/before-fail[\s\S]*Error 1[\s\S]*rf=2/, 'failing recipe: exit status 2'],
+        [/rk=2\s+k5=1 never=0/, '-k keeps going with other targets'], [/in-sub \/tmp\/mk\/sub[\s\S]*rc=0/, '-C dir'],
+        [/Entering directory '\/tmp\/mk\/sub'[\s\S]*in-sub \/tmp\/mk\/sub[\s\S]*rr=0/, 'recursive $(MAKE) -C (WebAssembly child)'],
+        [/rj=0\s+j6=2 total6=p-hello p-world /, '-j2'], [/r50=0 n50=50/, '50 targets'], [/make-end[\s\S]*done-make-0/, 'script ends']]) {
+      const k = re.test(got4); ok = ok && k; console.log((k ? 'PASS ' : 'FAIL ') + 'make: ' + name);
+    }
+    const u0 = /mk50-t0=([\d.]+)/.exec(got4), u1 = /mk50-t1=([\d.]+)/.exec(got4);
+    console.log('make in ' + ((Date.now() - t4) / 1000).toFixed(1) + ' s\n' + got4.slice(-2500));
+    if (u0 && u1) console.log(`  [make: 50 targets (WebAssembly make, 50 x86 sh children): ${Math.round((u1[1] - u0[1]) * 1000)} ms]`);
+  }
   if (hasTool('git')) { // item 75 (information only): git stash starts git children (update-index, diff-tree...) through /dev/inksoc
     const t3 = Date.now(), f3 = out.length;
     send(`mkdir -p /tmp/gb && busybox cp /root/git.wasm /tmp/gb/git && busybox chmod +x /tmp/gb/git && cd /tmp && rm -rf gs && mkdir gs && cd gs && PATH=/tmp/gb:$PATH; git init -q && git config user.name T && git config user.email t@example.com && echo a > a && git add a && git commit -q -m one && echo b >> a && git stash -q; echo st1=$?; git status --short | busybox wc -l | busybox sed 's/^/st-dirty=/'; git stash pop -q; echo st2=$?; busybox wc -l < a | busybox sed 's/^/st-lines=/'; cd; echo done-git-$((1+1))\n`);
@@ -423,6 +478,9 @@ await step('echo hello > f.txt && cat f.txt\n', /hello/, 'files');
 await step('sh -c "for i in 1 2 3 4 5; do /bin/true; done; echo forked-ok"\n', /forked-ok/, 'fork and exec');
 await step('apk info | wc -l\n', /^\s*1[0-9]\s*$/m, 'apk (dynamic program, shared libraries)');
 await step('free -m | grep Mem\n', /Mem:\s+8192/, '/proc and sysinfo: programs see 8 GB');
+await step('cat /proc/mounts | grep -c " / "; echo mounts-ok\n', /[1-9]\s*\r?\n.*mounts-ok/s, 'item 90: /proc/mounts has the root line');
+await step('df >/tmp/df.out 2>&1; echo df-rc=$?; df -h / >/dev/null 2>&1; echo dfh-rc=$?; grep -c " /$" /tmp/df.out\n', /df-rc=0[\s\S]*dfh-rc=0/, 'item 90: df and df -h exit 0');
+await step('mount | grep -c " on / "\n', /^\s*[1-9]\s*$/m, 'item 90: mount lists the root');
 await step('awk \'BEGIN{for(i=0;i<400000;i++)a[i]="item number " i; print length(a)}\'\n', /400000/, 'a program using more than the real RAM');
 results.push(swap.size > 0); console.log((swap.size > 0 ? 'PASS' : 'FAIL') + ' pages went to swap (' + swap.size + ' chunks)');
 await step('sh -c \'awk "BEGIN{for(i=0;i<200000;i++)a[i]=i; print 1}" & awk "BEGIN{for(i=0;i<200000;i++)b[i]=i; print 2}"; wait\' | sort | tr "\\n" " "; echo\n', /1 2/, 'two processes swapping at once');

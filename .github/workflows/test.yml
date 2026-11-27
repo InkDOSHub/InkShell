@@ -8,7 +8,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 42
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -56,9 +56,9 @@ jobs:
           echo "$(printf '%s' "$e" | cut -f3)  tests/pip.whl" | sha256sum -c
           curl -fsSL --retry 3 -o tests/six.whl https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl
           echo "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274  tests/six.whl" | sha256sum -c
-      - name: 7-Zip, qpdf, ImageMagick, ffmpeg, sqlite, jq, lua, zip, unzip, ripgrep, hashtools, sed, find, awk, tar, gzip, xz, bzip2, zstd, bc, file, less, grep, vim, nano, curl, git, diffutils, patch, openssl from the WebAssembly catalog (URL and sha256 from the catalog)
+      - name: 7-Zip, qpdf, ImageMagick, ffmpeg, sqlite, jq, lua, zip, unzip, ripgrep, hashtools, sed, find, awk, tar, gzip, xz, bzip2, zstd, bc, file, less, grep, vim, nano, curl, git, diffutils, patch, make, openssl from the WebAssembly catalog (URL and sha256 from the catalog)
         run: |
-          for n in 7zip:7zz qpdf:qpdf imagemagick:magick ffmpeg:ffmpeg ffprobe:ffprobe sqlite:sqlite3 jq:jq lua5.4:lua zip:zip unzip:unzip ripgrep:rg hashtools:hashsum sed:sed findutils:find onetrue-awk:awk tar:bsdtar gzip:gzip xz:xz bzip2:bzip2 zstd:zstd bc:bc file:file less:less grep:grep vim:vim nano:nano curl:curl git:git diffutils:diff cmp:cmp patch:patch openssl:openssl; do
+          for n in 7zip:7zz qpdf:qpdf imagemagick:magick ffmpeg:ffmpeg ffprobe:ffprobe sqlite:sqlite3 jq:jq lua5.4:lua zip:zip unzip:unzip ripgrep:rg hashtools:hashsum sed:sed findutils:find onetrue-awk:awk tar:bsdtar gzip:gzip xz:xz bzip2:bzip2 zstd:zstd bc:bc file:file less:less grep:grep vim:vim nano:nano curl:curl git:git diffutils:diff cmp:cmp patch:patch make:make openssl:openssl; do
             e=$(awk -F '\t' -v n="${n%%:*}" '$1 == n' overlay/etc/inksoc/wasm-catalog); f=tests/${n#*:}.wasm
             curl -fsSL --retry 3 -o "$f" "$(printf '%s' "$e" | cut -f2)"
             echo "$(printf '%s' "$e" | cut -f3)  $f" | sha256sum -c
@@ -94,6 +94,18 @@ jobs:
       - name: python3 processes (item 78; subprocess/os.system through /dev/inksoc, WASM programs in worker threads)
         timeout-minutes: 6
         run: INK_SPAWN=1 INK_WASI_THREADS=1 timeout 300 node tests/linux-test.mjs engine-src/target/wasm32-unknown-unknown/release/inksoc.wasm
+      - name: clang from the WebAssembly catalog (item 77; the npm .tgz, URL and sha256 from the catalog)
+        timeout-minutes: 3
+        run: |
+          e=$(awk -F '\t' '$1 == "clang"' overlay/etc/inksoc/wasm-catalog)
+          timeout 150 curl -fsSL --retry 3 -o tests/clang.tgz "$(printf '%s' "$e" | cut -f2)"
+          echo "$(printf '%s' "$e" | cut -f3)  tests/clang.tgz" | sha256sum -c
+      - name: apk add clang, C to WASI programs, make drives clang (item 77; WASM programs in worker threads)
+        timeout-minutes: 12
+        run: INK_CLANG=1 INK_WASI_THREADS=1 timeout 660 node tests/linux-test.mjs engine-src/target/wasm32-unknown-unknown/release/inksoc.wasm
+      - name: WASM exnref fallback (item 89)
+        timeout-minutes: 2
+        run: node tests/exnref-fallback.mjs
       - name: Test the fresh build
         run: node tests/linux-test.mjs engine-src/target/wasm32-unknown-unknown/release/inksoc.wasm
       - name: Test the published engine.wasm
