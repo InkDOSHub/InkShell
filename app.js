@@ -53,7 +53,7 @@ $('calib').onclick = async () => {
   $('calib').disabled = true;
   await stop(true);
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=96');
+  const c = new Worker('worker.js?v=97');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -78,7 +78,7 @@ showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
   stop(false).then(() => {
-    const r = new Worker('worker.js?v=96');
+    const r = new Worker('worker.js?v=97');
     r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
     r.postMessage({ type: 'reset' });
   });
@@ -113,12 +113,20 @@ if (navigator.serviceWorker) {
   navigator.serviceWorker.register('sw.js?v=1').catch(() => {});
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (w) w.postMessage({ type: 'wasi-sw', on: swOn() }); });
 }
+// item 91 (debug, off unless the page URL has ?wasiprof=1): epoch-ms timestamps of each WebAssembly program's phases, collected in window.__wprof
+const WPROF = /[?&]wasiprof=1/.test(location.search), wnow = () => performance.timeOrigin + performance.now();
+window.__wprof = [];
+const wprofPage = new Map();
 function wasiEnd(pid) { const b = wasiWorkers.get(pid); if (b) { b.terminate(); wasiWorkers.delete(pid); } }
 function wasiStart(m) {
-  const b = new Worker('wasi-worker.js?v=93', { type: 'module' });
+  const pp = WPROF ? [['start-msg', wnow()]] : null, nb = m.bytes ? m.bytes.byteLength : 0;
+  if (pp) wprofPage.set(m.pid, pp);
+  const b = new Worker('wasi-worker.js?v=94', { type: 'module' });
+  if (pp) pp.push(['worker-new', wnow()]);
   wasiWorkers.set(m.pid, b);
   b.onmessage = (ev) => {
     if (ev.data.type === 'done') wasiEnd(m.pid);
+    else if (ev.data.type === 'prof') window.__wprof.push({ pid: m.pid, page: pp, worker: ev.data.prof, calls: ev.data.calls, bytes: nb, mod: !!m.module });
     else if (ev.data.type === 'slot' && wasiSlots.size < 256) wasiSlots.set(ev.data.key, ev.data.slot);
     else if (ev.data.type === 'module' && ev.data.module) {
       wasiMods.delete(ev.data.key); wasiMods.set(ev.data.key, ev.data.module);
@@ -128,6 +136,7 @@ function wasiStart(m) {
   b.onerror = () => wasiEnd(m.pid);
   m.slots = [...wasiSlots];
   if (m.key && wasiMods.has(m.key)) { m.module = wasiMods.get(m.key); wasiMods.delete(m.key); wasiMods.set(m.key, m.module); }
+  if (pp) { m.prof = true; pp.push(['post-worker', wnow()]); }
   b.postMessage(m, [m.bytes.buffer]);
 }
 let ctrl = false;
@@ -137,7 +146,7 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=96');
+  w = new Worker('worker.js?v=97');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;
@@ -152,7 +161,7 @@ function start() {
     else if (m.type === 'saved') term.write('\r\n\x1b[2m[files saved]\x1b[0m\r\n');
     else if (m.type === 'info') { pref.set('alpine-user', m.user || ''); }
     else if (m.type === 'wasi-start') wasiStart(m);
-    else if (m.type === 'wasi-end') wasiEnd(m.pid);
+    else if (m.type === 'wasi-end') { const pp = WPROF && wprofPage.get(m.pid); if (pp) { pp.push(['wend-msg', wnow()]); (window.__wprofEng ||= {})[m.pid] = m.prof; } wasiEnd(m.pid); if (pp) { pp.push(['terminated', wnow()]); wprofPage.delete(m.pid); } }
     else if (m.type === 'done') {
       term.write('\r\n\x1b[2m[' + (m.error ? 'stopped: ' + m.error : 'Linux ended') + ']\x1b[0m\r\n');
       if (w) w.terminate();
@@ -162,6 +171,7 @@ function start() {
     }
   };
   fit();
+  if (WPROF) w.postMessage({ type: 'wasi-prof', on: true });
   w.postMessage({ type: 'start', rows: term.rows, cols: term.cols, network, poolMb: budget().pool, targetMb: 8192, sw: swOn() });
   for (const [root, m] of mounted) { w.postMessage({ type: 'mount', root, list: m.list }); shareFiles(m); } // mounted before a restart
 }

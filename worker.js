@@ -138,7 +138,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   if (network in NETS) net = network;
   mark('run');
   wasiSw = !!sw; wasiOpen(Math.random().toString(36).slice(2));
-  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=22'); } catch (e) { wasiInline = null; } }
+  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=23'); } catch (e) { wasiInline = null; } }
   const swap = await openSwap(), ram = new Map();
   const page = (p) => new Uint8Array(mem.buffer, p, 4096);
   const env = {
@@ -282,6 +282,9 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
    a BroadcastChannel. Without a service worker the module runs here (wasi.js runWasi), blocking the
    terminal while it runs. ---- */
 let wasiSid = '', wasiBc = null, wasiSw = false, wasiInline = null;
+// item 91 (debug, page ?wasiprof=1): epoch-ms timestamps of the engine side of each WebAssembly program, by pid, sent with 'wasi-end'
+let wprof = false; const wpm = new Map(), wnow = () => performance.timeOrigin + performance.now();
+const wmark = (pid, ev) => { let r = wpm.get(pid); if (!r) wpm.set(pid, r = { P: [], svcN: 0, svcMs: 0 }); r.P.push([ev, wnow()]); return r; };
 const wasiWait = new Map(), wasiLive = new Set();
 let wake = null;
 const sleep = (ms) => new Promise((r) => { const t = setTimeout(() => { wake = null; r(); }, ms); wake = () => { clearTimeout(t); wake = null; r(); }; });
@@ -297,11 +300,14 @@ function wasiOpen(sid) {
     if (!x || !x.wasi_call) return;
     const b = new Uint8Array(e.data.body), n = new DataView(b.buffer).getUint32(0, true);
     const h = JSON.parse(dec.decode(b.subarray(4, 4 + n))), data = b.subarray(4 + n);
+    const s0 = wprof ? performance.now() : 0;
+    if (wprof && h.op === 'call' && h.nr === 231) wmark(h.pid, 'exit-call');
     if (h.op === 'call') {
       put(data);
       const a = [...(h.a || []), 0, 0, 0, 0, 0, 0];
       if (x.wasi_call(h.pid, h.nr, a[0], a[1], a[2], a[3], a[4], a[5], h.outLen || 0) !== 0) { wasiReply(e.data.id, { gone: 1 }); return; }
     }
+    if (wprof) { const r = wpm.get(h.pid); if (r) { r.svcN++; r.svcMs += performance.now() - s0; } }
     wasiWait.set(h.pid, { id: e.data.id, t: performance.now() });
     if (wake) wake();
   };
@@ -332,6 +338,7 @@ function wasiServe() {
 }
 function wasiPump() {
   for (let pid; (pid = x.wasi_next());) {
+    if (wprof) wmark(pid, 'next');
     const k = x.wasi_info(pid), info = new Uint8Array(mem.buffer, x.out_ptr(), k).slice();
     if (wasiSw) {
       const m = x.wasi_module(pid), bytes = new Uint8Array(mem.buffer, x.out_ptr(), m).slice();
@@ -339,7 +346,9 @@ function wasiPump() {
       const g = x.wasi_module_gen ? x.wasi_module_gen(pid) : 0;
       const z = info.indexOf(0), key = g ? `${wasiSid}:${g}:${m}:${new TextDecoder().decode(info.subarray(0, z < 0 ? info.length : z))}` : null;
       wasiLive.add(pid);
+      if (wprof) { const r = wmark(pid, 'read'); r.bytes = m; }
       postMessage({ type: 'wasi-start', pid, sid: wasiSid, info, bytes, key, base: x.wasi_base(), size: x.wasi_buf_size(), spawn: !!x.wasi_spawn }, [bytes.buffer]);
+      if (wprof) wmark(pid, 'posted');
     } else if (wasiInline) wasiInline.runWasi(x, pid, { serve: wasiServe });
     else { out('\r\n\x1b[2m[WebAssembly programs need a newer browser]\x1b[0m\r\n'); put(new Uint8Array(0)); x.wasi_call(pid, 231, 126, 0, 0, 0, 0, 0, 0); }
   }
@@ -350,7 +359,7 @@ function wasiPump() {
     if (n === -2) wasiReply(q.id, { gone: 1 });
     else wasiReply(q.id, { r: x.wasi_ret() }, n > 0 ? new Uint8Array(mem.buffer, x.out_ptr(), n).slice() : null);
   }
-  for (const pid of wasiLive) if (!x.wasi_alive(pid)) { wasiLive.delete(pid); postMessage({ type: 'wasi-end', pid }); }
+  for (const pid of wasiLive) if (!x.wasi_alive(pid)) { wasiLive.delete(pid); if (wprof) wmark(pid, 'dead'); postMessage({ type: 'wasi-end', pid, prof: wprof ? wpm.get(pid) : null }); wpm.delete(pid); }
 }
 
 onmessage = async (ev) => {
@@ -402,6 +411,7 @@ onmessage = async (ev) => {
   if (d.type === 'reset') { const root = await opfs(); if (root) { try { await root.removeEntry(SAVE); } catch (e) {} } postMessage({ type: 'reset' }); return; }
   if (d.type === 'calibrate') { calibrate(); return; }
   if (d.type === 'wasi-sw') { wasiSw = !!d.on; return; }
+  if (d.type === 'wasi-prof') { wprof = !!d.on; return; }
   if (d.type === 'start') { try { await run(d); } catch (e) { postMessage({ type: 'done', error: e.message }); } }
 };
 

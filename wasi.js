@@ -216,7 +216,8 @@ function slotOf(bytes, slots, onSlot, k) {
 
 /** Runs a WASI module whose calls go through `sys(nr, args, data, outLen) -> { r, out }`
  *  (a Linux call of the stub process; throws Exit when the process is gone). */
-export function runModule({ bytes, key = null, module = null, args, envs, base: BASE, size: SIZE, sys, inline = false, slots = slotCache, onSlot, mods = modCache, onModule, spawn: SPAWN = 0 }) {
+export function runModule({ bytes, key = null, module = null, args, envs, base: BASE, size: SIZE, sys, inline = false, slots = slotCache, onSlot, mods = modCache, onModule, spawn: SPAWN = 0, prof = null }) {
+  prof && prof('rm0'); // item 91: debug timestamps (page ?wasiprof=1), off by default
   const prog = jsProgram(bytes);
   if (prog) { // its exit code (a Promise of it when it works asynchronously, as WebCodecs does)
     const end = (c) => { try { sys(231, [c]); } catch {} return c; };
@@ -274,6 +275,7 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     const c = slot ? -1 : vroot >= 0 ? cwdFd : opendir(cwd);
     preopen(c >= 0 ? c : opendir('/'), '/');
   } catch { return -1; } // ended before it started
+  prof && prof('setup');
   const dirs = new Map(); // fd -> entries read by fd_readdir
   const tcp = new Map(); // fd of a "/dev/tcp/IP/PORT" socket -> idle read timeout in ms (-1: none)
   const ctls = new Map(); // fd of "/dev/inksoc" (the host channel, see ctlCall) -> { inb: text written, out: answer bytes }
@@ -445,7 +447,7 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
   };
   const done = ([err, n], np) => { if (!err) dv().setUint32(np, n, true); return err; };
   // the process ends: exit_group in the stub (its parent gets `code`)
-  const exit = (code) => { try { sys(231, [code]); } catch {} throw new Exit(code); };
+  const exit = (code) => { prof && prof('exit'); try { sys(231, [code]); } catch {} throw new Exit(code); };
   const w = {
     args_get: (a, b) => strings(args, a, b), args_sizes_get: (a, b) => sizes(args, a, b),
     environ_get: (a, b) => { // the "PWD=..." string, in the program's memory now, becomes its cwd
@@ -582,9 +584,11 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
   };
   let code = 0;
   try {
+    const msrc = prof ? (module ? 'msg' : key && mods.get(key) ? 'cache' : 'compile') : '';
     let mod = module || (key && mods.get(key));
     if (!mod) { try { if (globalThis.INKSHELL_NO_EXNREF) throw new WebAssembly.CompileError('test hook'); mod = new WebAssembly.Module(bytes); } catch (e) { if (e instanceof WebAssembly.CompileError && !hasExnref()) throw new NoExnref(); throw e; } if (key) { cacheModule(mods, key, mod); if (onModule) onModule(key, mod); } }
     else if (key) cacheModule(mods, key, mod);
+    prof && prof('mod:' + msrc);
     const imports = { wasi_snapshot_preview1: w, wasi_unstable: w };
     imports.inksoc = { // terminal control for full-screen programs (less): WASI has no ioctl. TCGETS / TCSETS (36 bytes, the kernel's struct termios) and TIOCGWINSZ; 0 = ok
       tty_get: (fd, p) => { const lfd = L(fd); if (lfd == null) return 1; const { r, out } = sys(16, [lfd, 0x5401, BASE], null, 36); if (r < 0 || !out) return 1; u8().set(out.subarray(0, 36), p); return 0; },
@@ -592,7 +596,9 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
       tty_size: (fd, p) => { const lfd = L(fd); if (lfd == null) return 1; const { r, out } = sys(16, [lfd, 0x5413, BASE], null, 8); if (r < 0 || !out) return 1; u8().set(out.subarray(0, 8), p); return 0; },
     };
     for (const i of WebAssembly.Module.imports(mod)) if (!imports[i.module]) imports[i.module] = {};
+    prof && prof('imports');
     inst = new WebAssembly.Instance(mod, imports);
+    prof && prof('inst');
     mem = inst.exports.memory;
     if (slot && !WebAssembly.Module.imports(mod).some((i) => i.name === 'environ_get')) { // no environ_get (a small C program: item 77): the folder goes in a page of its own
       try { const c = cstr(slot.cwd), at = mem.grow(1) * 65536; u8().set(c, at); if (dv().getUint32(slot.ptr, true) === slot.lit) dv().setUint32(slot.ptr, at, true); } catch {}
@@ -609,6 +615,7 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
       try { const m = enc.encode(`${args[0] || 'wasm'}: ${e.message}\n`); sys(1, [2, BASE, m.length], m); exit(code); } catch {}
     }
   }
+  prof && prof('ran');
   return code;
 }
 

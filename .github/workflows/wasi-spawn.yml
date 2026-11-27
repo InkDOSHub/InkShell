@@ -1,0 +1,37 @@
+name: WASI spawn profile
+# Item 91 (measure only): where the start of one WebAssembly program goes in the real page (engine Worker, one Worker per
+# program, service worker, Module cache). Chromium only, 2 reps of 50-spawn loops. Started by hand or when a PR touches these files.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/wasi-spawn.yml'
+      - 'tests/bench/wasi-spawn*'
+permissions:
+  contents: read
+concurrency:
+  group: wasi-spawn-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Catalog tools (coreutils, grep; sha256 checked)
+        run: |
+          mkdir -p out/tools
+          for n in coreutils grep; do
+            e=$(awk -F '\t' -v n=$n '$1 == n' overlay/etc/inksoc/wasm-catalog); [ -n "$e" ] || { echo "no catalog entry $n"; exit 1; }
+            timeout 300 curl -fsSL --retry 3 -o out/tools/$n "$(printf '%s' "$e" | cut -f2)"
+            echo "$(printf '%s' "$e" | cut -f3)  out/tools/$n" | sha256sum -c
+          done
+      - name: Playwright (Chromium)
+        run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium'
+      - name: Spawn phases
+        run: timeout 600 node tests/bench/wasi-spawn.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: wasi-spawn, path: out/wasi-spawn.*, if-no-files-found: ignore }
