@@ -138,7 +138,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   if (network in NETS) net = network;
   mark('run');
   wasiSw = !!sw; wasiOpen(Math.random().toString(36).slice(2));
-  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=19'); } catch (e) { wasiInline = null; } }
+  if (!wasiSw) { try { wasiInline = await import('./wasi.js?v=20'); } catch (e) { wasiInline = null; } }
   const swap = await openSwap(), ram = new Map();
   const page = (p) => new Uint8Array(mem.buffer, p, 4096);
   const env = {
@@ -173,7 +173,7 @@ async function run({ rows, cols, network, poolMb, targetMb, sw }) {
   const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(u + ': ' + r.status); return r; });
   const [wasm, busybox, overlay, saved] = await Promise.all([
     get('engine.wasm?v=51').then((r) => r.arrayBuffer()), get('busybox?v=1').then((r) => r.arrayBuffer()),
-    get('overlay.tar?v=40').then((r) => r.arrayBuffer()), loadSaved()]);
+    get('overlay.tar?v=42').then((r) => r.arrayBuffer()), loadSaved()]);
   mark('fetched');
   let rootfs = null;
   if (!saved) {

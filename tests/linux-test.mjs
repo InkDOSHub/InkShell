@@ -528,6 +528,10 @@ if (hasWasi) {
     await step(`printf '%s\\n' 'print("pil-open", a.format, a.size, a.mode, a.getpixel((20, 20)), b.format, b.size, b.mode)' 'c = b.resize((32, 24)); g = a.convert("L"); t = a.copy(); t.thumbnail((16, 16)); t.save("t.png")' 'print("pil-ops", c.size, g.mode, t.size, Image.open("t.png").size)' 'big = Image.new("RGB", (1024, 1024), (10, 20, 30)); t0 = time.time(); r = big.resize((512, 512), Image.LANCZOS)' 'print("pil-resize-ms", int((time.time() - t0) * 1000), r.size)' >> /tmp/pil/p.py && (cd /tmp/pil && python3 p.py)\n`,
       /pil-open PNG \(64, 48\) RGB \(0, 0, 255\) JPEG \(64, 48\) RGB\s+pil-ops \(32, 24\) L \(16, 12\) \(16, 12\)\s+pil-resize-ms \d+ \(512, 512\)/, 'python3: Pillow PNG/JPEG save and open, resize, convert, thumbnail');
     { const m = /pil-resize-ms (\d+)/.exec(out); if (m) console.log('Pillow resize 1024x1024 -> 512x512 LANCZOS (WebAssembly python3): ' + m[1] + ' ms'); }
+    // item 86: FreeType text (Pillow's embedded default font), WEBP and TIFF save + reopen, a fatal libjpeg error (bad Huffman table) is an OSError
+    await step(`printf '%s\\n' 'import io' 'from PIL import Image, ImageDraw, ImageFont' 'im = Image.new("L", (96, 32), 0); f = ImageFont.load_default(size=20)' 'ImageDraw.Draw(im).text((2, 2), "Ink", font=f, fill=255)' 'print("pil-ft", type(f).__name__, im.getbbox() is not None, im.getextrema())' 'im.convert("RGB").save("w.webp", quality=80); im.save("w.tif", compression="tiff_deflate")' 'w = Image.open("w.webp"); w.load(); t = Image.open("w.tif"); t.load()' 'print("pil-webp", w.format, w.size, "pil-tiff", t.format, t.size, list(t.getdata()) == list(im.getdata()))' > /tmp/pil/q.py; echo pil-w2\n`, /pil-w2\s/, 'python3: Pillow script 2 part 1');
+    await step(`printf '%s\\n' 'j = io.BytesIO(); im.convert("RGB").save(j, "JPEG"); k = bytearray(j.getvalue()); p = k.index(b"\\xff\\xc4")' 'for i in range(p + 5, p + 21): k[i] = 255' 'try:' '    Image.open(io.BytesIO(bytes(k))).load(); print("pil-jpeg no error")' 'except OSError as e:' '    print("pil-jpeg-err", type(e).__name__)' 'print("pil-alive")' >> /tmp/pil/q.py && (cd /tmp/pil && python3 q.py)\n`,
+      /pil-ft FreeTypeFont True \(0, \d+\)\s+pil-webp WEBP \(96, 32\) pil-tiff TIFF \(96, 32\) True\s+pil-jpeg-err OSError\s+pil-alive/, 'python3: Pillow FreeType text, WEBP/TIFF save and open, bad JPEG is an OSError');
   }
   if (tools.length) { // 7-Zip, qpdf, ImageMagick, ffmpeg, sqlite, jq, lua, zip, unzip from the catalog (local file:// mirrors), one apk add
     const lines = tools.map((t) => `${t.name}\\tfile:///root/${t.file}.wasm\\t${crypto.createHash('sha256').update(t.bytes).digest('hex')}\\t${t.bytes.length}\\tlicense\\t${t.progs.split(',').map((p) => '/usr/local/bin/' + p).join(',')}\\t${t.name}\\n`);
@@ -590,6 +594,10 @@ if (hasWasi) {
     // the same path absolute and relative in one command: the real /tmp/z.json and the folder's ./tmp/z.json (no guessing could tell them apart)
     await step("printf '{\"k\":\"out\"}' > /tmp/z.json && mkdir -p /tmp/jq2/tmp && printf '{\"k\":\"in\"}' > /tmp/jq2/tmp/z.json && cd /tmp/jq2 && jq -cM .k /tmp/z.json ./tmp/z.json; echo jq-same-done; cd\n",
       /^"out"\s+^"in"\s+^jq-same-done/m, 'jq: /tmp/z.json and ./tmp/z.json in the same command each open the right file');
+  }
+  if (hasTool('jq')) { // item 85: jq built with oniguruma (regex builtins)
+    await step("echo '\"abc\"' | jq -cM '[test(\"a.c\"), (capture(\"(?<x>b)c\").x), gsub(\"[ac]\";\"-\"), sub(\"b\";\"B\"), ([\"a,b;c\" | splits(\"[,;]\")]), ([match(\"[a-c]\";\"g\").string] | length)]'; jq -nM '\"x\" | test(\"y\")' ; echo jq-onig-done\n",
+      /^\[true,"b","-b-","aBc",\["a","b","c"\],3\]\s+^false\s+^jq-onig-done/m, 'jq: oniguruma regex builtins (test, capture, gsub, sub, splits, match)');
   }
   if (hasTool('ripgrep')) { // ripgrep: count, line number, list files of a folder, no match exits 1, stdin with "-"
     await step("mkdir -p /tmp/rg/s && cd /tmp/rg && printf 'alpha\\nbeta\\ngamma\\n' > s/a.txt && printf 'beta2\\n' > b.txt && rg --color never -c beta s/a.txt; rg --color never -n gam s/a.txt; rg --color never -l beta . | sort; rg --color never zzz s/a.txt; echo rg-rc=$?; printf 'x1\\ny\\n' | rg --color never x -; cd\n",
