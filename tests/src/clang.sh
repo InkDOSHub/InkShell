@@ -8,6 +8,7 @@ printf '#include <stdio.h>\nint main(int argc, char **argv) { printf("hello from
 echo "cc-t0=$($B cut -d' ' -f1 /proc/uptime)"
 clang hello.c -o hello; echo c1=$?
 echo "cc-t1=$($B cut -d' ' -f1 /proc/uptime)"
+clang -### hello.c -o hello 2>&1 | $B tail -n 2 | $B cut -c1-90 | $B sed "s/^/plan: /"
 ./hello a b; echo h1=$?
 echo "mode=$($B stat -c %A hello) magic=$($B head -c 4 hello | $B od -An -tx1 | $B tr -d ' ')"
 # a compile error: clang's message and a failing exit status

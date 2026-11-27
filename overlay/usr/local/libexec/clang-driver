@@ -40,9 +40,10 @@ while IFS= read -r line <&3; do
   [ -n "$line" ] || continue
   case $line in *'`'*) line=$(printf '%s\n' "$line" | sed 's/`/\\`/g') ;; esac # clang escapes " \ $ only
   eval "set -- $line"
-  [ -z "$1" ] && shift
+  # an in-process step is "EXE" "ARGV0" "-cc1"... (EXE = clang's real file, llvm.wasm, or ""): run ARGV0 from $B
+  case $2 in -*) ;; *) [ -z "$1" ] || [ ! -e "$B/${1##*/}" ] && shift ;; esac
   t=${1##*/}; shift
-  case $1 in -cc1*) t=clang ;; esac # the compile step names clang's real file (llvm.wasm): run it as clang
+  [ -e "$B/$t" ] || case $1 in -cc1*) t=clang ;; *) t=wasm-ld ;; esac
   exe=
   if [ "$t" = wasm-ld ]; then
     prev=; lc=
