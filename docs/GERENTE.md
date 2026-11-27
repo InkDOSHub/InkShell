@@ -61,7 +61,7 @@ InkShell = terminal Alpine Linux no navegador (WebKit do iPad/XeOS primeiro, iPh
 
 ## 6. Catálogo WASM (como se adiciona programa)
 - `overlay/etc/inksoc/wasm-catalog`, separado por TAB: nome, url, sha256, tamanho, licença, arquivos, descrição.
-- Cada item publica sua própria release `wasm-tools-N` só com os seus arquivos (usados: 15 bzip2/zstd, 16 diffutils sem uso, 17 bc/file, 18 less, 19 sem uso, 20 awk/lua/find (item 78), 22 qjs (item 79), 23 grep (item 80), 24 vim (item 74), 25 nano (item 81), 27 curl (item 82), 29 git (item 75), 34 python3 + Pillow (item 84; 33 = 1º build sem .pyc, sem uso); 21 era um vim antigo sem uso; 26 = 1º build do curl, sem uso; 28 = 1º build do git, sem uso: abria o $PAGER less).
+- Cada item publica sua própria release `wasm-tools-N` só com os seus arquivos (usados: 15 bzip2/zstd, 16 diffutils sem uso, 17 bc/file, 18 less, 19 sem uso, 20 awk/lua/find (item 78), 22 qjs (item 79), 23 grep (item 80), 24 vim (item 74), 25 nano (item 81), 27 curl (item 82), 29 git (item 75), 34 python3 + Pillow (item 84; 33 = 1º build sem .pyc, sem uso), 38 openssl (item 87); 21 era um vim antigo sem uso; 26 = 1º build do curl, sem uso; 28 = 1º build do git, sem uso: abria o $PAGER less).
 - python3 = build próprio desde o item 84 (`b_python3`: libpython da VMware religado com Pillow, `wasm-tools-34`); módulo C novo p/ python = embutir em `tools/wasm-tools/python/main.c` e religar.
 - Sem build/release: `py3-pip` (item 83) aponta direto para o wheel do PyPI (sha256 fixo); 8º campo do catálogo = nomes instalados junto (`python3` → `py3-pip`).
 - Build: `tools/wasm-tools/build.sh` (funções `b_<nome>`), `.github/workflows/wasm-tools.yml` (TAG/PREV, matriz), licença em `THIRD_PARTY_LICENSES.md`.
@@ -78,7 +78,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 - Limite de 5 horas da conta pode parar workers no meio: retomar depois que liberar.
 
 ## 9. Estado atual (atualizar a cada merge)
-- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 80, 74, 81, 82, 75, 83, 84, 71 feitos; 62, 65, 66 travados.
+- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 80, 74, 81, 82, 75, 83, 84, 71, 87 feitos; 62, 65, 66 travados.
 - **Rodando**: — (gerente: sessão 013qXTaN, 27/11)
 - **Fila por uso (dono, 26/11: "siga essa ordem"; apps mais usados no terminal Linux que ainda estão incompletos aqui)**:
   1. ~~74 vim (2)~~ feito (#113)
@@ -98,6 +98,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
+- 2026-11-27 | #130 | 87 openssl em WASM | `wasm-tools-38` só com openssl.wasm (OpenSSL 3.5.4, Apache-2.0, 4,2 MB); `apk add openssl` = `/usr/local/bin/openssl-wasm` atrás do wrapper `openssl` do overlay (s_client segue no helper x86 p/ wget https; `/etc/inksoc/openssl.cnf` p/ `req`); dgst/enc -pbkdf2/rand/genpkey/req -x509/x509/passwd/base64 no teste Linux leve; sem s_client/s_server | 77 clang + make
 - 2026-11-27 | #123 | 71 diffutils + patch GNU em WASM | wasm-tools-30 (diff, cmp, diff3, sdiff 3.12) e -31 (patch 2.8.1, sem fchmodat); GPL-3.0 como programas separados, fonte nas releases; `apk add diffutils` traz cmp/diff3/sdiff; Chromium 10 MB: diff 13398 -> 225 ms (59x), diff -u 102x, cmp 36x, sem abort (uutils dava 134) | 77 clang + make
 - 2026-11-27 | #126 | 84 Pillow no python WASM | python3 do catálogo religado (`wasm-tools-34`): libpython 3.12.0 da VMware + Pillow 11.3.0 (módulos C embutidos, WASI sem dlopen) + libjpeg-turbo 3.0.4, wasi-sdk 20, wasi-vfs 0.4.0, wasm-opt -O2; PNG/JPEG abrir/salvar, resize, thumbnail, convert no teste Linux leve; resize 1024²→512² LANCZOS 36 ms WASM vs 16 ms nativo (2,3x); script inteiro ~1,2 s; 1 rodada de CI; rede/processos/pip do python seguem no teste | 71 diff / 77 clang
 - 2026-11-27 | — | troca de gerente | sessão 013qXTaN assume; #123 (71) parado sem CI desde 00:27 (configure do diffutils em cross-compile) retomado; dono: sem limite de crédito hoje, ≥2 em paralelo | 71 + 84 em paralelo, depois 77
