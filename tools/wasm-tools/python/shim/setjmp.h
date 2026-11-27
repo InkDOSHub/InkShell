@@ -1,11 +1,21 @@
-/* InkShell (item 84): wasi-sdk 20 has no setjmp/longjmp, and the program is packed by wasi-vfs (wizer), which
-   takes no wasm exception instructions. Pillow's JPEG coder only longjmps on a fatal libjpeg error
-   (garbage data, not a truncated file: that is a warning): report it and end the program. */
+/* InkShell (item 86): the wasi-sdk 20 sysroot (libpython's) has no setjmp.h. The Pillow JPEG coders and FreeType are
+   compiled by wasi-sdk 33's clang with -mllvm -wasm-enable-sjlj (wasm exception handling, exnref) and linked with
+   wasi-sdk 33's libsetjmp, so libjpeg's error_exit longjmps back into Pillow and a fatal error is a Python OSError.
+   Same layout as wasi-libc's jmp_buf. */
 #ifndef INK_SETJMP_H
 #define INK_SETJMP_H
-#include <stdio.h>
-#include <stdlib.h>
-typedef int jmp_buf[1];
-#define setjmp(b) ((void)(b), 0)
-#define longjmp(b, v) (fputs("python3: fatal JPEG error (libjpeg); the WebAssembly build cannot recover\n", stderr), exit(1))
+#ifdef __cplusplus
+extern "C" {
+#endif
+typedef struct __jmp_buf_tag {
+    unsigned long __jb[8];
+    unsigned long __fl;
+    unsigned long __ss[128 / sizeof(long)];
+} jmp_buf[1];
+int setjmp(jmp_buf) __attribute__((__returns_twice__));
+_Noreturn void longjmp(jmp_buf, int);
+#define setjmp setjmp
+#ifdef __cplusplus
+}
+#endif
 #endif
