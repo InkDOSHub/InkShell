@@ -75,6 +75,7 @@ if (hasPip) {
   if (fs.existsSync(sixWhl)) add('six.whl', fs.readFileSync(sixWhl));
 }
 add('procs.sh', fs.readFileSync(new URL('./src/procs.sh', import.meta.url))); // item 78 (INK_SPAWN): awk, lua, find
+add('make.sh', fs.readFileSync(new URL('./src/make.sh', import.meta.url))); // item 77a (INK_SPAWN): GNU make, recipes through /dev/inksoc
 add('curl-e.cgi', enc.encode('#!/bin/sh\nprintf \'Content-Type: text/plain\\r\\n\\r\\n\'\necho "m=$REQUEST_METHOD ua=$HTTP_USER_AGENT"\nhead -c "${CONTENT_LENGTH:-0}"\necho\n')); // item 82 (INK_CURL): a CGI of busybox httpd that echoes a POST
 // tools from the catalog (test.yml downloads them to tests/NAME.wasm, sha256 checked): [catalog name, file, programs]
 const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagick', 'magick', 'magick,convert,identify'], ['ffmpeg', 'ffmpeg', 'ffmpeg'], ['ffprobe', 'ffprobe', 'ffprobe'],
@@ -83,7 +84,7 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
   ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat'],
   ['bzip2', 'bzip2', 'bzip2,bunzip2,bzcat'], ['zstd', 'zstd', 'zstd,unzstd,zstdcat'],
-  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['nano', 'nano', 'nano'], ['curl', 'curl', 'curl'], ['git', 'git', 'git']]
+  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['nano', 'nano', 'nano'], ['curl', 'curl', 'curl'], ['git', 'git', 'git'], ['make', 'make', 'make']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -406,6 +407,23 @@ if (process.env.INK_SPAWN) { // item 78: processes from WebAssembly programs (ho
       const k = re.test(got2); ok = ok && k; console.log((k ? 'PASS ' : 'FAIL ') + 'tool processes: ' + name);
     }
     console.log('tool processes in ' + ((Date.now() - t2) / 1000).toFixed(1) + ' s\n' + got2.slice(-1500));
+  }
+  if (hasTool('make')) { // item 77a: GNU make 4.4.1 in WebAssembly; every recipe line is a child through /dev/inksoc (x86 busybox sh/sed/cat; $(MAKE) is WebAssembly)
+    const t4 = Date.now(), f4 = out.length;
+    send('sh /root/make.sh; echo done-make-$?\n');
+    while (!/done-make-\d/.test(out.slice(f4)) && Date.now() - t4 < 150000) await settle(5000);
+    const got4 = out.slice(f4).replace(/\x1b\[[0-9;?>]*[A-Za-z]/g, '').replace(/\r/g, '');
+    for (const [re, name] of [[/r1=0[\s\S]*all-done shell-ok mk-name[\s\S]*n1=2\s+total=p-hello p-world /, 'variables, include, $(shell), $(wildcard), pattern rule, phony target'],
+        [/'total\.txt' is up to date\.\s+r2=0/, 'nothing to remake'], [/r3=0\s+n3=1 b3=1/, 'touch one input: only its target remade'],
+        [/r4=0\s+n4=1 a4=1 stale=1/, '-n prints without running'], [/before-fail[\s\S]*Error 1[\s\S]*rf=2/, 'failing recipe: exit status 2'],
+        [/rk=2\s+k5=1 never=0/, '-k keeps going with other targets'], [/in-sub \/tmp\/mk\/sub[\s\S]*rc=0/, '-C dir'],
+        [/Entering directory '\/tmp\/mk\/sub'[\s\S]*in-sub \/tmp\/mk\/sub[\s\S]*rr=0/, 'recursive $(MAKE) -C (WebAssembly child)'],
+        [/rj=0\s+j6=2 total6=p-hello p-world /, '-j2'], [/r50=0 n50=50/, '50 targets'], [/make-end[\s\S]*done-make-0/, 'script ends']]) {
+      const k = re.test(got4); ok = ok && k; console.log((k ? 'PASS ' : 'FAIL ') + 'make: ' + name);
+    }
+    const u0 = /mk50-t0=([\d.]+)/.exec(got4), u1 = /mk50-t1=([\d.]+)/.exec(got4);
+    console.log('make in ' + ((Date.now() - t4) / 1000).toFixed(1) + ' s\n' + got4.slice(-2500));
+    if (u0 && u1) console.log(`  [make: 50 targets (WebAssembly make, 50 x86 sh children): ${Math.round((u1[1] - u0[1]) * 1000)} ms]`);
   }
   if (hasTool('git')) { // item 75 (information only): git stash starts git children (update-index, diff-tree...) through /dev/inksoc
     const t3 = Date.now(), f3 = out.length;
