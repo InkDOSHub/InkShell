@@ -505,7 +505,7 @@ b_python3() { # python3 = CPython 3.12.0 (PSF-2.0) from VMware Labs' libpython (
       cp "$WORK/libjpeg/jpeglib.h" "$WORK/libjpeg/jmorecfg.h" "$WORK/libjpeg/jerror.h" "$py/jpeg-b/jconfig.h" "$jp/include/"
   fi
   z=$py/zinc # zlib headers only: libpython has zlib inside
-  [ -f "$z/zlib.h" ] || { mkdir -p "$z" && curl -fsSL --retry 3 https://zlib.net/fossils/zlib-$ZLIB.tar.gz | tar -xz -C "$z" --strip-components=1; }
+  [ -f "$z/zlib.h" ] || { mkdir -p "$z" && curl -fsSL --retry 3 https://github.com/madler/zlib/releases/download/v$ZLIB/zlib-$ZLIB.tar.gz | tar -xz -C "$z" --strip-components=1; }
   s=$py/pillow/src; o=$py/obj; rm -rf "$o"; mkdir -p "$o"; n=0
   for f in "$s"/_imaging.c "$s"/decode.c "$s"/encode.c "$s"/map.c "$s"/display.c "$s"/outline.c "$s"/path.c "$s"/libImaging/*.c "$s"/_imagingmath.c "$s"/_imagingmorph.c; do
     $c20 -O2 -w -I"$here/python/shim" -I"$py/lp/include/python3.12" -I"$jp/include" -I"$z" -I"$s" -I"$s/libImaging" \
