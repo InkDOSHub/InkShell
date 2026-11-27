@@ -43,3 +43,21 @@ script-read-100	sh	while read a b c; do x="$a-$b"; case $x in line5*) y=$c;; esa
 script-read-ext-50	sh cut	head -n 50 $D/l100.txt | while read a b c; do echo $a | cut -c1-3 > /dev/null; done
 loop-basename-100	basename	i=0; while [ $i -lt 100 ]; do basename /a/b/c.txt > /dev/null; i=$((i + 1)); done
 pipeline	cat sort uniq head	cat $D/words.txt | cut -d, -f2 | sort | uniq -c | sort -rn | head -n 3 > /dev/null
+bb-sort	busybox	busybox sort -t, -k3,3n $D/words.txt > /dev/null
+bb-wc	busybox	busybox wc -l $D/words.txt
+bb-cut	busybox	busybox cut -d, -f2 $D/words.txt > /dev/null
+bb-tr	busybox	busybox tr a-z A-Z < $D/words.txt > /dev/null
+bb-uniq	busybox	busybox cut -d, -f2 $D/words.txt | busybox uniq -c > /dev/null
+bb-sed	busybox	busybox sed 's/word/WORD/' $D/words.txt > /dev/null
+bb-awk	busybox	busybox awk -F, '{ s += $3 } END { print s }' $D/words.txt
+bb-grep	busybox	busybox grep -c word1 $D/words.txt
+bb-find	busybox	busybox find $D/many -name "f1*" > /dev/null
+bb-tar-c	busybox	busybox tar cf $D/o.tar -C $D many
+bb-tar-t	busybox	busybox tar tf $D/a.tar > /dev/null
+bb-gzip	busybox	busybox gzip -c $D/words.txt > /dev/null
+bb-gunzip	busybox	busybox gzip -dc $D/words.gz > /dev/null
+bb-md5sum	busybox	busybox md5sum $D/words.txt
+loop-cut-50	cut	i=0; while [ $i -lt 50 ]; do echo abc | cut -c1-2 > /dev/null; i=$((i + 1)); done
+bb-loop-cut-50	busybox	i=0; while [ $i -lt 50 ]; do echo abc | busybox cut -c1-2 > /dev/null; i=$((i + 1)); done
+loop-grep-50	grep	i=0; while [ $i -lt 50 ]; do echo abc | grep -c b > /dev/null; i=$((i + 1)); done
+bb-loop-grep-50	busybox	i=0; while [ $i -lt 50 ]; do echo abc | busybox grep -c b > /dev/null; i=$((i + 1)); done

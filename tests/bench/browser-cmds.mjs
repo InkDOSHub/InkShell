@@ -1,5 +1,5 @@
 // Item 88: which everyday commands still run on x86 (busybox) in the VM, and how slow, vs the same command on the native runner.
-// (round 1 of 2)
+// (round 2 of 2)
 // Chromium only, 2 reps in the VM (1st = cold: WASM tools compile on first use; 2nd = warm), native = median of 5 runs of `sh -c`.
 // usage (repo root, CI): node tests/bench/browser-cmds.mjs
 // needs out/ztools.tar (usr/local/bin/<tool> + symlinks), out/browser-cmds.sh, out/cmds.tsv, out/cmds-setup.sh.
@@ -27,7 +27,7 @@ spawnSync('sh', ['tests/bench/cmds-setup.sh'], { env, stdio: 'ignore' });
 const nat = {};
 for (const [n, , c] of rows) {
   const ts = [];
-  for (let i = 0; i < 5; i++) { const t = performance.now(); const r = spawnSync('sh', ['-c', c], { env, stdio: 'ignore', cwd: D, timeout: 60000 }); ts.push([performance.now() - t, r.status]); }
+  for (let i = 0; i < 5; i++) { const t = performance.now(); const r = spawnSync('sh', ['-c', c.replace(/busybox /g, '')], { env, stdio: 'ignore', cwd: D, timeout: 60000 }); ts.push([performance.now() - t, r.status]); }
   ts.sort((a, b) => a[0] - b[0]); nat[n] = { ms: ts[2][0], rc: ts[2][1] };
 }
 const b = await chromium.launch();
@@ -48,13 +48,14 @@ await b.close().catch(() => {});
 srv.close();
 console.log(res.lines.map(([t, l]) => `${t}\t${l}`).join('\n'));
 if (res.err) console.log('ERR: ' + res.err);
-const o = {}, reps = {}, rc = {}, which = {}; let setup = '';
+const o = {}, reps = {}, rc = {}, which = {}, outs = {}; let setup = '';
 for (const [t, l] of res.lines) {
   let m;
   if ((m = /^@@T begin:(\S+)\.(\d+)$/.exec(l))) o[m[1] + '.' + m[2]] = t;
   else if ((m = /^@@T end:(\S+)\.(\d+)$/.exec(l)) && o[m[1] + '.' + m[2]] != null) (reps[m[1]] ||= [])[+m[2] - 1] = t - o[m[1] + '.' + m[2]];
   else if ((m = /^@@RC (\S+)\.(\d+) (\d+)$/.exec(l))) (rc[m[1]] ||= [])[+m[2] - 1] = +m[3];
   else if ((m = /^@@V which-(\S+)(.*)$/.exec(l))) which[m[1]] = m[2].trim().split(/\s+/).filter(Boolean);
+  else if ((m = /^@@V out-(\S+) (.*)$/.exec(l))) outs[m[1]] = m[2];
   else if ((m = /^@@V setup (.*)$/.exec(l))) setup = m[1];
 }
 // where a program runs: /usr/local/bin = WebAssembly; a bare name = shell builtin; anything else = x86 (busybox or Alpine binary)
@@ -71,9 +72,15 @@ const L = [`## Everyday commands: x86 (busybox) vs WASM vs native, Chromium ${re
   `Chromium (Playwright, ubuntu runner), engine + Alpine in a module Worker, ${POOL} MB pool, every small catalog WASM tool installed (coreutils, hashtools, sed, findutils, onetrue-awk, tar, gzip, xz, bzip2, grep, diffutils, cmp, patch, less, bc, file, jq, curl, zip, unzip). VM: 2 reps of \`sh -c CMD\` (cold = 1st, includes the WASM compile; warm = 2nd). Native: median of 5 \`sh -c CMD\` (dash + GNU tools) on the runner. "x native" = warm / native (native floored at 0.5 ms). Setup: ${setup}.`, '',
   '| command | runs on | programs | VM cold ms | VM warm ms | native ms | x native | rc VM/nat |', '|---|---|---|---:|---:|---:|---:|---|'];
 for (const r of T) L.push(`| ${r.n} | ${r.where} | ${r.w} | ${f(r.cold)} | ${f(r.warm)} | ${f(r.nat)} | ${r.x == null ? 'n/a' : r.x.toFixed(0) + 'x'} | ${r.rc}/${r.nrc} |`);
-const rank = T.filter((r) => r.where === 'x86' || r.where === 'builtin').sort((a, b) => (b.warm ?? 0) - (a.warm ?? 0));
+const by = Object.fromEntries(T.map((r) => [r.n, r]));
+const P = T.filter((r) => by['bb-' + r.n]);
+L.push('', '### Same command, WASM (catalog) vs busybox x86 (`busybox X`), VM warm ms', '', '| command | WASM ms | busybox x86 ms | WASM/x86 | native ms |', '|---|---:|---:|---:|---:|');
+for (const r of P) { const b = by['bb-' + r.n]; L.push(`| ${r.n} | ${f(r.warm)} | ${f(b.warm)} | ${(r.warm / b.warm).toFixed(1)}x | ${f(r.nat)} |`); }
+for (const k of ['cut', 'grep']) { const w = by['loop-' + k + '-50'], b = by['bb-loop-' + k + '-50']; if (w && b) L.push('', `50 spawns of ${k} in a shell loop: WASM ${f(w.warm)} ms (${f(w.warm / 50)} ms each) vs busybox x86 ${f(b.warm)} ms (${f(b.warm / 50)} ms each).`); }
+const rank = T.filter((r) => !r.n.startsWith('bb-') && (r.where === 'x86' || r.where === 'builtin')).sort((a, b) => (b.warm ?? 0) - (a.warm ?? 0));
 L.push('', '### Ranked: slowest commands that do not run on WASM (x86 busybox or the x86 shell itself), by VM warm ms', '', '| # | command | runs on | VM warm ms | x native |', '|---:|---|---|---:|---:|');
 rank.forEach((r, i) => L.push(`| ${i + 1} | ${r.n} | ${r.where} | ${f(r.warm)} | ${r.x == null ? 'n/a' : r.x.toFixed(0) + 'x'} |`));
+const bad = Object.entries(outs); if (bad.length) L.push('', '### Output of commands that failed in the VM', '', ...bad.map(([k, v]) => `- ${k}: \`${v}\``));
 if (!res.done) L.push('', 'Did not finish: ' + (res.err || 'timeout'));
 const md = L.join('\n');
 console.log(md);

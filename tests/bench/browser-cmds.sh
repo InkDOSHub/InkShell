@@ -16,7 +16,7 @@ while IFS='	' read -r n p c; do
   i=1
   while [ $i -le $R ]; do
     m begin:$n.$i; sh -c "$c" > /tmp/o.$n 2>&1 < /dev/null; rc=$?; m end:$n.$i
-    echo "@@RC $n.$i $rc"; i=$((i + 1))
+    echo "@@RC $n.$i $rc"; [ $rc = 0 ] || echo "@@V out-$n $(busybox head -c 300 /tmp/o.$n | busybox tr '\n\r' '  ')"; i=$((i + 1))
   done
 done < /root/cmds.tsv
 echo "@@T done"
