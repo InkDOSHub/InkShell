@@ -293,24 +293,38 @@ function wpack(h, data) {
   new DataView(b.buffer).setUint32(0, j.length, true); b.set(j, 4); b.set(d, 4 + j.length); return b;
 }
 function wasiReply(id, h, data) { const b = wpack(h, data); wasiBc.postMessage({ id, body: b.buffer }, [b.buffer]); }
+/** One call of a program Worker (packed [u32 len][JSON header][data]); rep(h, data) answers it (BroadcastChannel to the
+ *  service worker, or item 94's shared buffer). */
+function wasiReq(body, rep) {
+  if (!x || !x.wasi_call) return;
+  const b = new Uint8Array(body), n = new DataView(b.buffer, b.byteOffset).getUint32(0, true);
+  const h = JSON.parse(dec.decode(b.subarray(4, 4 + n))), data = b.subarray(4 + n);
+  const s0 = wprof ? performance.now() : 0;
+  if (wprof && h.op === 'call' && h.nr === 231) wmark(h.pid, 'exit-call');
+  if (h.op === 'call') {
+    put(data);
+    const a = [...(h.a || []), 0, 0, 0, 0, 0, 0];
+    if (x.wasi_call(h.pid, h.nr, a[0], a[1], a[2], a[3], a[4], a[5], h.outLen || 0) !== 0) { rep({ gone: 1 }); return; }
+  }
+  if (wprof) { const r = wpm.get(h.pid); if (r) { r.svcN++; r.svcMs += performance.now() - s0; } }
+  wasiWait.set(h.pid, { rep, t: performance.now() });
+  if (wake) wake();
+}
 function wasiOpen(sid) {
   if (wasiBc) wasiBc.close();
   wasiSid = sid; wasiBc = new BroadcastChannel('inkshell-wasi-' + sid);
-  wasiBc.onmessage = (e) => {
-    if (!x || !x.wasi_call) return;
-    const b = new Uint8Array(e.data.body), n = new DataView(b.buffer).getUint32(0, true);
-    const h = JSON.parse(dec.decode(b.subarray(4, 4 + n))), data = b.subarray(4 + n);
-    const s0 = wprof ? performance.now() : 0;
-    if (wprof && h.op === 'call' && h.nr === 231) wmark(h.pid, 'exit-call');
-    if (h.op === 'call') {
-      put(data);
-      const a = [...(h.a || []), 0, 0, 0, 0, 0, 0];
-      if (x.wasi_call(h.pid, h.nr, a[0], a[1], a[2], a[3], a[4], a[5], h.outLen || 0) !== 0) { wasiReply(e.data.id, { gone: 1 }); return; }
-    }
-    if (wprof) { const r = wpm.get(h.pid); if (r) { r.svcN++; r.svcMs += performance.now() - s0; } }
-    wasiWait.set(h.pid, { id: e.data.id, t: performance.now() });
-    if (wake) wake();
+  wasiBc.onmessage = (e) => wasiReq(e.data.body, (h, data) => wasiReply(e.data.id, h, data));
+}
+/** Item 94 (cross-origin isolated page): a program Worker's calls come on its own MessagePort and the answer goes into
+ *  a SharedArrayBuffer the Worker waits on (Atomics.wait): [i32 ready][i32 length][packed answer]. No service worker hop. */
+function wasiPort(port, sab) {
+  const i32 = new Int32Array(sab, 0, 2), u8 = new Uint8Array(sab, 8);
+  const rep = (h, data) => {
+    let b = wpack(h, data);
+    if (b.length > u8.length) b = wpack({ gone: 1 });
+    u8.set(b); Atomics.store(i32, 1, b.length); Atomics.store(i32, 0, 1); Atomics.notify(i32, 0);
   };
+  port.onmessage = (e) => wasiReq(e.data, rep);
 }
 /* Without a service worker the program runs here, blocked, so the page's mdata/put messages cannot arrive.
    The page shares the device files (File objects, 'mfiles') beforehand and the pieces the kernel asks for
@@ -358,10 +372,10 @@ function wasiPump() {
   }
   for (const [pid, q] of wasiWait) {
     const n = x.wasi_take(pid);
-    if (n === -1) { if (performance.now() - q.t > 15000) { wasiWait.delete(pid); wasiReply(q.id, { pending: 1 }); } continue; }
+    if (n === -1) { if (performance.now() - q.t > 15000) { wasiWait.delete(pid); q.rep({ pending: 1 }); } continue; }
     wasiWait.delete(pid);
-    if (n === -2) wasiReply(q.id, { gone: 1 });
-    else wasiReply(q.id, { r: x.wasi_ret() }, n > 0 ? new Uint8Array(mem.buffer, x.out_ptr(), n).slice() : null);
+    if (n === -2) q.rep({ gone: 1 });
+    else q.rep({ r: x.wasi_ret() }, n > 0 ? new Uint8Array(mem.buffer, x.out_ptr(), n).slice() : null);
   }
   for (const pid of wasiLive) if (!x.wasi_alive(pid)) { wasiLive.delete(pid); if (wprof) wmark(pid, 'dead'); postMessage({ type: 'wasi-end', pid, prof: wprof ? wpm.get(pid) : null }); wpm.delete(pid); }
 }
@@ -369,6 +383,7 @@ function wasiPump() {
 onmessage = async (ev) => {
   const d = ev.data;
   if (d.type === 'key') { keys.push(d.data); return; }
+  if (d.type === 'wasi-port') { wasiPort(d.port, d.sab); return; }
   if (d.type === 'wasi-mods') { wasiHeld = new Set(d.keys); return; }
   if (d.type === 'wasi-bytes') { // the page no longer holds that Module: the start again, with the bytes
     if (lx && wasiLive.has(d.pid) && x.wasi_alive(d.pid)) { const k = x.wasi_info(d.pid); wasiStartMsg(d.pid, new Uint8Array(mem.buffer, x.out_ptr(), k).slice(), true); }

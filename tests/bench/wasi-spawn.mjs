@@ -27,6 +27,11 @@ const send = (t) => p.evaluate((t) => send(t), t);
 const fail = async (m) => { console.log('FAIL ' + m); await b.close().catch(() => {}); srv.kill(); process.exit(1); };
 await p.goto(`http://localhost:${PORT}/index.html?wasiprof=1`);
 if (!(await p.waitForFunction(() => !!(navigator.serviceWorker && navigator.serviceWorker.controller), null, { timeout: 30000 }).then(() => true, () => false))) await fail('no service worker');
+// item 94: a second load (through the service worker: COOP/COEP) is cross-origin isolated = SharedArrayBuffer channel
+await p.reload();
+await p.waitForFunction(() => !!(navigator.serviceWorker && navigator.serviceWorker.controller), null, { timeout: 30000 }).catch(() => {});
+const coi = await p.evaluate(() => self.crossOriginIsolated);
+console.log('crossOriginIsolated: ' + coi);
 await p.evaluate(() => { if (!w) start(); });
 if (!(await until(/New UNIX username/))) await fail('boot');
 await send('tester\r'); await until(/New password/); await send('pw1\r'); await until(/Retype/); await send('pw1\r');
@@ -54,18 +59,20 @@ const loops = [
   ['wasm cut (coreutils 9 MB)', `i=0; while [ $i -lt ${N} ]; do echo abc | ./coreutils cut -c1-2 > /dev/null; i=$((i + 1)); done`],
   ['wasm true (coreutils 9 MB)', `i=0; while [ $i -lt ${N} ]; do ./coreutils true; i=$((i + 1)); done`],
   ['wasm grep (0.7 MB)', `i=0; while [ $i -lt ${N} ]; do echo abc | ./grep -c b > /dev/null; i=$((i + 1)); done`],
-  // item 93: the same with the page's Module hand-over off (debug window.__wasiNoMod: bytes sent, each Worker compiles; cwd slot still cached)
-  ['wasm grep, no Module msg', `i=0; while [ $i -lt ${N} ]; do echo abc | ./grep -c b > /dev/null; i=$((i + 1)); done`, 1],
-  ['wasm cut, no Module msg', `i=0; while [ $i -lt ${N} ]; do echo abc | ./coreutils cut -c1-2 > /dev/null; i=$((i + 1)); done`, 1],
+  // item 94: the same with the calls through the service worker (debug __wasiNoSab), and also without the spare Worker (= before 94)
+  ['wasm cut, XHR via service worker', `i=0; while [ $i -lt ${N} ]; do echo abc | ./coreutils cut -c1-2 > /dev/null; i=$((i + 1)); done`, { nosab: 1 }],
+  ['wasm grep, XHR via service worker', `i=0; while [ $i -lt ${N} ]; do echo abc | ./grep -c b > /dev/null; i=$((i + 1)); done`, { nosab: 1 }],
+  ['wasm cut, XHR + no spare Worker (before 94)', `i=0; while [ $i -lt ${N} ]; do echo abc | ./coreutils cut -c1-2 > /dev/null; i=$((i + 1)); done`, { nosab: 1, nopool: 1 }],
+  ['wasm grep, XHR + no spare Worker (before 94)', `i=0; while [ $i -lt ${N} ]; do echo abc | ./grep -c b > /dev/null; i=$((i + 1)); done`, { nosab: 1, nopool: 1 }],
   ['wasm grep again (Module msg)', `i=0; while [ $i -lt ${N} ]; do echo abc | ./grep -c b > /dev/null; i=$((i + 1)); done`],
   ['busybox cut (x86)', `i=0; while [ $i -lt ${N} ]; do echo abc | busybox cut -c1-2 > /dev/null; i=$((i + 1)); done`],
   ['busybox true (x86)', `i=0; while [ $i -lt ${N} ]; do busybox true; i=$((i + 1)); done`],
 ];
 const out = [];
 let k = 0;
-for (const [name, cmd, nomod] of loops) for (let rep = 1; rep <= REPS; rep++) {
+for (const [name, cmd, opt = {}] of loops) for (let rep = 1; rep <= REPS; rep++) {
   const tag = 'L' + (++k);
-  await p.evaluate((nm) => { window.__wprof.length = 0; window.__wprofEng = {}; window.__wasiNoMod = !!nm; if (typeof wasiHeldKeys === 'function') wasiHeldKeys(); }, nomod);
+  await p.evaluate((o) => { window.__wprof.length = 0; window.__wprofEng = {}; window.__wasiNoMod = !!o.nomod; window.__wasiNoSab = !!o.nosab; window.__wasiNoPool = !!o.nopool; if (typeof wasiHeldKeys === 'function') wasiHeldKeys(); }, opt);
   const r = await p.evaluate(({ cmd, tag }) => new Promise((ok) => {
     const t0 = performance.now(), re = new RegExp('DONE-' + tag + '-0'), lim = t0 + 60000;
     const chk = () => {
@@ -108,7 +115,7 @@ const PH = [
   ['whole Worker side: page start-msg -> exit mark', (s) => ev(s.w, 'exit') - ev(s.pg, 'start-msg')],
   ['engine: exit call -> kernel marks the process dead (pump sees !alive)', (s) => ev(s.e, 'dead') - ev(s.e, 'exit-call')],
 ];
-const L = ['## Item 91: where one WebAssembly program start goes (real page, Chromium ' + b.version?.() + ')', '',
+const L = ['## Item 91/94: where one WebAssembly program start goes (real page, Chromium ' + b.version?.() + ', crossOriginIsolated ' + coi + ')', '',
   `Real page (index.html?wasiprof=1) + service worker, 2 reps of ${N}-spawn shell loops (\`i=0; while [ $i -lt ${N} ]; ...\`). Wall = the whole loop from typing to the "done" line (rAF polling); per spawn = wall / ${N} (shell loop + fork + execve + program + wait included). Phases = median ms over the spawns of the 2nd rep (the 1st spawn of a file compiles/caches); timestamps are epoch ms from the engine Worker, the page and the program Worker.`, ''];
 L.push('| loop | rep | wall ms | ms per spawn | WASM spawns seen |', '|---|---:|---:|---:|---:|');
 for (const o of out) L.push(`| ${o.name} | ${o.rep} | ${f(o.ms)} | ${f(o.ms / N)} | ${o.prof.progs.length} |`);
@@ -120,7 +127,7 @@ for (const name of loops.map((l) => l[0]).filter((n) => !n.startsWith('busybox')
   for (const [n, fn] of PH) L.push(`| ${n} | ${f(med(S.map(fn)))} |`);
   const gap = []; const all = rows(o); for (let i = 1; i < all.length; i++) gap.push(ev(all[i].e, 'next') - ev(all[i - 1].e, 'exit-call'));
   L.push(`| shell + x86 side: previous exit call -> next program listed (wait wake-up, loop, fork, execve, pipe) | ${f(med(gap))} |`);
-  L.push(`| WASI calls per spawn (count) / sync XHR round trips total ms in the Worker | ${f(med(S.map((s) => s.calls.n)))} / ${f(med(S.map((s) => s.calls.ms)))} |`);
+  L.push(`| WASI calls per spawn (count) / sync round trips (SharedArrayBuffer or XHR) total ms in the Worker | ${f(med(S.map((s) => s.calls.n)))} / ${f(med(S.map((s) => s.calls.ms)))} |`);
   L.push(`| engine-side handling of those calls (x.wasi_call etc.), total ms | ${f(med(S.map((s) => s.svcMs)))} |`);
   L.push(`| program bytes copied per spawn (MB) / Module passed by the page (share of spawns) | ${f(med(S.map((s) => s.bytes)) / 1048576)} / ${f(S.filter((s) => s.mod).length / S.length)} |`);
   L.push(`| Module source (msg = page cache, cache = Worker cache, compile) | ${['msg', 'cache', 'compile'].map((m) => m + ' ' + S.filter((s) => (s.w || []).some((q) => q[0] === 'mod:' + m)).length).join(', ')} |`);

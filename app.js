@@ -53,7 +53,7 @@ $('calib').onclick = async () => {
   $('calib').disabled = true;
   await stop(true);
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=98');
+  const c = new Worker('worker.js?v=100');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -78,7 +78,7 @@ showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
   stop(false).then(() => {
-    const r = new Worker('worker.js?v=98');
+    const r = new Worker('worker.js?v=100');
     r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
     r.postMessage({ type: 'reset' });
   });
@@ -110,7 +110,7 @@ const wasiSlots = new Map(); // wasi.js cwdSlot results by module (each program'
 const wasiMods = new Map(); // compiled WebAssembly.Module by file version (worker.js key); a few, newest last
 const swOn = () => !!(navigator.serviceWorker && navigator.serviceWorker.controller);
 if (navigator.serviceWorker) {
-  navigator.serviceWorker.register('sw.js?v=1').catch(() => {});
+  navigator.serviceWorker.register('sw.js?v=2').catch(() => {});
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (w) w.postMessage({ type: 'wasi-sw', on: swOn() }); });
 }
 // item 91 (debug, off unless the page URL has ?wasiprof=1): epoch-ms timestamps of each WebAssembly program's phases, collected in window.__wprof
@@ -118,15 +118,21 @@ const WPROF = /[?&]wasiprof=1/.test(location.search), wnow = () => performance.t
 window.__wprof = [];
 const wprofPage = new Map();
 function wasiEnd(pid) { const b = wasiWorkers.get(pid); if (b) { b.terminate(); wasiWorkers.delete(pid); } }
-// (debug, bench only: with ?wasiprof=1, window.__wasiNoMod = true turns the Module hand-over off)
+// (debug, bench only: with ?wasiprof=1, window.__wasiNoMod = true turns the Module hand-over off;
+// item 94: __wasiNoSab = the calls go through the service worker even when isolated, __wasiNoPool = no spare Worker)
 const wasiNoMod = () => WPROF && window.__wasiNoMod;
+const wasiSab = () => self.crossOriginIsolated && typeof SharedArrayBuffer === 'function' && !(WPROF && window.__wasiNoSab);
+// item 94: one spare program Worker, already booted (thread + wasi.js loaded, ~8 ms), waits for the next program
+let wasiSpare = null;
+const wasiNewWorker = () => new Worker('wasi-worker.js?v=96', { type: 'module' });
 function wasiHeldKeys() { if (w) w.postMessage({ type: 'wasi-mods', keys: wasiNoMod() ? [] : [...wasiMods.keys()].filter((k) => wasiSlots.has(k)) }); }
 function wasiStart(m) {
   // item 93: no bytes = the engine thought this page holds the Module and cwd slot of that file version; else ask for them
   if (!m.bytes && !(m.key && wasiMods.has(m.key) && wasiSlots.has(m.key))) { if (w) w.postMessage({ type: 'wasi-bytes', pid: m.pid }); return; }
   const pp = WPROF ? [['start-msg', wnow()]] : null, nb = m.bytes ? m.bytes.byteLength : 0;
   if (pp) wprofPage.set(m.pid, pp);
-  const b = new Worker('wasi-worker.js?v=95', { type: 'module' });
+  const b = wasiSpare || wasiNewWorker();
+  wasiSpare = WPROF && window.__wasiNoPool ? null : wasiNewWorker();
   if (pp) pp.push(['worker-new', wnow()]);
   wasiWorkers.set(m.pid, b);
   b.onmessage = (ev) => {
@@ -142,8 +148,15 @@ function wasiStart(m) {
   b.onerror = () => wasiEnd(m.pid);
   m.slots = [...wasiSlots];
   if (m.key && wasiMods.has(m.key) && !wasiNoMod()) { m.module = wasiMods.get(m.key); wasiMods.delete(m.key); wasiMods.set(m.key, m.module); }
+  const tr = m.bytes ? [m.bytes.buffer] : [];
+  if (w && wasiSab()) { // item 94: the program's own channel to the engine (see wasi-worker.js), no service worker hop
+    const ch = new MessageChannel();
+    m.sab = new SharedArrayBuffer(8 + 65536 + (m.size || 1048576));
+    w.postMessage({ type: 'wasi-port', port: ch.port1, sab: m.sab }, [ch.port1]);
+    m.port = ch.port2; tr.push(ch.port2);
+  }
   if (pp) { m.prof = true; pp.push(['post-worker', wnow()]); }
-  b.postMessage(m, m.bytes ? [m.bytes.buffer] : []);
+  b.postMessage(m, tr);
 }
 let ctrl = false;
 const send = (t) => { if (w) w.postMessage({ type: 'key', data: t }); };
@@ -152,7 +165,7 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=98');
+  w = new Worker('worker.js?v=100');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;
@@ -173,6 +186,7 @@ function start() {
       if (w) w.terminate();
       w = null;
       for (const pid of [...wasiWorkers.keys()]) wasiEnd(pid);
+      if (wasiSpare) { wasiSpare.terminate(); wasiSpare = null; }
       setTimeout(() => { if (!w) openSettings(); }, 1500);
     }
   };
