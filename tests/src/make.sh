@@ -45,7 +45,7 @@ cd /tmp/mk && $M rec; echo rr=$?
 $M clean && $M -j2 > log6 2>&1; echo rj=$?
 echo "j6=$($B grep -c '^sed ' log6) total6=$($B tr '\n' ' ' < total.txt)"
 # 50 targets, each one child (sh -c with a redirection): the time is printed by linux-test.mjs
-$B mkdir -p /tmp/mk50 && cd /tmp/mk50 && { printf 'T := $(addprefix t,$(addsuffix .o,1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50))\nall: $(T)\n%%.o:\n\techo $@ > $@\n'; } > Makefile
+$B mkdir -p /tmp/mk50 && cd /tmp/mk50 && { printf 'T := $(addprefix t,$(addsuffix .o,1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50))\n.PHONY: all\nall: $(T)\n%%.o:\n\techo $@ > $@\n'; } > Makefile
 echo "mk50-t0=$($B cut -d' ' -f1 /proc/uptime)"
 $M -s; echo r50=$? n50=$($B ls /tmp/mk50/*.o | $B wc -l)
 echo "mk50-t1=$($B cut -d' ' -f1 /proc/uptime)"
