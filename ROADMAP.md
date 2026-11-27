@@ -237,7 +237,7 @@ Fila proposta (ganho est. / pts): 89 awk WASM sem exnref ou fallback ao busybox 
 | 2026-11-27 | 3 | 86: Pillow extras no python WASM (FreeType, WEBP, TIFF, JPEG ruim = OSError; wasm-tools-37; teste Linux leve) | #129 | 2 |
 | 2026-11-27 | 3 | 71: GNU diffutils 3.12 + patch 2.8.1 no catálogo WASM (diff 10 MB 13398 -> 225 ms, 59x; diff -u 102x; cmp 36x; sem abort) | #123 | 2 |
 | 2026-11-27 | 3 | 88: medir comandos do dia a dia no x86 vs WASM vs nativo (tudo <= 7 ms exceto shell/ls/du; WASM gasta 5–12 ms por spawn; awk WASM quebra no Chromium 131) | #131 | 1 |
-| 2026-11-27 | 3 | 90: bug df: /proc/mounts no kernel (+ /proc/self/mounts, /etc/mtab) | #PR | 1 |
+| 2026-11-27 | 3 | 90: bug df: /proc/mounts no kernel (+ /proc/self/mounts, /etc/mtab) | #133 | 1 |
 | 2026-11-27 | 3 | 85: jq com oniguruma 6.9.10 no catálogo WASM (wasm-tools-36; teste Linux leve + 1 tempo no Chromium) | #128 | 1 |
 
 ## Fora (sem ponto até o dono mandar)

@@ -100,8 +100,8 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 - **Contorno para o usuário**: comando WASM sem uma função → chamar a versão x86 pelo caminho completo (`busybox find ...`, `/usr/bin/python3` após `apk add --x86 python3`).
 
 ## 10. Log (1 linha por merge, mais nova em cima)
-Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
-- 2026-11-27 | #PR | 90 df / proc/mounts | motor serve /proc/mounts, /proc/self/mounts e /etc/mtab (mounts reais); df, df -h e mount passam no teste Linux leve | próximo da fila (89 awk WASM)
+Formato: `AAAA-MM-DD | #133 | item | resultado curto | próximo passo`
+- 2026-11-27 | #133 | 90 df / proc/mounts | motor serve /proc/mounts, /proc/self/mounts e /etc/mtab (mounts reais); df, df -h e mount passam no teste Linux leve | próximo da fila (89 awk WASM)
 - 2026-11-27 | #131 | 88 medir comandos do dia a dia | bench `cmds-bench.yml` (45 comandos, Chromium, VM vs nativo): shell ash x86 ≈ 60x nativo (1000 iterações 140 ms); spawn de WASM 5–12 ms vs 2 ms do busybox (WASM só ganha com entrada grande); awk WASM quebra no Chromium 131 (exnref); df sem /proc/mounts; ls -l 200 arquivos 51 ms, du 31 ms; resto 3–7 ms | 89 awk sem exnref/fallback, 90 df, 91 medir spawn WASM
 - 2026-11-27 | #128 | 85 jq com oniguruma | jq 1.7.1 + oniguruma 6.9.10 (BSD-2) estático, `wasm-tools-36` só com jq.wasm; test/match/capture/sub/gsub/scan/splits funcionam | próximo: 77 clang + make
 - 2026-11-27 | #129 | 86 Pillow extras no python WASM | `wasm-tools-37` (python3 30,9 MB): FreeType 2.13.3 (FTL), libwebp 1.5.0, libtiff 4.7.0; setjmp = exceção wasm (exnref) → JPEG ruim dá OSError e o python segue; `wasmtime wizer` 44 no lugar do pack do wasi-vfs; `fix_meth.py` conserta getextrema/split/abrir WEBP (trap no wasm, bug do 84 também); início do python (node, 1 rep, compile + `import PIL.Image`) 394 → 321 ms, resize LANCZOS 30 ms; 1 build + 1 rodada de teste | 77 clang + make
