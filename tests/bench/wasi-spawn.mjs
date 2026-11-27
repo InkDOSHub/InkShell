@@ -12,6 +12,7 @@ await new Promise((r) => setTimeout(r, 1000));
 const b = await chromium.launch();
 const p = await b.newPage();
 p.on('pageerror', (e) => console.log('[page error]', e.message));
+p.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') console.log('[console ' + m.type() + ']', m.text().slice(0, 300)); });
 const text = () => p.evaluate(() => { const t = term.buffer.active; let s = ''; for (let i = 0; i < t.length; i++) s += t.getLine(i).translateToString(true) + '\n'; return s; });
 async function until(re, ms = 120000) {
   const t0 = Date.now();
@@ -33,12 +34,25 @@ if (!(await until(/tester@inksoc/))) await fail('shell');
 for (const [u, n] of [['/out/tools/coreutils', 'coreutils'], ['/out/tools/grep', 'grep']])
   await p.evaluate(async ([u, n]) => { const d = await (await fetch(u)).arrayBuffer(); w.postMessage({ type: 'put', name: n, data: d }, [d]); }, [u, n]);
 await p.waitForTimeout(1500);
-await send('chmod +x coreutils grep; ln -s coreutils cut; ln -s coreutils true; echo setup-$((6*7))\r');
+await send('chmod +x coreutils grep; ls -l coreutils grep; echo setup-$((6*7))\r');
 if (!(await until(/setup-42/))) await fail('setup');
+// sanity first (a hung program must not burn the job): each form once, with its exit code and what the page collected
+const dump = async (why) => { console.log(`---- ${why}: terminal tail ----\n` + (await text()).slice(-1500)); console.log('wprof so far: ' + JSON.stringify(await p.evaluate(() => ({ n: window.__wprof.length, eng: Object.keys(window.__wprofEng || {}).length })))); };
+const tryCmd = async (n, cmd) => {
+  await send(cmd + '; echo SAN-' + n + '-rc=$?\r');
+  const ok = await until(new RegExp('SAN-' + n + '-rc=0'), 30000);
+  console.log(`sanity ${n} (${cmd}): ${ok ? 'ok' : 'FAILED'}`);
+  if (!ok) { await send('\x03'); await p.waitForTimeout(1500); await dump('sanity ' + n); }
+  return ok;
+};
+const okG = await tryCmd(1, 'echo abc | ./grep -c b');
+const okC = await tryCmd(2, 'echo abc | ./coreutils cut -c1-2');
+const okT = await tryCmd(3, './coreutils true');
+if (!okG && !okC && !okT) await fail('no WebAssembly program ran');
 // one loop per row: the whole loop wall time is taken in the page (rAF polling of the terminal's last lines)
 const loops = [
-  ['wasm cut (coreutils 9 MB)', `i=0; while [ $i -lt ${N} ]; do echo abc | ./cut -c1-2 > /dev/null; i=$((i + 1)); done`],
-  ['wasm true (coreutils 9 MB)', `i=0; while [ $i -lt ${N} ]; do ./true; i=$((i + 1)); done`],
+  ['wasm cut (coreutils 9 MB)', `i=0; while [ $i -lt ${N} ]; do echo abc | ./coreutils cut -c1-2 > /dev/null; i=$((i + 1)); done`],
+  ['wasm true (coreutils 9 MB)', `i=0; while [ $i -lt ${N} ]; do ./coreutils true; i=$((i + 1)); done`],
   ['wasm grep (0.7 MB)', `i=0; while [ $i -lt ${N} ]; do echo abc | ./grep -c b > /dev/null; i=$((i + 1)); done`],
   ['busybox cut (x86)', `i=0; while [ $i -lt ${N} ]; do echo abc | busybox cut -c1-2 > /dev/null; i=$((i + 1)); done`],
   ['busybox true (x86)', `i=0; while [ $i -lt ${N} ]; do busybox true; i=$((i + 1)); done`],
@@ -49,7 +63,7 @@ for (const [name, cmd] of loops) for (let rep = 1; rep <= REPS; rep++) {
   const tag = 'L' + (++k);
   await p.evaluate(() => { window.__wprof.length = 0; window.__wprofEng = {}; });
   const r = await p.evaluate(({ cmd, tag }) => new Promise((ok) => {
-    const t0 = performance.now(), re = new RegExp('DONE-' + tag + '-0'), lim = t0 + 120000;
+    const t0 = performance.now(), re = new RegExp('DONE-' + tag + '-0'), lim = t0 + 60000;
     const chk = () => {
       const t = term.buffer.active; let s = '';
       for (let i = Math.max(0, t.length - 8); i < t.length; i++) s += t.getLine(i).translateToString(true) + '\n';
@@ -59,10 +73,12 @@ for (const [name, cmd] of loops) for (let rep = 1; rep <= REPS; rep++) {
     };
     send(cmd + '; echo DONE-' + tag + '-$?\r'); requestAnimationFrame(chk);
   }), { cmd, tag });
+  if (r.ms < 0) { await dump('loop ' + name + ' timed out'); await send('\x03'); await p.waitForTimeout(1500); }
   await p.waitForTimeout(500); // the last program's 'wasi-end' message
   const prof = await p.evaluate(() => ({ progs: window.__wprof, eng: window.__wprofEng || {} }));
   out.push({ name, rep, ms: r.ms, prof });
   console.log(`${name} rep ${rep}: ${r.ms.toFixed(0)} ms, ${prof.progs.length} WASM spawns`);
+  if (r.ms < 0) break;
 }
 await b.close().catch(() => {}); srv.kill();
 // ---- phases of one spawn (ms): all timestamps are epoch ms of different threads (same clock)
