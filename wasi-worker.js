@@ -2,18 +2,23 @@
    lists it). Each WASI call is a synchronous request through the service worker (sw.js) to the engine's
    worker, which makes it a Linux call of the program's process: the engine keeps running meanwhile.
    A JS program (wasi.js jsProgram: inkvideo, which uses this Worker's WebCodecs) may end asynchronously. */
-import { runModule, parseInfo, pack, unpack, Exit } from './wasi.js?v=22';
+import { runModule, parseInfo, pack, unpack, Exit } from './wasi.js?v=23';
 
 onmessage = async (ev) => {
-  const { pid, sid, info, bytes, key, module, base, size, slots, spawn } = ev.data;
+  const { pid, sid, info, bytes, key, module, base, size, slots, spawn, prof: dbg } = ev.data;
+  // item 91 (debug, page ?wasiprof=1): epoch-ms timestamps of this Worker's phases + count/time of its synchronous calls
+  const P = dbg ? [] : null, calls = { n: 0, ms: 0 }, now = () => performance.timeOrigin + performance.now();
+  const prof = dbg ? (e) => P.push([e, now()]) : null;
+  prof && prof('onmessage');
   const { args, envs } = parseInfo(info);
   const url = new URL('__wasi?s=' + encodeURIComponent(sid), self.location).href;
   const post = (h, data) => {
-    const q = new XMLHttpRequest();
+    const t0 = dbg ? performance.now() : 0, q = new XMLHttpRequest();
     q.open('POST', url, false);
     q.responseType = 'arraybuffer';
     try { q.send(pack(h, data)); } catch (e) { throw new Exit(-1); }
     if (q.status !== 200) throw new Exit(-1);
+    if (dbg) { calls.n++; calls.ms += performance.now() - t0; }
     return unpack(new Uint8Array(q.response));
   };
   const sys = (nr, a = [], data, outLen = 0, to = pid) => { // to: a child this program forked (item 78)
@@ -23,8 +28,9 @@ onmessage = async (ev) => {
     return { r: r.h.r, out: r.out };
   };
   const code = await runModule({ bytes, key, module, args, envs, base, size, sys, spawn: spawn ? 2 : 0,
-    slots: new Map(slots || []), onSlot: (k, slot) => postMessage({ type: 'slot', key: k, slot }),
+    slots: new Map(slots || []), prof, onSlot: (k, slot) => postMessage({ type: 'slot', key: k, slot }),
     // the compiled module goes back to the page, which hands it to the next Worker of the same file
     onModule: (k, mod) => { try { postMessage({ type: 'module', key: k, module: mod }); } catch {} } });
-  postMessage({ type: 'done', pid, code });
+  prof && prof('done');
+  postMessage({ type: 'done', pid, code, prof: P, calls });
 };
