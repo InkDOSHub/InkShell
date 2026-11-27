@@ -50,9 +50,9 @@ jobs:
           echo "$(printf '%s' "$e" | cut -f3)  tests/pip.whl" | sha256sum -c
           curl -fsSL --retry 3 -o tests/six.whl https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl
           echo "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274  tests/six.whl" | sha256sum -c
-      - name: 7-Zip, qpdf, ImageMagick, ffmpeg, sqlite, jq, lua, zip, unzip, ripgrep, hashtools, sed, find, awk, tar, gzip, xz, bzip2, zstd, bc, file, less, grep, vim, nano, curl, git from the WebAssembly catalog (URL and sha256 from the catalog)
+      - name: 7-Zip, qpdf, ImageMagick, ffmpeg, sqlite, jq, lua, zip, unzip, ripgrep, hashtools, sed, find, awk, tar, gzip, xz, bzip2, zstd, bc, file, less, grep, vim, nano, curl, git, diffutils, patch from the WebAssembly catalog (URL and sha256 from the catalog)
         run: |
-          for n in 7zip:7zz qpdf:qpdf imagemagick:magick ffmpeg:ffmpeg ffprobe:ffprobe sqlite:sqlite3 jq:jq lua5.4:lua zip:zip unzip:unzip ripgrep:rg hashtools:hashsum sed:sed findutils:find onetrue-awk:awk tar:bsdtar gzip:gzip xz:xz bzip2:bzip2 zstd:zstd bc:bc file:file less:less grep:grep vim:vim nano:nano curl:curl git:git; do
+          for n in 7zip:7zz qpdf:qpdf imagemagick:magick ffmpeg:ffmpeg ffprobe:ffprobe sqlite:sqlite3 jq:jq lua5.4:lua zip:zip unzip:unzip ripgrep:rg hashtools:hashsum sed:sed findutils:find onetrue-awk:awk tar:bsdtar gzip:gzip xz:xz bzip2:bzip2 zstd:zstd bc:bc file:file less:less grep:grep vim:vim nano:nano curl:curl git:git diffutils:diff cmp:cmp patch:patch; do
             e=$(awk -F '\t' -v n="${n%%:*}" '$1 == n' overlay/etc/inksoc/wasm-catalog); f=tests/${n#*:}.wasm
             curl -fsSL --retry 3 -o "$f" "$(printf '%s' "$e" | cut -f2)"
             echo "$(printf '%s' "$e" | cut -f3)  $f" | sha256sum -c
