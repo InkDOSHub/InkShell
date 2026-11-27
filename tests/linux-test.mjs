@@ -93,7 +93,7 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
   ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat'],
   ['bzip2', 'bzip2', 'bzip2,bunzip2,bzcat'], ['zstd', 'zstd', 'zstd,unzstd,zstdcat'],
-  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['nano', 'nano', 'nano'], ['curl', 'curl', 'curl'], ['git', 'git', 'git'], ['diffutils', 'diff', 'diff'], ['cmp', 'cmp', 'cmp'], ['patch', 'patch', 'patch'], ['make', 'make', 'make']]
+  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['nano', 'nano', 'nano'], ['curl', 'curl', 'curl'], ['git', 'git', 'git'], ['diffutils', 'diff', 'diff'], ['cmp', 'cmp', 'cmp'], ['patch', 'patch', 'patch'], ['make', 'make', 'make'], ['openssl', 'openssl', 'openssl-wasm']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -724,6 +724,26 @@ if (hasWasi) {
       /patched=0\s+cmp-same=0\s+cmp-diff=1\s+df-b=0/, 'patch: applies a diff -u and reverses it; cmp exit codes');
     await step(`busybox seq 1 1500000 > big1.txt; busybox sed 's/^77777/y/' big1.txt > big2.txt; diff big1.txt big2.txt | busybox wc -l; diff -u big1.txt big2.txt | busybox wc -l; cmp big1.txt big2.txt | busybox cut -c1-40; echo df-done\n`,
       /\d+\s+\d+\s+big1.txt big2.txt differ[^\n]*\s+df-done/, 'diff: two 10 MB files do not crash (the uutils diff died with exit 134)');
+  }
+  if (hasTool('openssl')) { // item 87: OpenSSL 3.5 command-line tool in WebAssembly behind the /usr/local/bin/openssl wrapper (s_client stays on the x86 helper); tolerant matching
+    const sha = dig('sha256', Buffer.from('abc'));
+    await step(`hash -r; for c in openssl openssl-wasm; do command -v $c; done | busybox tr '\\n' ' '; echo; openssl version | busybox cut -c1-11; printf abc | openssl dgst -sha256; printf abc | openssl dgst -sha1 -r | busybox cut -c1-40; openssl s_client 2>&1 | busybox head -n 1; echo ossl-a\n`,
+      new RegExp('/usr/local/bin/openssl /usr/local/bin/openssl-wasm\\s+OpenSSL 3\\.5\\s+SHA2-256\\(stdin\\)= ' + sha + '\\s+' + dig('sha1', Buffer.from('abc')) + '\\s+openssl s_client: -connect HOST:PORT needed\\s+ossl-a'), 'openssl: wrapper + WebAssembly program, version 3.5, dgst sha256/sha1, s_client still answered by the x86 helper');
+    await step(`cd /tmp && rm -rf os1 && mkdir os1 && cd os1 && printf 'secret text\\n' > e.txt && openssl enc -aes-256-cbc -pbkdf2 -salt -pass pass:pw1 -in e.txt -out e.enc; echo enc=$?; busybox head -c 8 e.enc; echo; openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:pw1 -in e.enc -out e.dec; echo dec=$?; busybox cmp e.txt e.dec && echo enc-same; openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:bad -in e.enc > /dev/null 2>&1; echo bad=$?; echo ossl-b\n`,
+      /enc=0\s+Salted__\s+dec=0\s+enc-same\s+bad=1\s+ossl-b/, 'openssl: enc -aes-256-cbc -pbkdf2 encrypt and decrypt round trip, wrong password fails');
+    await step(`openssl rand -hex 16 | busybox grep -cE '^[0-9a-f]{32}$'; [ "$(openssl rand -hex 16)" != "$(openssl rand -hex 16)" ] && echo rand-differ; openssl rand 100 | busybox wc -c; printf hello | openssl base64; echo aGVsbG8= | openssl base64 -d; echo; openssl passwd -6 -salt saltsalt pw1 | busybox grep -cE '^\\$6\\$saltsalt\\$[./0-9A-Za-z]{86}$'; openssl passwd -1 -salt abcdefgh pw1 | busybox grep -c '^\\$1\\$abcdefgh\\$'; echo ossl-c\n`,
+      /^1\s+rand-differ\s+100\s+aGVsbG8=\s+hello\s+1\s+1\s+ossl-c/m, 'openssl: rand -hex and -bytes, base64 encode/decode, passwd -6 and -1');
+    await step(`cd /tmp/os1 && openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out k.pem; echo gen=$?; openssl req -x509 -new -key k.pem -subj /CN=inkshell.test -days 30 -out c.pem; echo req=$?; openssl x509 -in c.pem -noout -text | busybox grep -E 'Subject:|Signature Algorithm|CA:TRUE' | busybox sort -u; openssl verify -CAfile c.pem c.pem; openssl x509 -in c.pem -noout -fingerprint -sha256 | busybox cut -c1-24; echo ossl-d\n`,
+      /gen=0\s+req=0\s+[\s\S]*CA:TRUE[\s\S]*Signature Algorithm: ecdsa-with-SHA256[\s\S]*Subject: CN\s*=\s*inkshell\.test[\s\S]*c\.pem: OK\s+sha256 Fingerprint=[0-9A-F:]+\s+ossl-d/i, 'openssl: genpkey EC, req -x509 self-signed certificate, x509 -text, verify, fingerprint');
+    await step(`cd /tmp/os1 && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out r.pem; echo rsa=$?; openssl pkey -in r.pem -pubout -out r.pub; echo ossl-e $(busybox grep -c 'BEGIN PUBLIC KEY' r.pub)\n`,
+      /rsa=0\s+ossl-e 1/, 'openssl: genpkey RSA 2048 and pkey -pubout');
+    // 10 MB: sha256 by the WebAssembly sha256sum (or busybox) against openssl dgst
+    await step(`cd /tmp/os1 && busybox seq 1 1500000 > big.txt; busybox wc -c < big.txt | busybox sed 's/^/size=/'; echo ossl-f\n`, /size=\d{8}\s+ossl-f/, 'openssl: 10 MB file made');
+    const t1 = Date.now();
+    await step(`sha256sum big.txt | busybox cut -c1-64 > h1.txt; echo ossl-g\n`, /ossl-g/, 'openssl: sha256sum of 10 MB (reference)');
+    const t2 = Date.now();
+    await step(`openssl dgst -sha256 big.txt | busybox sed 's/.*= //' > h2.txt; cmp h1.txt h2.txt && echo hash-same; cd\n`, /hash-same/, 'openssl: dgst -sha256 of 10 MB equals sha256sum');
+    console.log(`  [sha256 of 10 MB (ms, with the step wait): sha256sum ${t2 - t1}, openssl dgst ${Date.now() - t2}]`);
   }
   if (hasTool('git')) { // item 75: git 2.47 in WebAssembly ahead of an x86 git; local work in one process (no editor: -m; pager cat), tolerant matching
     await step(`cd /tmp && rm -rf gt && mkdir gt && cd gt && hash -r && command -v git && git --version && git init -q && git config user.name Tester && git config user.email t@example.com && echo one > a.txt && git add a.txt && git commit -q -m first; echo c1=$?; git log --oneline | busybox wc -l | busybox sed 's/^/n1=/'; git switch -q -c feat && echo two > b.txt && git add b.txt && git commit -q -m second && git switch -q master && git merge -q feat; echo ff=$?; git switch -q -c side && echo s >> a.txt && git commit -q -am side && git switch -q master && echo m > c.txt && git add c.txt && git commit -q -m main && git merge -q -m merged side; echo m3=$?; git log --oneline | busybox wc -l | busybox sed 's/^/n2=/'; git status --short | busybox wc -l | busybox sed 's/^/dirty=/'; git log -1 --format=%s; cd; echo git-back\n`,

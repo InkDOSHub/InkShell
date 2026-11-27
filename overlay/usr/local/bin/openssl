@@ -4,6 +4,9 @@
 # store's files are: alert 80), so this hands the connection to OpenSSL: Alpine's /usr/bin/ssl_client
 # (what apk uses), with certificate checks. The real openssl (apk add openssl) is used when installed.
 [ -x /usr/bin/openssl ] && exec /usr/bin/openssl "$@"
+# apk add openssl (the WebAssembly catalog build, /usr/local/bin/openssl-wasm): dgst, enc, rand, genpkey, req, x509, passwd...
+# It has no sockets, so s_client stays on the helper below (busybox wget https calls "openssl s_client").
+[ "$1" != s_client ] && [ -x /usr/local/bin/openssl-wasm ] && OPENSSL_CONF=${OPENSSL_CONF:-/etc/inksoc/openssl.cnf} exec /usr/local/bin/openssl-wasm "$@"
 [ "$1" = s_client ] || { echo "openssl: only 's_client -connect' here (apk add openssl for the full tool)" >&2; exit 1; }
 shift; c= n=
 while [ $# -gt 0 ]; do case $1 in -connect) c=$2; shift ;; -servername) n=$2; shift ;; esac; shift; done
