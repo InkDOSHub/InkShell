@@ -26,7 +26,7 @@ CWDL="-Wl,--undefined=chdir"
 STACK="-Wl,-z,stack-size=8388608 $CWDL" # every tool's link line has $STACK
 
 ZLIB=1.3.1 PNG=1.6.44 JPEG=3.0.4 FFMPEG=5.1.9 MAGICK=7.1.1-41 QPDF=11.9.1 SEVENZIP=24.08
-SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12 VIM=9.1.1400 NANO=8.3 NCURSES=6.5 GIT=2.47.1
+SQLITE=3470200 SQLITE_YEAR=2024 JQ=1.7.1 LUA=5.4.7 ZIP=3.0 UNZIP=6.0 RG=14.1.1 UUTILS=0.8.0 QJS=v0.18.0 USED=0.3.0 UFIND=0.9.1 OTAWK=2025-01-16 XZ=5.8.1 LIBARCHIVE=3.8.1 BZIP2=1.0.8 ZSTD=1.5.7 BC=7.0.3 FILE=5.46 LESS=692 GREP=3.12 VIM=9.1.1400 NANO=8.3 NCURSES=6.5 GIT=2.47.1 DIFFUTILS=3.12 PATCH=2.8.1
 
 fetch() { # github repo, tag, dir name: shallow clone once into $WORK/dir; a source tarball goes next to the binaries (LGPL)
   [ -d "$WORK/$3" ] && return 0
@@ -479,6 +479,67 @@ b_vim() { # Vim 9.1 (Vim license: charityware, GPL-compatible; a separate catalo
     cp vim "$OUT/vim.wasm")
 }
 
+b_diffutils() { # GNU diffutils 3.12 (GPL-3.0-or-later; a separate catalog program, source release in the GitHub release): diff, cmp, diff3, sdiff; no NLS. diff3 and sdiff run diff through popen (the host process channel): WASI has no fork. Stack is 8 MB (diff of a big file used to abort on the 1 MB default).
+  compat; dl "https://ftp.gnu.org/gnu/diffutils/diffutils-$DIFFUTILS.tar.xz" diffutils
+  d=$WORK/diffutils
+  # what WASI lacks and gnulib may call: dup, dup2, fchdir, pipe, getdtablesize (ENOSYS); flockfile has no threads
+  printf 'int dup(int);\nint dup2(int, int);\nint fchdir(int);\nint getdtablesize(void);\nint pipe(int[2]);\n#define flockfile(f) ((void)0)\n#define funlockfile(f) ((void)0)\n' > "$d/ink_diff.h"
+  printf '#include <errno.h>\nint dup(int f) { (void)f; errno = ENOSYS; return -1; }\nint dup2(int f, int g) { (void)f; (void)g; errno = ENOSYS; return -1; }\nint fchdir(int f) { (void)f; errno = ENOSYS; return -1; }\nint getdtablesize(void) { return 1024; }\nint pipe(int p[2]) { (void)p; errno = ENOSYS; return -1; }\n' > "$d/ink_diff.c"
+  $CC -O2 -c "$d/ink_diff.c" -o "$d/ink_diff.o"
+  # sdiff without -o replaces itself by execvp("diff"). WASI cannot exec: run that diff through system() (host channel) and leave with its status.
+  python3 - "$d/src/sdiff.c" << 'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+t = p.read_text()
+old = """      diffarg (nullptr);
+      execvp (diffargv[0], (char **) diffargv);
+      perror_fatal (squote (0, diffargv[0]));"""
+new = """      diffarg (nullptr);
+#if ! HAVE_WORKING_FORK
+      {
+        char *command = system_quote_argv (SCI_SYSTEM, (char **) diffargv);
+        int st = system (command);
+        if (st == -1)
+          perror_fatal (command);
+        free (command);
+        exit ((st & 0xff) == 0 ? (st >> 8) & 0xff : 2);
+      }
+#else
+      execvp (diffargv[0], (char **) diffargv);
+      perror_fatal (squote (0, diffargv[0]));
+#endif"""
+if old not in t:
+    if "HAVE_WORKING_FORK" in t and "system_quote_argv (SCI_SYSTEM, (char **) diffargv)" in t:
+        sys.exit(0)
+    raise SystemExit("sdiff.c: execvp block not found")
+p.write_text(t.replace(old, new, 1))
+PY
+  rm -rf "$d/b" && mkdir -p "$d/b" && (cd "$d/b" && CFLAGS="-O2 -DCOMPAT_CHMOD_OK $EMU $SJLJ -I$P/compat -include $d/ink_diff.h" LDFLAGS="-L$P/lib $STACK" LIBS="$d/ink_diff.o -lcompat -lsetjmp $EMUL" \
+    ac_cv_func_fork_works=no ac_cv_func_vfork_works=no ac_cv_func_fchdir=yes ac_cv_func_getdtablesize=yes ac_cv_func_pipe=yes ac_cv_func_dup2=yes \
+    gl_cv_func_fcntl_f_dupfd_cloexec=yes gl_cv_func_dup2_works=yes gl_cv_func_fdopendir_works=yes \
+    ../configure --host=$T --disable-nls --disable-rpath --disable-gcc-warnings >"$WORK/diff-configure.log" 2>&1 || { tail -80 "$WORK/diff-configure.log"; exit 1; }
+    make -j"$J" -C lib GL_CFLAG_GNULIB_WARNINGS= >"$WORK/diff-lib.log" 2>&1 || { grep -n "error:" "$WORK/diff-lib.log" | head -40; tail -20 "$WORK/diff-lib.log"; exit 1; }
+    make -j"$J" -C src cmp diff diff3 sdiff GL_CFLAG_GNULIB_WARNINGS= >"$WORK/diff-src.log" 2>&1 || { grep -n "error:" "$WORK/diff-src.log" | head -40; tail -30 "$WORK/diff-src.log"; exit 1; }
+    cp src/diff "$OUT/diff.wasm" && cp src/cmp "$OUT/cmp.wasm" && cp src/diff3 "$OUT/diff3.wasm" && cp src/sdiff "$OUT/sdiff.wasm")
+}
+
+b_patch() { # GNU patch 2.8.1 (GPL-3.0-or-later; a separate catalog program, source release in the GitHub release): apply a diff; no NLS. Same WASI stubs as diffutils (dup/pipe/fchdir); gnulib opendirat renamed (it clashes with wasi-libc's).
+  compat; dl "https://ftp.gnu.org/gnu/patch/patch-$PATCH.tar.xz" patch
+  g=$WORK/patch
+  printf 'int dup(int);\nint dup2(int, int);\nint fchdir(int);\nint getdtablesize(void);\nint pipe(int[2]);\n#define flockfile(f) ((void)0)\n#define funlockfile(f) ((void)0)\n' > "$g/ink_patch.h"
+  printf '#include <errno.h>\nint dup(int f) { (void)f; errno = ENOSYS; return -1; }\nint dup2(int f, int g) { (void)f; (void)g; errno = ENOSYS; return -1; }\nint fchdir(int f) { (void)f; errno = ENOSYS; return -1; }\nint getdtablesize(void) { return 1024; }\nint pipe(int p[2]) { (void)p; errno = ENOSYS; return -1; }\n' > "$g/ink_patch.c"
+  $CC -O2 -c "$g/ink_patch.c" -o "$g/ink_patch.o"
+  sed -i "s/\\bopendirat\\b\\([^.]\\)/ink_opendirat\\1/g" "$g/lib/backupfile.c" "$g/lib/opendirat.c" "$g/lib/opendirat.h"
+  rm -rf "$g/b" && mkdir -p "$g/b" && (cd "$g/b" && CFLAGS="-O2 -DCOMPAT_CHMOD_OK $EMU $SJLJ -I$P/compat -include $g/ink_patch.h" LDFLAGS="-L$P/lib $STACK" LIBS="$g/ink_patch.o -lcompat -lsetjmp $EMUL" \
+    ac_cv_func_fork_works=no ac_cv_func_vfork_works=no ac_cv_func_fchdir=yes ac_cv_func_getdtablesize=yes ac_cv_func_pipe=yes ac_cv_func_dup2=yes \
+    gl_cv_func_fcntl_f_dupfd_cloexec=yes gl_cv_func_dup2_works=yes gl_cv_func_fdopendir_works=yes \
+    ../configure --host=$T --disable-nls --disable-rpath --disable-gcc-warnings >"$WORK/patch-configure.log" 2>&1 || { tail -80 "$WORK/patch-configure.log"; exit 1; }
+    make -j"$J" -C lib GL_CFLAG_GNULIB_WARNINGS= >"$WORK/patch-lib.log" 2>&1 || { grep -n "error:" "$WORK/patch-lib.log" | head -40; tail -20 "$WORK/patch-lib.log"; exit 1; }
+    make -j"$J" -C src patch GL_CFLAG_GNULIB_WARNINGS= >"$WORK/patch-src.log" 2>&1 || { grep -n "error:" "$WORK/patch-src.log" | head -40; tail -30 "$WORK/patch-src.log"; exit 1; }
+    cp src/patch "$OUT/patch.wasm")
+}
+
 # b_ prefix: functions named zip, unzip... would hide those commands
-for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd|bc|file|less|grep|vim|nano|curl|git) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
+for t in "$@"; do case $t in 7zz) sevenzip ;; ffmpeg|magick|qpdf) $t ;; sqlite3|jq|lua|zip|unzip|rg|hashsum|coreutils|qjs|sed|find|awk|xz|tar|gzip|bzip2|zstd|bc|file|less|grep|vim|nano|curl|git|diffutils|patch) b_$t ;; *) echo "unknown tool $t"; exit 2 ;; esac; done
 ls -l "$OUT"
