@@ -518,6 +518,7 @@ PY
   rm -rf "$d/b" && mkdir -p "$d/b" && (cd "$d/b" && CFLAGS="-O2 -DCOMPAT_CHMOD_OK $EMU $SJLJ -I$P/compat -include $d/ink_diff.h" LDFLAGS="-L$P/lib $STACK" LIBS="$d/ink_diff.o -lcompat -lsetjmp $EMUL" \
     ac_cv_func_fork_works=no ac_cv_func_vfork_works=no ac_cv_func_fchdir=yes ac_cv_func_getdtablesize=yes ac_cv_func_pipe=yes ac_cv_func_dup2=yes \
     gl_cv_func_fcntl_f_dupfd_cloexec=yes gl_cv_func_dup2_works=yes gl_cv_func_fdopendir_works=yes \
+    gl_cv_func_strcasecmp_works=yes gl_cv_func_getopt_posix=yes \
     ../configure --host=$T --disable-nls --disable-rpath --disable-gcc-warnings >"$WORK/diff-configure.log" 2>&1 || { tail -80 "$WORK/diff-configure.log"; exit 1; }
     make -j"$J" -C lib GL_CFLAG_GNULIB_WARNINGS= >"$WORK/diff-lib.log" 2>&1 || { grep -n "error:" "$WORK/diff-lib.log" | head -40; tail -20 "$WORK/diff-lib.log"; exit 1; }
     make -j"$J" -C src cmp diff diff3 sdiff GL_CFLAG_GNULIB_WARNINGS= >"$WORK/diff-src.log" 2>&1 || { grep -n "error:" "$WORK/diff-src.log" | head -40; tail -30 "$WORK/diff-src.log"; exit 1; }
@@ -534,6 +535,7 @@ b_patch() { # GNU patch 2.8.1 (GPL-3.0-or-later; a separate catalog program, sou
   rm -rf "$g/b" && mkdir -p "$g/b" && (cd "$g/b" && CFLAGS="-O2 -DCOMPAT_CHMOD_OK $EMU $SJLJ -I$P/compat -include $g/ink_patch.h" LDFLAGS="-L$P/lib $STACK" LIBS="$g/ink_patch.o -lcompat -lsetjmp $EMUL" \
     ac_cv_func_fork_works=no ac_cv_func_vfork_works=no ac_cv_func_fchdir=yes ac_cv_func_getdtablesize=yes ac_cv_func_pipe=yes ac_cv_func_dup2=yes \
     gl_cv_func_fcntl_f_dupfd_cloexec=yes gl_cv_func_dup2_works=yes gl_cv_func_fdopendir_works=yes \
+    gl_cv_func_strcasecmp_works=yes gl_cv_func_getopt_posix=yes \
     ../configure --host=$T --disable-nls --disable-rpath --disable-gcc-warnings >"$WORK/patch-configure.log" 2>&1 || { tail -80 "$WORK/patch-configure.log"; exit 1; }
     make -j"$J" -C lib GL_CFLAG_GNULIB_WARNINGS= >"$WORK/patch-lib.log" 2>&1 || { grep -n "error:" "$WORK/patch-lib.log" | head -40; tail -20 "$WORK/patch-lib.log"; exit 1; }
     make -j"$J" -C src patch GL_CFLAG_GNULIB_WARNINGS= >"$WORK/patch-src.log" 2>&1 || { grep -n "error:" "$WORK/patch-src.log" | head -40; tail -30 "$WORK/patch-src.log"; exit 1; }
