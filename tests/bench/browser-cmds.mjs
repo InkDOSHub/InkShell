@@ -1,4 +1,5 @@
 // Item 88: which everyday commands still run on x86 (busybox) in the VM, and how slow, vs the same command on the native runner.
+// (round 1 of 2)
 // Chromium only, 2 reps in the VM (1st = cold: WASM tools compile on first use; 2nd = warm), native = median of 5 runs of `sh -c`.
 // usage (repo root, CI): node tests/bench/browser-cmds.mjs
 // needs out/ztools.tar (usr/local/bin/<tool> + symlinks), out/browser-cmds.sh, out/cmds.tsv, out/cmds-setup.sh.
