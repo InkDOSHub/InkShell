@@ -1,6 +1,6 @@
 # InkShell roadmap
 
-CONTROLE: seguir (sessão oficial do gerente 24/11; uma sessão por vez)
+CONTROLE: seguir (gerente: vfydr2m9wk-ops, 2026-11-26)
 SALDO: semana 1 (até ter 24/11 17:00): 31% gasto ≈ 23 pts de 30 → sobram ~7 pts.
 Dono 24/11: sem teto até ter 24/11 16:59; teto 30 a partir de ter 17:09.
 
