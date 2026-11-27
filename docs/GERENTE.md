@@ -78,7 +78,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 - Limite de 5 horas da conta pode parar workers no meio: retomar depois que liberar.
 
 ## 9. Estado atual (atualizar a cada merge)
-- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 80, 74, 81, 82, 75, 83, 84, 71, 86 feitos; 62, 65, 66 travados.
+- **Semana 3** (até ter 1/12): 60, 61, 63, 64, 67, 68, 70, 72, 69, 76, 78, 79, 73, 80, 74, 81, 82, 75, 83, 84, 71, 86, 85 feitos; 62, 65, 66 travados.
 - **Rodando**: — (gerente: sessão 013qXTaN, 27/11)
 - **Fila por uso (dono, 26/11: "siga essa ordem"; apps mais usados no terminal Linux que ainda estão incompletos aqui)**:
   1. ~~74 vim (2)~~ feito (#113)
@@ -102,6 +102,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
 - 2026-11-27 | #131 | 88 medir comandos do dia a dia | bench `cmds-bench.yml` (45 comandos, Chromium, VM vs nativo): shell ash x86 ≈ 60x nativo (1000 iterações 140 ms); spawn de WASM 5–12 ms vs 2 ms do busybox (WASM só ganha com entrada grande); awk WASM quebra no Chromium 131 (exnref); df sem /proc/mounts; ls -l 200 arquivos 51 ms, du 31 ms; resto 3–7 ms | 89 awk sem exnref/fallback, 90 df, 91 medir spawn WASM
+- 2026-11-27 | #128 | 85 jq com oniguruma | jq 1.7.1 + oniguruma 6.9.10 (BSD-2) estático, `wasm-tools-36` só com jq.wasm; test/match/capture/sub/gsub/scan/splits funcionam | próximo: 77 clang + make
 - 2026-11-27 | #129 | 86 Pillow extras no python WASM | `wasm-tools-37` (python3 30,9 MB): FreeType 2.13.3 (FTL), libwebp 1.5.0, libtiff 4.7.0; setjmp = exceção wasm (exnref) → JPEG ruim dá OSError e o python segue; `wasmtime wizer` 44 no lugar do pack do wasi-vfs; `fix_meth.py` conserta getextrema/split/abrir WEBP (trap no wasm, bug do 84 também); início do python (node, 1 rep, compile + `import PIL.Image`) 394 → 321 ms, resize LANCZOS 30 ms; 1 build + 1 rodada de teste | 77 clang + make
 - 2026-11-27 | #123 | 71 diffutils + patch GNU em WASM | wasm-tools-30 (diff, cmp, diff3, sdiff 3.12) e -31 (patch 2.8.1, sem fchmodat); GPL-3.0 como programas separados, fonte nas releases; `apk add diffutils` traz cmp/diff3/sdiff; Chromium 10 MB: diff 13398 -> 225 ms (59x), diff -u 102x, cmp 36x, sem abort (uutils dava 134) | 77 clang + make
 - 2026-11-27 | #126 | 84 Pillow no python WASM | python3 do catálogo religado (`wasm-tools-34`): libpython 3.12.0 da VMware + Pillow 11.3.0 (módulos C embutidos, WASI sem dlopen) + libjpeg-turbo 3.0.4, wasi-sdk 20, wasi-vfs 0.4.0, wasm-opt -O2; PNG/JPEG abrir/salvar, resize, thumbnail, convert no teste Linux leve; resize 1024²→512² LANCZOS 36 ms WASM vs 16 ms nativo (2,3x); script inteiro ~1,2 s; 1 rodada de CI; rede/processos/pip do python seguem no teste | 71 diff / 77 clang
