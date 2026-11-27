@@ -103,7 +103,7 @@ Autorizações em vigor (semana 3, até ter 1/12): sem teto de 30 pts; 27/11 sem
 
 ## 10. Log (1 linha por merge, mais nova em cima)
 Formato: `AAAA-MM-DD | #PR | item | resultado curto | próximo passo`
-- 2026-11-27 | #PR93 | 93 cache de Module + cwd slot WASM | RESULTADO93 | próximo: 94 menos voltas pelo service worker (ou pool de Workers)
+- 2026-11-27 | #139 | 93 cache de Module + cwd slot WASM | RESULTADO93 | próximo: 94 menos voltas pelo service worker (ou pool de Workers)
 - 2026-11-27 | #136 | 91 medir spawn WASM | feito (3 rodadas: teto 2 + 1 com aval do dono); página real, Chromium 131, 49 spawns: coreutils 9 MB `cut` 75 ms, `true` 61, grep 0,7 MB 42 contra busybox 1,3–2; fases do Worker: nascer 9, setup WASI 7–20, Module 1–15 (compila em TODO spawn; ressalva: arquivo posto por `put`), instanciar 2, chamadas WASI ~1,6 ms cada (XHR síncrono + service worker), saída->wasi-end 7,6 ms, cópia dos bytes 4,6 ms (9 MB) | 92 (pool + cache) depois de conferir cache com programa de `apk add`
 - 2026-11-27 | #133 | 90 df / proc/mounts | motor serve /proc/mounts, /proc/self/mounts e /etc/mtab (mounts reais); df, df -h e mount passam no teste Linux leve | próximo da fila (91; teste Linux na engine rebuilt pós-merge)
 - 2026-11-27 | #138 | 92 estudo shell WASM p/ scripts | build local de viabilidade: dash 0.5.12 WASI 403 KB; laço 1000 ~5 ms vs 140 ms x86 (28x); mas shell WASM começa em 40–55 ms e externo pela ponte ~20 ms vs 2 ms x86: equilíbrio 345 voltas (S=50), 58 (S=10); NO-GO agora, GO condicional (dash opt-in) se S ≤ 12 ms e X ≤ 5 ms | 93 `run` na ponte + pool de Workers (continuação do 91)
