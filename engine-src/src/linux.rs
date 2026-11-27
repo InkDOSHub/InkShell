@@ -163,6 +163,10 @@ pub struct Lx {
     ptys: BTreeMap<u32, Pty>,
     // owners and permissions (path -> mode bits, uid, gid); paths not listed: root, 755/644
     meta: BTreeMap<String, (u32, u32, u32)>,
+    // file modification times (ns since the epoch) of files written, created or touched since boot (make
+    // compares them); other files show `boot_ns` (the first time one was needed)
+    mtime: BTreeMap<String, u64>,
+    boot_ns: u64,
     umask: u32,
     // descriptors passed with SCM_RIGHTS, waiting in a local socket's buffer (by pipe id)
     // (stream position, descriptors); reads stop where descriptors are attached, as on Linux
@@ -610,6 +614,10 @@ impl Engine {
 
 fn ret(e: &mut Engine, v: i64) { e.cpu.regs[0] = v as u64; }
 
+fn now_ns() -> u64 { (crate::epoch_ms() * 1e6) as u64 }
+/// Sets a file's modification time (ns since the epoch).
+fn set_mtime(l: &mut Lx, p: &str, t: u64) { if l.boot_ns == 0 { l.boot_ns = now_ns().min(t); } l.mtime.insert(p.to_string(), t); }
+
 fn stat_buf(e: &mut Engine, a: u64, mode: u32, size: u64, ino: u64) -> i64 { stat_buf_own(e, a, mode, size, ino, (0, 0)) }
 
 /// Permission bits and owner of a path.
@@ -649,8 +657,11 @@ fn stat_path(e: &mut Engine, path: &str, a: u64, follow: bool) -> i64 {
         Some(Node::Hard(_)) | None => return -ENOENT, // Hard: its file is not there (yet)
     };
     let (bits, uid, gid) = if mode == 0o120777 { (0, 0, 0) } else { perm(l, &p, mode == 0o040000) };
+    if l.boot_ns == 0 { l.boot_ns = now_ns(); }
+    let mt = l.mtime.get(&p).copied().unwrap_or(l.boot_ns);
     let r = stat_buf_own(e, a, mode | bits, size, ino, (uid, gid));
     if r == 0 && nl > 1 { let _ = e.mmu.write_bytes(a + 16, &nl.to_le_bytes()); }
+    if r == 0 { for o in [72, 88, 104] { e.w64(a + o, mt / 1_000_000_000); e.w64(a + o + 8, mt % 1_000_000_000); } } // atime, mtime, ctime
     r
 }
 
@@ -737,6 +748,7 @@ fn open(e: &mut Engine, path: &str, flags: u64, mode: u64) -> i64 {
     }
     if flags & 0x200 != 0 && flags & 3 != 0 { if let Some(Node::File(d)) = l.fs.get_mut(&p) { d.clear(&mut l.bc, mm); } }
     if flags & 3 != 0 && !p.starts_with("/dev/") { l.written.insert(p.clone()); }
+    if (!exists || (flags & 0x200 != 0 && flags & 3 != 0)) && !p.starts_with("/dev/") { set_mtime(l, &p, now_ns()); } // created or truncated
     let fd = l.new_fd(Fd::File { path: p, pos: 0, append: flags & 0x400 != 0 });
     if flags & 0x80000 != 0 { l.cloexec.insert(fd); }
     fd as i64
@@ -910,6 +922,7 @@ pub fn syscall(e: &mut Engine) {
     }
     if { let l = lx(e); !l.holes.is_empty() || !l.dirt.is_empty() } && mnt_gate(e, nr) { return; }
     if matches!(nr, 2 | 257 | 76 | 77 | 82 | 264 | 316 | 83 | 258 | 84 | 87 | 263 | 86 | 88 | 265 | 266 | 326) || (matches!(nr, 1 | 18 | 20) && matches!(lx(e).fds.get(&(a0 as i32)), Some(Fd::File { .. }))) { lx(e).dirty = true; }
+    if matches!(nr, 1 | 18 | 20 | 77 | 296) { let l = lx(e); if let Some(Fd::File { path, .. }) = l.fds.get(&(a0 as i32)) { if !path.starts_with("/dev/") { let p = path.clone(); set_mtime(l, &p, now_ns()); } } } // write, pwrite64, writev, ftruncate, pwritev: modified now
     let v: i64 = match nr {
         0 => do_read(e, a0 as i32, a1, a2),
         SYS_WASI_WAIT => { // a WebAssembly program's stub waits for the page's next call
@@ -1292,7 +1305,7 @@ pub fn syscall(e: &mut Engine) {
                 l.drop_name(mm, &t);
             }
             let keys: Vec<String> = l.fs.keys().filter(|k| **k == f || k.starts_with(&format!("{}/", f))).cloned().collect();
-            if keys.is_empty() { -ENOENT } else { for k in keys { let n = l.fs.remove(&k).unwrap(); let nk = format!("{}{}", t, &k[f.len()..]); l.written.remove(&k); if let Some(m) = l.meta.remove(&k) { l.meta.insert(nk.clone(), m); } if let Some(z) = l.stubs.remove(&k) { l.stubs.insert(nk.clone(), z); } if let Some(h) = l.holes.remove(&k) { l.holes.insert(nk.clone(), h); } else { l.holes.remove(&nk); } l.dirt.remove(&k); l.dirt.remove(&nk); if matches!(n, Node::File(_)) && !l.stubs.contains_key(&nk) && !l.holes.contains_key(&nk) { l.written.insert(nk.clone()); } if let Some(Node::File(mut old)) = l.fs.insert(nk, n) { old.clear(&mut l.bc, mm); } } l.hard_moved(&f, &t); 0 }
+            if keys.is_empty() { -ENOENT } else { for k in keys { let n = l.fs.remove(&k).unwrap(); let nk = format!("{}{}", t, &k[f.len()..]); l.written.remove(&k); if let Some(m) = l.meta.remove(&k) { l.meta.insert(nk.clone(), m); } if let Some(m) = l.mtime.remove(&k) { l.mtime.insert(nk.clone(), m); } else { l.mtime.remove(&nk); } if let Some(z) = l.stubs.remove(&k) { l.stubs.insert(nk.clone(), z); } if let Some(h) = l.holes.remove(&k) { l.holes.insert(nk.clone(), h); } else { l.holes.remove(&nk); } l.dirt.remove(&k); l.dirt.remove(&nk); if matches!(n, Node::File(_)) && !l.stubs.contains_key(&nk) && !l.holes.contains_key(&nk) { l.written.insert(nk.clone()); } if let Some(Node::File(mut old)) = l.fs.insert(nk, n) { old.clear(&mut l.bc, mm); } } l.hard_moved(&f, &t); 0 }
         }
         83 | 258 => { // mkdir / mkdirat
             let (p, m) = if nr == 83 { (e.read_cstr(a0, 4096), a1) } else { (path_at(e, a0, a1), a2) };
@@ -1373,10 +1386,18 @@ pub fn syscall(e: &mut Engine) {
             0
         }
         95 => { let l = lx(e); let o = l.umask; l.umask = a0 as u32 & 0o777; o as i64 } // umask
-        280 | 235 | 132 => { // utimensat, utimes, utime: times are not kept, but the file must exist (touch creates it then)
-            let p = if nr == 280 { if a1 == 0 { return ret(e, 0); } path_at(e, a0, a1) } else { e.read_cstr(a0, 4096) };
-            let l = lx(e); let q = l.resolve(&p, true);
-            if q == "/" || l.fs.contains_key(&q) { 0 } else { -ENOENT }
+        280 | 235 | 132 => { // utimensat (path NULL: futimens), utimes, utime: the modification time is kept (atime = mtime); the file must exist (touch creates it then)
+            let p = if nr == 280 && a1 == 0 { match lx(e).fds.get(&(a0 as i32)) { Some(Fd::File { path, .. }) => path.clone(), _ => return ret(e, 0) } }
+                else if nr == 280 { path_at(e, a0, a1) } else { e.read_cstr(a0, 4096) };
+            let tp = if nr == 280 { a2 } else { a1 };
+            let mt = if tp == 0 { Some(now_ns()) } else if nr == 280 { // timespec[2]: atime, mtime; UTIME_NOW / UTIME_OMIT in tv_nsec
+                    let ns = e.r64(tp + 24);
+                    if ns == (1 << 30) - 2 { None } else if ns == (1 << 30) - 1 { Some(now_ns()) } else { Some(e.r64(tp + 16).wrapping_mul(1_000_000_000).wrapping_add(ns)) }
+                } else if nr == 235 { Some(e.r64(tp + 16).wrapping_mul(1_000_000_000).wrapping_add(e.r64(tp + 24).wrapping_mul(1000))) } // timeval[2]
+                else { Some(e.r64(tp + 8).wrapping_mul(1_000_000_000)) }; // utimbuf: actime, modtime
+            let l = lx(e); let mut q = l.resolve(&p, true);
+            if let Some(Node::Hard(t)) = l.fs.get(&q) { q = t.clone(); }
+            if q == "/" || l.fs.contains_key(&q) { if let Some(t) = mt { set_mtime(l, &q, t); } 0 } else { -ENOENT }
         }
         96 => { // gettimeofday
             let ms = crate::epoch_ms();
@@ -1541,7 +1562,7 @@ fn statx(e: &mut Engine, path: &str, dirfd: i32, flags: u64, buf: u64) -> i64 {
     b[32..40].copy_from_slice(&g(8).to_le_bytes());
     b[40..48].copy_from_slice(&g(48).to_le_bytes());
     b[48..56].copy_from_slice(&g(64).to_le_bytes());
-    for o in [64, 80, 96, 112] { b[o..o + 8].copy_from_slice(&g(72).to_le_bytes()); }
+    for o in [64, 80, 96, 112] { b[o..o + 8].copy_from_slice(&g(88).to_le_bytes()); b[o + 8..o + 12].copy_from_slice(&(g(96) as u32).to_le_bytes()); } // atime, btime, ctime, mtime: the file's modification time
     if e.mmu.write_bytes(buf, &b).is_err() { -14 } else { 0 }
 }
 

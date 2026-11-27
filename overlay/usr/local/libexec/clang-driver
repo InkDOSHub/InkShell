@@ -1,0 +1,60 @@
+#!/bin/sh
+# clang, clang++, cc, c++ (item 77; apk add clang): C/C++ to WebAssembly (WASI) programs that run here.
+# clang is a WebAssembly program (YoWASP LLVM, /usr/local/lib/clang-wasm/llvm.wasm) and cannot start
+# other programs itself, so this driver asks it for its plan ("clang -###": the compile, which runs
+# inside clang, and the wasm-ld link) and runs each step as its own program. Target wasm32-wasip1,
+# sysroot /usr/local/lib/clang-wasm/sysroot (wasi-libc, libc++). The output is made executable and
+# linked with chdir (relative paths follow the shell's folder). No threads, no setjmp, C++ without exceptions.
+D=/usr/local/lib/clang-wasm
+S=$D/sysroot
+B=$D/bin
+if [ ! -f "$D/llvm.wasm" ]; then echo "${0##*/}: clang is not installed: run apk add clang" >&2; exit 127; fi
+case ${0##*/} in *++*) tool=clang++ ;; *) tool=clang ;; esac
+case $1 in -cc1*) exec "$B/$tool" "$@" ;; esac
+set -- -resource-dir "$S" "--sysroot=$S" "$@"
+# C++: libc++abi here has no exception support (like wasi-sdk): no exceptions unless asked (-fexceptions later wins)
+if [ "$tool" = clang++ ]; then set -- -fno-exceptions "$@"; fi
+plan=0
+for a in "$@"; do case $a in -\#\#\#|--version|-dumpversion|-dumpmachine|-print-*|--print-*|-help|--help|--help-hidden) plan=1 ;; esac; done
+if [ "$plan" = 1 ]; then exec "$B/$tool" "$@"; fi
+T=$(mktemp -d /tmp/clang.XXXXXX) || exit 1
+trap 'rm -rf "$T"' EXIT
+trap 'exit 130' INT TERM HUP
+out=$(TMPDIR=$T "$B/$tool" -### "$@" 2>&1); rc=$?
+if [ "$rc" -ne 0 ]; then printf '%s\n' "$out" >&2; exit "$rc"; fi
+verbose=; for a in "$@"; do [ "$a" = -v ] && verbose=1; done
+cmds=
+nl='
+'
+while IFS= read -r line; do
+  case $line in
+    ' "'*) cmds="$cmds$line$nl" ;;
+    ' (in-process)') ;;
+    'clang version '*|'Target: '*|'Thread model: '*|'InstalledDir: '*|'Build config: '*) [ -n "$verbose" ] && printf '%s\n' "$line" >&2 ;;
+    '') ;;
+    *) printf '%s\n' "$line" >&2 ;; # warnings of the driver
+  esac
+done <<EOF
+$out
+EOF
+[ -n "$verbose" ] && printf '%s' "$cmds" >&2
+while IFS= read -r line <&3; do
+  [ -n "$line" ] || continue
+  case $line in *'`'*) line=$(printf '%s\n' "$line" | sed 's/`/\\`/g') ;; esac # clang escapes " \ $ only
+  eval "set -- $line"
+  # an in-process step is "EXE" "ARGV0" "-cc1"... (EXE = clang's real file, llvm.wasm, or ""): run ARGV0 from $B
+  case $2 in -*) ;; *) [ -z "$1" ] || [ ! -e "$B/${1##*/}" ] && shift ;; esac
+  t=${1##*/}; shift
+  [ -e "$B/$t" ] || case $1 in -cc1*) t=clang ;; *) t=wasm-ld ;; esac
+  exe=
+  if [ "$t" = wasm-ld ]; then
+    prev=; lc=
+    for a in "$@"; do [ "$prev" = -o ] && exe=$a; [ "$a" = -lc ] && lc=1; prev=$a; done
+    if [ -n "$lc" ]; then set -- "$@" --undefined=chdir; fi
+  fi
+  "$B/$t" "$@" 3<&- || exit $?
+  if [ -n "$exe" ] && [ -f "$exe" ]; then chmod +x "$exe"; fi
+done 3<<EOF
+$cmds
+EOF
+exit 0

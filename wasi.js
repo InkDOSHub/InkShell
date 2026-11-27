@@ -31,6 +31,16 @@ const E = { 101: 40, 103: 13, 104: 15, 107: 53, 110: 73, 111: 14, 113: 23, 1: 63
 const errno = (v) => E[-v] ?? 29;
 const ftype = (mode) => ({ 0o040000: 3, 0o100000: 4, 0o020000: 2, 0o060000: 1, 0o120000: 7, 0o140000: 6 })[mode & 0o170000] ?? 0;
 const dtype = { 1: 0, 2: 2, 4: 3, 6: 1, 8: 4, 10: 7, 12: 6 };
+class NoExnref extends Error {}
+let exnrefOk;
+/** Does this engine accept exnref (the exceptions the setjmp/longjmp builds of awk, bc, python3 use)? Checked once. */
+export function hasExnref() {
+  if (globalThis.INKSHELL_NO_EXNREF) return false; // test hook (tests/exnref-fallback.mjs)
+  if (exnrefOk === undefined) {
+    try { exnrefOk = WebAssembly.validate(new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 5, 1, 0x60, 0, 1, 0x69])); } catch { exnrefOk = false; }
+  }
+  return exnrefOk;
+}
 export class Exit { constructor(code) { this.code = code; } }
 
 /** The "path\0args\0\0env" description (wasi_info) as { args, envs }. */
@@ -189,6 +199,7 @@ KNOWN['574467:8f66d51c'] = { ptr: 8436172, lit: 8412357 }; // zip.wasm
 KNOWN['503577:8ecea3b'] = { ptr: 8426140, lit: 8395007 }; // unzip.wasm
 KNOWN['3403081:6d06aeea'] = { ptr: 2222148, lit: 1072918 }; // ripgrep.wasm
 KNOWN['321558:454cc1c1'] = { ptr: 72444, lit: 65857 }; // hashtools.wasm
+KNOWN['74467624:c4f20cc9'] = { ptr: 17848568, lit: 10422194 }; // clang llvm.wasm (YoWASP 22.1.6, item 77: ~0.8 s search otherwise)
 /** cwdSlot results by moduleKey: the search (~135 ms for python3) runs once per module in this thread.
  *  On the page each program has a new Worker, so app.js keeps the results and hands them over (slots, onSlot). */
 const slotCache = new Map();
@@ -246,6 +257,7 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     if (slot) { // real root at "/", the shell's folder becomes wasi-libc's cwd (see environ_get)
       envs = [...envs.filter((e) => !e.startsWith('PWD=')), 'PWD=' + cwd];
       slot.at = envs.slice(0, -1).reduce((n, e) => n + enc.encode(e).length + 1, 4);
+      slot.cwd = cwd;
     }
     if (cwd !== '/' && !slot) { // one "/" preopen for both: each path goes to the shell's folder or the real root (pick)
       cwdFd = opendir(cwd); rootFd = opendir('/');
@@ -571,7 +583,7 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
   let code = 0;
   try {
     let mod = module || (key && mods.get(key));
-    if (!mod) { mod = new WebAssembly.Module(bytes); if (key) { cacheModule(mods, key, mod); if (onModule) onModule(key, mod); } }
+    if (!mod) { try { if (globalThis.INKSHELL_NO_EXNREF) throw new WebAssembly.CompileError('test hook'); mod = new WebAssembly.Module(bytes); } catch (e) { if (e instanceof WebAssembly.CompileError && !hasExnref()) throw new NoExnref(); throw e; } if (key) { cacheModule(mods, key, mod); if (onModule) onModule(key, mod); } }
     else if (key) cacheModule(mods, key, mod);
     const imports = { wasi_snapshot_preview1: w, wasi_unstable: w };
     imports.inksoc = { // terminal control for full-screen programs (less): WASI has no ioctl. TCGETS / TCSETS (36 bytes, the kernel's struct termios) and TIOCGWINSZ; 0 = ok
@@ -582,11 +594,17 @@ export function runModule({ bytes, key = null, module = null, args, envs, base: 
     for (const i of WebAssembly.Module.imports(mod)) if (!imports[i.module]) imports[i.module] = {};
     inst = new WebAssembly.Instance(mod, imports);
     mem = inst.exports.memory;
+    if (slot && !WebAssembly.Module.imports(mod).some((i) => i.name === 'environ_get')) { // no environ_get (a small C program: item 77): the folder goes in a page of its own
+      try { const c = cstr(slot.cwd), at = mem.grow(1) * 65536; u8().set(c, at); if (dv().getUint32(slot.ptr, true) === slot.lit) dv().setUint32(slot.ptr, at, true); } catch {}
+    }
     if (inst.exports._start) inst.exports._start(); else if (inst.exports._initialize) inst.exports._initialize();
     exit(0);
   } catch (e) {
     if (e instanceof Exit) code = e.code;
-    else { // a trap or a bad module: say why on stderr, exit 127 (134 for a trap, like an abort)
+    else if (e instanceof NoExnref) { // an older engine (Safari < 18.4, Chrome < 137): say it plainly, 126 = cannot execute
+      code = 126;
+      try { const nm = (args[0] || 'wasm').split('/').pop(), m = enc.encode(`${nm}: this program needs WebAssembly exception handling (Safari 18.4+ / Chrome 137+). Try the x86 version: busybox ${nm} ... or apk add --x86 ${nm}\n`); sys(1, [2, BASE, m.length], m); exit(code); } catch {}
+    } else { // a trap or a bad module: say why on stderr, exit 127 (134 for a trap, like an abort)
       code = e instanceof WebAssembly.RuntimeError ? 134 : 127;
       try { const m = enc.encode(`${args[0] || 'wasm'}: ${e.message}\n`); sys(1, [2, BASE, m.length], m); exit(code); } catch {}
     }

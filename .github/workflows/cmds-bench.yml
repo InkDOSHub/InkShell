@@ -1,0 +1,46 @@
+name: Everyday commands bench
+# Item 88 (measure only): which everyday terminal commands still run on x86 (busybox) with every small catalog WASM
+# tool installed, and how slow each is vs the native runner. Chromium only, 2 reps in the VM. Started by hand or when a PR
+# touches these files.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/cmds-bench.yml'
+      - 'tests/bench/browser-cmds*'
+      - 'tests/bench/cmds*'
+permissions:
+  contents: read
+concurrency:
+  group: cmds-bench-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Small catalog tools (sha256 checked), installed like apk add does
+        run: |
+          mkdir -p out/tools $RUNNER_TEMP/pw/usr/local/bin
+          for n in coreutils hashtools sed findutils onetrue-awk tar gzip xz bzip2 grep diffutils cmp patch less bc file jq curl zip unzip; do
+            e=$(awk -F '\t' -v n=$n '$1 == n' overlay/etc/inksoc/wasm-catalog); [ -n "$e" ] || { echo "no catalog entry $n"; exit 1; }
+            f=out/tools/$n
+            timeout 300 curl -fsSL --retry 3 -o "$f" "$(printf '%s' "$e" | cut -f2)"
+            echo "$(printf '%s' "$e" | cut -f3)  $f" | sha256sum -c
+            first=; for l in $(printf '%s' "$e" | cut -f6 | tr ',' ' '); do
+              if [ -z "$first" ]; then first=$l; install -m 755 "$f" "$RUNNER_TEMP/pw$l"; else ln -sf "$(basename $first)" "$RUNNER_TEMP/pw$l"; fi
+            done
+          done
+          tar --format=ustar -C $RUNNER_TEMP/pw -cf out/ztools.tar usr
+          cp tests/bench/browser-cmds.sh tests/bench/cmds.tsv tests/bench/cmds-setup.sh out/
+          ls $RUNNER_TEMP/pw/usr/local/bin | wc -l
+      - name: Playwright (Chromium)
+        run: timeout 300 sh -c 'npm i -s --no-save --no-package-lock playwright@1.49.1 && npx playwright install --with-deps chromium'
+      - name: VM vs native
+        run: timeout 1700 node tests/bench/browser-cmds.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: cmds-result, path: out/cmds-result.md, if-no-files-found: ignore }
