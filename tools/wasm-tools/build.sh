@@ -498,7 +498,7 @@ b_python3() { # python3 = CPython 3.12.0 (PSF-2.0) from VMware Labs' libpython (
   c20="$C20/bin/clang --target=wasm32-wasi --sysroot=$C20/share/wasi-sysroot"; jp=$py/jpeg
   if [ ! -f "$jp/lib/libjpeg.a" ]; then # libjpeg-turbo with wasi-sdk 20, the library only (its tools and examples use setjmp)
     [ -d "$WORK/libjpeg" ] || { mkdir -p "$WORK/libjpeg" && curl -fsSL --retry 3 https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/$JPEG/libjpeg-turbo-$JPEG.tar.gz | tar -xz -C "$WORK/libjpeg" --strip-components=1; }
-    cmake -S "$WORK/libjpeg" -B "$py/jpeg-b" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$C20/share/cmake/wasi-sdk.cmake" -DWASI_SDK_PREFIX="$C20" \
+    CMAKE_POLICY_VERSION_MINIMUM=3.5 cmake -S "$WORK/libjpeg" -B "$py/jpeg-b" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$C20/share/cmake/wasi-sdk.cmake" -DWASI_SDK_PREFIX="$C20" \
       -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release -DENABLE_SHARED=OFF -DWITH_SIMD=OFF -DWITH_TURBOJPEG=OFF -DWITH_TOOLS=OFF -DWITH_TESTS=OFF >/dev/null
     cmake --build "$py/jpeg-b" -j"$J" --target jpeg-static
     mkdir -p "$jp/lib" "$jp/include" && cp "$py/jpeg-b/libjpeg.a" "$jp/lib/" &&
