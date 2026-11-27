@@ -83,7 +83,7 @@ const tools = [['7zip', '7zz', '7zz,7z'], ['qpdf', 'qpdf', 'qpdf'], ['imagemagic
   ['sed', 'sed', 'sed'], ['findutils', 'find', 'find'], ['onetrue-awk', 'awk', 'awk'],
   ['tar', 'bsdtar', 'tar,bsdtar'], ['gzip', 'gzip', 'gzip,gunzip,zcat'], ['xz', 'xz', 'xz,unxz,xzcat,lzma,unlzma,lzcat'],
   ['bzip2', 'bzip2', 'bzip2,bunzip2,bzcat'], ['zstd', 'zstd', 'zstd,unzstd,zstdcat'],
-  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['nano', 'nano', 'nano'], ['curl', 'curl', 'curl'], ['git', 'git', 'git']]
+  ['bc', 'bc', 'bc,dc'], ['file', 'file', 'file'], ['less', 'less', 'less'], ['grep', 'grep', 'grep,egrep,fgrep'], ['vim', 'vim', 'vim,vi,view'], ['nano', 'nano', 'nano'], ['curl', 'curl', 'curl'], ['git', 'git', 'git'], ['diffutils', 'diff', 'diff'], ['cmp', 'cmp', 'cmp'], ['patch', 'patch', 'patch']]
   .map(([name, file, progs]) => ({ name, file, progs, url: new URL(`./${file}.wasm`, import.meta.url) })).filter((t) => hasWasi && fs.existsSync(t.url));
 for (const t of tools) { t.bytes = fs.readFileSync(t.url); add(`${t.file}.wasm`, t.bytes); }
 const hasTool = (name) => tools.some((t) => t.name === name);
@@ -505,6 +505,15 @@ if (hasWasi) {
       const ok = py.length >= 2 && !py[0].hit && py.slice(1).every((e) => e.hit && e.ms < py[0].ms);
       results.push(ok); console.log((ok ? 'PASS ' : 'FAIL ') + 'python3: cwd detection cached after the 1st run');
     }
+    // item 84: Pillow is inside python3 (built-in C modules): PNG/JPEG save + open, resize, convert, thumbnail; resize 1024x1024 time
+    await step(`mkdir -p /tmp/pil && printf '%s\\n' 'import time' 'from PIL import Image, ImageDraw' 'im = Image.new("RGB", (64, 48), (200, 30, 30))' 'ImageDraw.Draw(im).rectangle([8, 8, 40, 30], fill=(0, 0, 255))' 'im.save("p.png"); im.save("p.jpg", quality=90)' 'a = Image.open("p.png"); b = Image.open("p.jpg"); b.load()' > /tmp/pil/p.py; echo pil-w1\n`, /pil-w1\s/, 'python3: Pillow script part 1');
+    await step(`printf '%s\\n' 'print("pil-open", a.format, a.size, a.mode, a.getpixel((20, 20)), b.format, b.size, b.mode)' 'c = b.resize((32, 24)); g = a.convert("L"); t = a.copy(); t.thumbnail((16, 16)); t.save("t.png")' 'print("pil-ops", c.size, g.mode, t.size, Image.open("t.png").size)' 'big = Image.new("RGB", (1024, 1024), (10, 20, 30)); t0 = time.time(); r = big.resize((512, 512), Image.LANCZOS)' 'print("pil-resize-ms", int((time.time() - t0) * 1000), r.size)' >> /tmp/pil/p.py && (cd /tmp/pil && python3 p.py)\n`,
+      /pil-open PNG \(64, 48\) RGB \(0, 0, 255\) JPEG \(64, 48\) RGB\s+pil-ops \(32, 24\) L \(16, 12\) \(16, 12\)\s+pil-resize-ms \d+ \(512, 512\)/, 'python3: Pillow PNG/JPEG save and open, resize, convert, thumbnail');
+    { const m = /pil-resize-ms (\d+)/.exec(out); if (m) console.log('Pillow resize 1024x1024 -> 512x512 LANCZOS (WebAssembly python3): ' + m[1] + ' ms'); }
+    // item 86: FreeType text (Pillow's embedded default font), WEBP and TIFF save + reopen, a fatal libjpeg error (bad Huffman table) is an OSError
+    await step(`printf '%s\\n' 'import io' 'from PIL import Image, ImageDraw, ImageFont' 'im = Image.new("L", (96, 32), 0); f = ImageFont.load_default(size=20)' 'ImageDraw.Draw(im).text((2, 2), "Ink", font=f, fill=255)' 'print("pil-ft", type(f).__name__, im.getbbox() is not None, im.getextrema())' 'im.convert("RGB").save("w.webp", quality=80); im.save("w.tif", compression="tiff_deflate")' 'w = Image.open("w.webp"); w.load(); t = Image.open("w.tif"); t.load()' 'print("pil-webp", w.format, w.size, "pil-tiff", t.format, t.size, list(t.getdata()) == list(im.getdata()))' > /tmp/pil/q.py; echo pil-w2\n`, /pil-w2\s/, 'python3: Pillow script 2 part 1');
+    await step(`printf '%s\\n' 'j = io.BytesIO(); im.convert("RGB").save(j, "JPEG"); k = bytearray(j.getvalue()); p = k.index(b"\\xff\\xc4")' 'for i in range(p + 5, p + 21): k[i] = 255' 'try:' '    Image.open(io.BytesIO(bytes(k))).load(); print("pil-jpeg no error")' 'except OSError as e:' '    print("pil-jpeg-err", type(e).__name__)' 'print("pil-alive")' >> /tmp/pil/q.py && (cd /tmp/pil && python3 q.py)\n`,
+      /pil-ft FreeTypeFont True \(0, \d+\)\s+pil-webp WEBP \(96, 32\) pil-tiff TIFF \(96, 32\) True\s+pil-jpeg-err OSError\s+pil-alive/, 'python3: Pillow FreeType text, WEBP/TIFF save and open, bad JPEG is an OSError');
   }
   if (tools.length) { // 7-Zip, qpdf, ImageMagick, ffmpeg, sqlite, jq, lua, zip, unzip from the catalog (local file:// mirrors), one apk add
     const lines = tools.map((t) => `${t.name}\\tfile:///root/${t.file}.wasm\\t${crypto.createHash('sha256').update(t.bytes).digest('hex')}\\t${t.bytes.length}\\tlicense\\t${t.progs.split(',').map((p) => '/usr/local/bin/' + p).join(',')}\\t${t.name}\\n`);
@@ -561,6 +570,10 @@ if (hasWasi) {
     // the same path absolute and relative in one command: the real /tmp/z.json and the folder's ./tmp/z.json (no guessing could tell them apart)
     await step("printf '{\"k\":\"out\"}' > /tmp/z.json && mkdir -p /tmp/jq2/tmp && printf '{\"k\":\"in\"}' > /tmp/jq2/tmp/z.json && cd /tmp/jq2 && jq -cM .k /tmp/z.json ./tmp/z.json; echo jq-same-done; cd\n",
       /^"out"\s+^"in"\s+^jq-same-done/m, 'jq: /tmp/z.json and ./tmp/z.json in the same command each open the right file');
+  }
+  if (hasTool('jq')) { // item 85: jq built with oniguruma (regex builtins)
+    await step("echo '\"abc\"' | jq -cM '[test(\"a.c\"), (capture(\"(?<x>b)c\").x), gsub(\"[ac]\";\"-\"), sub(\"b\";\"B\"), ([\"a,b;c\" | splits(\"[,;]\")]), ([match(\"[a-c]\";\"g\").string] | length)]'; jq -nM '\"x\" | test(\"y\")' ; echo jq-onig-done\n",
+      /^\[true,"b","-b-","aBc",\["a","b","c"\],3\]\s+^false\s+^jq-onig-done/m, 'jq: oniguruma regex builtins (test, capture, gsub, sub, splits, match)');
   }
   if (hasTool('ripgrep')) { // ripgrep: count, line number, list files of a folder, no match exits 1, stdin with "-"
     await step("mkdir -p /tmp/rg/s && cd /tmp/rg && printf 'alpha\\nbeta\\ngamma\\n' > s/a.txt && printf 'beta2\\n' > b.txt && rg --color never -c beta s/a.txt; rg --color never -n gam s/a.txt; rg --color never -l beta . | sort; rg --color never zzz s/a.txt; echo rg-rc=$?; printf 'x1\\ny\\n' | rg --color never x -; cd\n",
@@ -637,6 +650,16 @@ if (hasWasi) {
   }
   if (hasTool('curl')) { // item 82: apk add curl puts the WebAssembly curl in /usr/local/bin (network checks: INK_CURL, INK_NET_PY)
     await step(`hash -r; command -v curl; curl -V | busybox head -n 1 | busybox cut -c1-6; curl; echo curl-rc=$?\n`, /\/usr\/local\/bin\/curl\s+curl 8[\s\S]*no URL specified[\s\S]*curl-rc=2/, 'curl: in /usr/local/bin, -V, no URL = exit 2');
+  }
+  if (hasTool('diffutils') && hasTool('cmp') && hasTool('patch')) { // item 71: GNU diffutils 3.12 + GNU patch 2.8.1 (GPL-3.0 separate catalog programs) ahead of busybox; the uutils diff died (exit 134) on a 10 MB file
+    await step(`cd /tmp && rm -rf df1 && mkdir -p df1/a/s df1/b/s && cd df1 && printf 'one\\ntwo\\nthree\\nfour\\n' > a/f.txt && printf 'one\\n2\\nthree\\nfour\\nfive\\n' > b/f.txt && printf 'x\\n' > a/s/g.txt && printf 'x\\n' > b/s/g.txt && printf 'only\\n' > b/new.txt && hash -r && for c in diff cmp patch; do command -v $c; done | busybox tr '\\n' ' '; echo; echo df-ready\n`,
+      /\/usr\/local\/bin\/diff \/usr\/local\/bin\/cmp \/usr\/local\/bin\/patch\s+df-ready/, 'diff/cmp/patch: GNU programs in /usr/local/bin before busybox');
+    await step(`diff a/f.txt a/f.txt; echo same=$?; diff a/f.txt b/f.txt > /dev/null; echo differ=$?; diff -u a/f.txt b/f.txt | busybox sed 1,2d | busybox head -n 3; diff -r a b | busybox grep -c '^Only in'; diff -rq a b | busybox wc -l; diff nofile a/f.txt 2>/dev/null; echo trouble=$?; echo df-a\n`,
+      /same=0\s+differ=1\s+@@ -1,4 \+1,5 @@\s+ one\s+-two\s+1\s+2\s+trouble=2\s+df-a/, 'diff: exit codes 0/1/2, -u, -r, -rq');
+    await step(`diff -u a/f.txt b/f.txt > p.diff; cp a/f.txt c.txt; patch -s c.txt p.diff < /dev/null; echo patched=$?; cmp c.txt b/f.txt; echo cmp-same=$?; cmp a/f.txt b/f.txt > /dev/null; echo cmp-diff=$?; patch -s -R c.txt p.diff < /dev/null; cmp c.txt a/f.txt; echo df-b=$?\n`,
+      /patched=0\s+cmp-same=0\s+cmp-diff=1\s+df-b=0/, 'patch: applies a diff -u and reverses it; cmp exit codes');
+    await step(`busybox seq 1 1500000 > big1.txt; busybox sed 's/^77777/y/' big1.txt > big2.txt; diff big1.txt big2.txt | busybox wc -l; diff -u big1.txt big2.txt | busybox wc -l; cmp big1.txt big2.txt | busybox cut -c1-40; echo df-done\n`,
+      /\d+\s+\d+\s+big1.txt big2.txt differ[^\n]*\s+df-done/, 'diff: two 10 MB files do not crash (the uutils diff died with exit 134)');
   }
   if (hasTool('git')) { // item 75: git 2.47 in WebAssembly ahead of an x86 git; local work in one process (no editor: -m; pager cat), tolerant matching
     await step(`cd /tmp && rm -rf gt && mkdir gt && cd gt && hash -r && command -v git && git --version && git init -q && git config user.name Tester && git config user.email t@example.com && echo one > a.txt && git add a.txt && git commit -q -m first; echo c1=$?; git log --oneline | busybox wc -l | busybox sed 's/^/n1=/'; git switch -q -c feat && echo two > b.txt && git add b.txt && git commit -q -m second && git switch -q master && git merge -q feat; echo ff=$?; git switch -q -c side && echo s >> a.txt && git commit -q -am side && git switch -q master && echo m > c.txt && git add c.txt && git commit -q -m main && git merge -q -m merged side; echo m3=$?; git log --oneline | busybox wc -l | busybox sed 's/^/n2=/'; git status --short | busybox wc -l | busybox sed 's/^/dirty=/'; git log -1 --format=%s; cd; echo git-back\n`,
