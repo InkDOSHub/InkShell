@@ -20,7 +20,8 @@ const NONE: u32 = u32::MAX; // an extent never written: reads as zeros
 const CACHE: usize = 64; // extents (4 MB)
 
 pub enum Data {
-    Mem(Vec<u8>),
+    /// The bytes and the version (gen, as Blk's).
+    Mem(Vec<u8>, u64),
     /// `ext[j] = (first slot, written blocks)` holds bytes [j*EXT, (j+1)*EXT); a block whose bit
     /// is clear reads as zeros, and so do bytes past `len`.
     /// `gen`: a number no other content of a file in blocks had (new at each change): the page keeps
@@ -32,7 +33,7 @@ static GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 fn next_gen() -> u64 { GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) }
 
 impl From<Vec<u8>> for Data {
-    fn from(v: Vec<u8>) -> Self { Data::Mem(v) }
+    fn from(v: Vec<u8>) -> Self { Data::Mem(v, next_gen()) }
 }
 
 struct Ent { b: Vec<u8>, dirty: bool, tick: u64 }
@@ -119,14 +120,14 @@ impl Cache {
 impl Data {
     /// An empty file that keeps its bytes in blocks from the start (a big file being unpacked).
     pub fn new_blk() -> Data { Data::Blk { len: 0, ext: Vec::new(), gen: next_gen() } }
-    pub fn len(&self) -> u64 { match self { Data::Mem(v) => v.len() as u64, Data::Blk { len, .. } => *len } }
+    pub fn len(&self) -> u64 { match self { Data::Mem(v, _) => v.len() as u64, Data::Blk { len, .. } => *len } }
     pub fn is_empty(&self) -> bool { self.len() == 0 }
     pub fn is_blk(&self) -> bool { matches!(self, Data::Blk { .. }) }
-    /// The version of a file in blocks (0 for one in memory, which has none).
-    pub fn gen(&self) -> u64 { match self { Data::Blk { gen, .. } => *gen, Data::Mem(_) => 0 } }
-    fn touch(&mut self) { if let Data::Blk { gen, .. } = self { *gen = next_gen(); } }
+    /// The version of the file: never 0, new at each change (item 93: files in memory have one too).
+    pub fn gen(&self) -> u64 { match self { Data::Blk { gen, .. } | Data::Mem(_, gen) => *gen } }
+    fn touch(&mut self) { match self { Data::Blk { gen, .. } | Data::Mem(_, gen) => *gen = next_gen() } }
     /// The bytes of a file kept in memory (empty for one in blocks): for small system files.
-    pub fn mem(&self) -> &[u8] { match self { Data::Mem(v) => v, Data::Blk { .. } => &[] } }
+    pub fn mem(&self) -> &[u8] { match self { Data::Mem(v, _) => v, Data::Blk { .. } => &[] } }
 
     /// Up to `n` bytes from `off` (fewer at the end of the file).
     pub fn read(&self, c: &mut Cache, m: &mut Mmu, off: u64, n: usize) -> Vec<u8> {
@@ -134,7 +135,7 @@ impl Data {
         let s = off.min(len);
         let k = (n as u64).min(len - s) as usize;
         match self {
-            Data::Mem(v) => v[s as usize..s as usize + k].to_vec(),
+            Data::Mem(v, _) => v[s as usize..s as usize + k].to_vec(),
             Data::Blk { ext, .. } => {
                 let mut out = vec![0u8; k];
                 let mut o = 0;
@@ -156,16 +157,17 @@ impl Data {
     }
     /// The whole file.
     pub fn all(&self, c: &mut Cache, m: &mut Mmu) -> Vec<u8> {
-        match self { Data::Mem(v) => v.clone(), Data::Blk { len, .. } => self.read(c, m, 0, *len as usize) }
+        match self { Data::Mem(v, _) => v.clone(), Data::Blk { len, .. } => self.read(c, m, 0, *len as usize) }
     }
 
     /// Writes `d` at `off`, growing the file (with zeros in any gap).
     pub fn write(&mut self, c: &mut Cache, m: &mut Mmu, off: u64, d: &[u8]) {
         let end = off + d.len() as u64;
-        if let Data::Mem(v) = self {
+        if let Data::Mem(v, g) = self {
             if end <= BIG {
                 if (v.len() as u64) < end { v.resize(end as usize, 0); }
                 v[off as usize..end as usize].copy_from_slice(d);
+                *g = next_gen();
                 return;
             }
         }
@@ -195,7 +197,7 @@ impl Data {
 
     /// Sets the length (zeros when it grows).
     pub fn resize(&mut self, c: &mut Cache, m: &mut Mmu, n: u64) {
-        if let Data::Mem(v) = self { if n <= BIG { v.resize(n as usize, 0); return; } }
+        if let Data::Mem(v, g) = self { if n <= BIG { v.resize(n as usize, 0); *g = next_gen(); return; } }
         self.spill(m);
         self.touch();
         let Data::Blk { len, ext, .. } = self else { unreachable!() };
@@ -219,7 +221,7 @@ impl Data {
 
     /// A file in memory moves to blocks.
     fn spill(&mut self, m: &mut Mmu) {
-        let Data::Mem(v) = self else { return };
+        let Data::Mem(v, _) = self else { return };
         let v = std::mem::take(v);
         let mut ext = Vec::with_capacity(v.len().div_ceil(EXT));
         let mut b = vec![0u8; EXT];
@@ -234,13 +236,13 @@ impl Data {
     /// Empties the file (its blocks go back to the swap).
     pub fn clear(&mut self, c: &mut Cache, m: &mut Mmu) {
         if let Data::Blk { ext, .. } = self { for &(s, _) in ext.iter() { if s != NONE { c.unref(m, s); } } }
-        *self = Data::Mem(Vec::new());
+        *self = Data::Mem(Vec::new(), next_gen());
     }
 
     /// A separate copy (hard links are copies here); a file in blocks shares them (copy-on-write).
     pub fn dup(&self, c: &mut Cache, _m: &mut Mmu) -> Data {
         match self {
-            Data::Mem(v) => Data::Mem(v.clone()),
+            Data::Mem(v, _) => Data::Mem(v.clone(), next_gen()),
             Data::Blk { len, ext, .. } => {
                 for &(s, _) in ext.iter() { if s != NONE { c.share(s); } }
                 Data::Blk { len: *len, ext: ext.clone(), gen: next_gen() }

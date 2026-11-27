@@ -53,7 +53,7 @@ $('calib').onclick = async () => {
   $('calib').disabled = true;
   await stop(true);
   limits.set(Object.assign(limits.get(), { calib: { mb: 0, running: true } }));
-  const c = new Worker('worker.js?v=97');
+  const c = new Worker('worker.js?v=98');
   c.onmessage = (ev) => {
     const d = ev.data; if (d.type !== 'calib') return;
     const s = limits.get();
@@ -78,7 +78,7 @@ showData();
 $('erase').onclick = () => {
   if (!confirm('Erase your Linux user, files and installed programs, and start again from a clean Alpine?')) return;
   stop(false).then(() => {
-    const r = new Worker('worker.js?v=97');
+    const r = new Worker('worker.js?v=98');
     r.onmessage = () => { r.terminate(); pref.set('alpine-user', ''); showData(); };
     r.postMessage({ type: 'reset' });
   });
@@ -118,26 +118,30 @@ const WPROF = /[?&]wasiprof=1/.test(location.search), wnow = () => performance.t
 window.__wprof = [];
 const wprofPage = new Map();
 function wasiEnd(pid) { const b = wasiWorkers.get(pid); if (b) { b.terminate(); wasiWorkers.delete(pid); } }
+function wasiHeldKeys() { if (w) w.postMessage({ type: 'wasi-mods', keys: [...wasiMods.keys()].filter((k) => wasiSlots.has(k)) }); }
 function wasiStart(m) {
+  // item 93: no bytes = the engine thought this page holds the Module and cwd slot of that file version; else ask for them
+  if (!m.bytes && !(m.key && wasiMods.has(m.key) && wasiSlots.has(m.key))) { if (w) w.postMessage({ type: 'wasi-bytes', pid: m.pid }); return; }
   const pp = WPROF ? [['start-msg', wnow()]] : null, nb = m.bytes ? m.bytes.byteLength : 0;
   if (pp) wprofPage.set(m.pid, pp);
-  const b = new Worker('wasi-worker.js?v=94', { type: 'module' });
+  const b = new Worker('wasi-worker.js?v=95', { type: 'module' });
   if (pp) pp.push(['worker-new', wnow()]);
   wasiWorkers.set(m.pid, b);
   b.onmessage = (ev) => {
     if (ev.data.type === 'done') wasiEnd(m.pid);
     else if (ev.data.type === 'prof') window.__wprof.push({ pid: m.pid, page: pp, worker: ev.data.prof, calls: ev.data.calls, bytes: nb, mod: !!m.module });
-    else if (ev.data.type === 'slot' && wasiSlots.size < 256) wasiSlots.set(ev.data.key, ev.data.slot);
+    else if (ev.data.type === 'slot' && wasiSlots.size < 256) { wasiSlots.set(ev.data.key, ev.data.slot); if (wasiMods.has(ev.data.key)) wasiHeldKeys(); }
     else if (ev.data.type === 'module' && ev.data.module) {
       wasiMods.delete(ev.data.key); wasiMods.set(ev.data.key, ev.data.module);
       while (wasiMods.size > 4) wasiMods.delete(wasiMods.keys().next().value);
+      wasiHeldKeys();
     }
   };
   b.onerror = () => wasiEnd(m.pid);
   m.slots = [...wasiSlots];
   if (m.key && wasiMods.has(m.key)) { m.module = wasiMods.get(m.key); wasiMods.delete(m.key); wasiMods.set(m.key, m.module); }
   if (pp) { m.prof = true; pp.push(['post-worker', wnow()]); }
-  b.postMessage(m, [m.bytes.buffer]);
+  b.postMessage(m, m.bytes ? [m.bytes.buffer] : []);
 }
 let ctrl = false;
 const send = (t) => { if (w) w.postMessage({ type: 'key', data: t }); };
@@ -146,7 +150,7 @@ function start() {
   if (starting || w) return;
   starting = true;
   term.write('\x1b[2mStarting Alpine Linux on InkSoC…\x1b[0m\r\n');
-  w = new Worker('worker.js?v=97');
+  w = new Worker('worker.js?v=98');
   starting = false;
   w.onmessage = (ev) => {
     const m = ev.data;
