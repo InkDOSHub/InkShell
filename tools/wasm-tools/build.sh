@@ -1,9 +1,9 @@
 #!/bin/sh
 # Builds WebAssembly (WASI preview1) command-line tools for the catalog (apk add) from upstream sources.
-# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | bzip2 | zstd | bc | file | less | grep | vim | nano | curl | git
+# usage: tools/wasm-tools/build.sh TOOL...   TOOL = ffmpeg | magick | qpdf | 7zz | sqlite3 | jq | lua | zip | unzip | rg | hashsum | coreutils | qjs | sed | find | awk | xz | tar | gzip | bzip2 | zstd | bc | file | less | grep | vim | nano | curl | git | diffutils | patch
 # env: WASI_SDK (wasi-sdk-33 or later: C++ exceptions), WORK (sources, build dirs), OUT (the .wasm files)
 # CI: .github/workflows/wasm-tools.yml builds them and publishes a GitHub release; the catalog points at it.
-# No GPL except GNU grep (GPL-3.0-or-later, item 80, a separate catalog program with its source release and these changes published; see THIRD_PARTY_LICENSES.md): ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
+# No GPL in the engine, the page, or the worker. GPL is only a separate catalog program, source in its release (owner, 26/11): GNU grep, nano, git, diffutils 3.12 and patch 2.8.1 (the b_* recipes in this file; see THIRD_PARTY_LICENSES.md). Everything else: ffmpeg is built without --enable-gpl and without external libraries (LGPL-2.1+),
 # 7-Zip without the unRAR code (LGPL-2.1+ and BSD-3-Clause), qpdf (Apache-2.0), ImageMagick (its own Apache-style license),
 # SQLite (public domain), jq (MIT), Lua (MIT), Info-ZIP zip/unzip (Info-ZIP license, BSD-style), ripgrep (MIT or Unlicense), hashsum (InkShell's own code, MIT), uutils coreutils (MIT), QuickJS-ng (MIT), uutils sed (MIT), uutils findutils find (MIT; oniguruma BSD-2-Clause inside), one-true-awk (MIT-style Bell Labs license), xz 5.8 (0BSD; liblzma public domain/0BSD), libarchive bsdtar (BSD-2-Clause, BSD-3-Clause; zlib license for zlib, 0BSD for liblzma), gzip (InkShell's own code on zlib, MIT), bzip2 1.0.8 (bzip2 license, BSD-style), zstd 1.5.7 (BSD-3-Clause option of its dual license), Gavin Howard's bc 7.0.3 (BSD-2-Clause; not GNU bc), file/libmagic 5.46 (BSD-2-Clause), less 692 (the BSD-2-Clause style Less License option of its dual license; the GPL-3.0 option is not used), curl (InkShell's own code, MIT).
 set -eu
@@ -529,11 +529,17 @@ if old not in t:
 else:
     p.write_text(t.replace(old, new, 1))
 PY
+  # WASI defines SIGCHLD, so gnulib's Windows sigaction replacement refuses to compile.
+  # There is still no sigaction in wasi-libc: keep the replacement (signal() underneath).
+  sed -i 's/# error "Revisit the assumptions made in the sigaction module"/\/\* WASI defines SIGCHLD but has no sigaction: keep gnulib'\''s replacement. *\//' "$d/lib/sigaction.c"
   rm -rf "$d/b" && mkdir -p "$d/b" && (cd "$d/b" && CFLAGS="-O2 -DCOMPAT_CHMOD_OK $EMU $SJLJ -I$P/compat -include $d/ink_diff.h" LDFLAGS="-L$P/lib $STACK" LIBS="$d/ink_diff.o -lcompat -lsetjmp $EMUL" \
     ac_cv_func_fork_works=no ac_cv_func_vfork_works=no ac_cv_func_fchdir=yes ac_cv_func_getdtablesize=yes ac_cv_func_pipe=yes ac_cv_func_dup2=yes \
     gl_cv_func_fcntl_f_dupfd_cloexec=yes gl_cv_func_dup2_works=yes gl_cv_func_fdopendir_works=yes \
     gl_cv_func_strcasecmp_works=yes gl_cv_func_getopt_posix=yes \
     ../configure --host=$T --disable-nls --disable-rpath --disable-gcc-warnings >"$WORK/diff-configure.log" 2>&1 || { tail -80 "$WORK/diff-configure.log"; exit 1; }
+    # popen/pclose/system and tzset: after config.h (gnulib wants that first). compat.h is the host process channel.
+    cfg=lib/config.h; [ -f "$cfg" ] || cfg=config.h
+    printf '\n#include <compat.h>\n' >> "$cfg"
     make -j"$J" -C lib GL_CFLAG_GNULIB_WARNINGS= >"$WORK/diff-lib.log" 2>&1 || { grep -n "error:" "$WORK/diff-lib.log" | head -40; tail -20 "$WORK/diff-lib.log"; exit 1; }
     make -j"$J" -C src cmp diff diff3 sdiff GL_CFLAG_GNULIB_WARNINGS= >"$WORK/diff-src.log" 2>&1 || { grep -n "error:" "$WORK/diff-src.log" | head -40; tail -30 "$WORK/diff-src.log"; exit 1; }
     cp src/diff "$OUT/diff.wasm" && cp src/cmp "$OUT/cmp.wasm" && cp src/diff3 "$OUT/diff3.wasm" && cp src/sdiff "$OUT/sdiff.wasm")
@@ -542,10 +548,15 @@ PY
 b_patch() { # GNU patch 2.8.1 (GPL-3.0-or-later; a separate catalog program, source release in the GitHub release): apply a diff; no NLS. Same WASI stubs as diffutils (dup/pipe/fchdir); gnulib opendirat renamed (it clashes with wasi-libc's).
   compat; dl "https://ftp.gnu.org/gnu/patch/patch-$PATCH.tar.xz" patch
   g=$WORK/patch
-  printf 'int dup(int);\nint dup2(int, int);\nint fchdir(int);\nint getdtablesize(void);\nint pipe(int[2]);\n#define flockfile(f) ((void)0)\n#define funlockfile(f) ((void)0)\n' > "$g/ink_patch.h"
-  printf '#include <errno.h>\nint dup(int f) { (void)f; errno = ENOSYS; return -1; }\nint dup2(int f, int g) { (void)f; (void)g; errno = ENOSYS; return -1; }\nint fchdir(int f) { (void)f; errno = ENOSYS; return -1; }\nint getdtablesize(void) { return 1024; }\nint pipe(int p[2]) { (void)p; errno = ENOSYS; return -1; }\n' > "$g/ink_patch.c"
+  printf 'typedef unsigned long rlim_t;\nstruct rlimit { rlim_t rlim_cur; rlim_t rlim_max; };\n#define RLIMIT_NOFILE 7\n#define RLIM_INFINITY (~0UL)\nint dup(int);\nint dup2(int, int);\nint fchdir(int);\nint getdtablesize(void);\nint pipe(int[2]);\nint getrlimit(int, struct rlimit *);\n#define flockfile(f) ((void)0)\n#define funlockfile(f) ((void)0)\n' > "$g/ink_patch.h"
+  # no COMPAT_CHMOD_OK: gnulib's rpl_chmod #undefs that macro and then calls chmod, which wasi-libc does provide
+  # getrlimit: WASI has no rlimit. safe.c only uses it to size a dirfd cache and already falls back when it fails.
+  printf '#include <errno.h>\n#include "ink_patch.h"\nint dup(int f) { (void)f; errno = ENOSYS; return -1; }\nint dup2(int f, int g) { (void)f; (void)g; errno = ENOSYS; return -1; }\nint fchdir(int f) { (void)f; errno = ENOSYS; return -1; }\nint getdtablesize(void) { return 1024; }\nint pipe(int p[2]) { (void)p; errno = ENOSYS; return -1; }\nint getrlimit(int r, struct rlimit *l) { (void)r; (void)l; errno = ENOSYS; return -1; }\n' > "$g/ink_patch.c"
   $CC -O2 -c "$g/ink_patch.c" -o "$g/ink_patch.o"
   sed -i "s/\\bopendirat\\b\\([^.]\\)/ink_opendirat\\1/g" "$g/lib/backupfile.c" "$g/lib/opendirat.c" "$g/lib/opendirat.h"
+  if [ -f "$g/lib/sigaction.c" ]; then
+    sed -i 's/# error "Revisit the assumptions made in the sigaction module"/\/\* WASI defines SIGCHLD but has no sigaction: keep gnulib'\''s replacement. *\//' "$g/lib/sigaction.c"
+  fi
   python3 - "$g/lib/signal.in.h" << 'PY'
 import sys
 from pathlib import Path
@@ -559,11 +570,15 @@ if old not in t:
 else:
     p.write_text(t.replace(old, new, 1))
 PY
-  rm -rf "$g/b" && mkdir -p "$g/b" && (cd "$g/b" && CFLAGS="-O2 -DCOMPAT_CHMOD_OK $EMU $SJLJ -I$P/compat -include $g/ink_patch.h" LDFLAGS="-L$P/lib $STACK" LIBS="$g/ink_patch.o -lcompat -lsetjmp $EMUL" \
+  rm -rf "$g/b" && mkdir -p "$g/b" && (cd "$g/b" && CFLAGS="-O2 $EMU $SJLJ -I$P/compat -include $g/ink_patch.h" LDFLAGS="-L$P/lib $STACK" LIBS="$g/ink_patch.o -lcompat -lsetjmp $EMUL" \
     ac_cv_func_fork_works=no ac_cv_func_vfork_works=no ac_cv_func_fchdir=yes ac_cv_func_getdtablesize=yes ac_cv_func_pipe=yes ac_cv_func_dup2=yes \
     gl_cv_func_fcntl_f_dupfd_cloexec=yes gl_cv_func_dup2_works=yes gl_cv_func_fdopendir_works=yes \
     gl_cv_func_strcasecmp_works=yes gl_cv_func_getopt_posix=yes \
     ../configure --host=$T --disable-nls --disable-rpath --disable-gcc-warnings >"$WORK/patch-configure.log" 2>&1 || { tail -80 "$WORK/patch-configure.log"; exit 1; }
+    cfg=lib/config.h; [ -f "$cfg" ] || cfg=config.h
+    printf '\n#include <compat.h>\n' >> "$cfg"
+    # cross guess said GETGROUPS_T is int; the declaration uses gid_t (unsigned)
+    sed -i 's/^#define GETGROUPS_T int$/#define GETGROUPS_T gid_t/' "$cfg"
     make -j"$J" -C lib GL_CFLAG_GNULIB_WARNINGS= >"$WORK/patch-lib.log" 2>&1 || { grep -n "error:" "$WORK/patch-lib.log" | head -40; tail -20 "$WORK/patch-lib.log"; exit 1; }
     make -j"$J" -C src patch GL_CFLAG_GNULIB_WARNINGS= >"$WORK/patch-src.log" 2>&1 || { grep -n "error:" "$WORK/patch-src.log" | head -40; tail -30 "$WORK/patch-src.log"; exit 1; }
     cp src/patch "$OUT/patch.wasm")
